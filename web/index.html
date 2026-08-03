@@ -1,0 +1,1709 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>MvC Collection Live Skins</title>
+<style>
+  /* ── MvC Live Skins · Match Board — fighting-game VS / netplay HUD ───── */
+  :root{
+    --bg:#0a0c12; --panel:#12151f; --panel-2:#191d2b; --card:#161a28;
+    --line:#272d3e; --line-soft:#1d2231; --ink:#eef1f8; --dim:#8a91a8; --faint:#5a6178;
+    --gold:#ffb020; --gold-ink:#241700; --gold-soft:rgba(255,176,32,.13);
+    --p1:#ff6a3d; --p1-soft:rgba(255,106,61,.13); --p1-line:rgba(255,106,61,.42);
+    --p2:#3fb1ff; --p2-soft:rgba(63,177,255,.12); --p2-line:rgba(63,177,255,.42);
+    --good:#35d07f; --live:#ff3d68;
+    --r:14px; --shadow:0 18px 50px -22px rgba(0,0,0,.8); --board:#0d1017; color-scheme:dark;
+  }
+  @media (prefers-color-scheme: light){ :root{
+    --bg:#e8eaf1; --panel:#fff; --panel-2:#f2f4fa; --card:#fff; --line:#d8dce7; --line-soft:#e6e9f1;
+    --ink:#141826; --dim:#5b6278; --faint:#a2a8bc; --gold:#c98400; --gold-ink:#fff6e6; --gold-soft:rgba(201,132,0,.12);
+    --p1:#e0491f; --p1-soft:rgba(224,73,31,.10); --p1-line:rgba(224,73,31,.4);
+    --p2:#1183d6; --p2-soft:rgba(17,131,214,.10); --p2-line:rgba(17,131,214,.4);
+    --good:#12a05a; --live:#e11d54; --board:#dfe2ec; --shadow:0 18px 44px -24px rgba(30,40,70,.4); color-scheme:light; } }
+  :root[data-theme="light"]{
+    --bg:#e8eaf1; --panel:#fff; --panel-2:#f2f4fa; --card:#fff; --line:#d8dce7; --line-soft:#e6e9f1;
+    --ink:#141826; --dim:#5b6278; --faint:#a2a8bc; --gold:#c98400; --gold-ink:#fff6e6; --gold-soft:rgba(201,132,0,.12);
+    --p1:#e0491f; --p1-soft:rgba(224,73,31,.10); --p1-line:rgba(224,73,31,.4);
+    --p2:#1183d6; --p2-soft:rgba(17,131,214,.10); --p2-line:rgba(17,131,214,.4);
+    --good:#12a05a; --live:#e11d54; --board:#dfe2ec; --shadow:0 18px 44px -24px rgba(30,40,70,.4); color-scheme:light; }
+  :root[data-theme="dark"]{
+    --bg:#0a0c12; --panel:#12151f; --panel-2:#191d2b; --card:#161a28; --line:#272d3e; --line-soft:#1d2231;
+    --ink:#eef1f8; --dim:#8a91a8; --faint:#5a6178; --gold:#ffb020; --gold-ink:#241700; --gold-soft:rgba(255,176,32,.13);
+    --p1:#ff6a3d; --p1-soft:rgba(255,106,61,.13); --p1-line:rgba(255,106,61,.42);
+    --p2:#3fb1ff; --p2-soft:rgba(63,177,255,.12); --p2-line:rgba(63,177,255,.42);
+    --good:#35d07f; --live:#ff3d68; --board:#0d1017; --shadow:0 18px 50px -22px rgba(0,0,0,.8); color-scheme:dark; }
+
+  *{box-sizing:border-box;}
+  html,body{margin:0; overflow-x:hidden;} /* off-canvas drawer must never create a horizontal scrollbar */
+  body{background:radial-gradient(120% 90% at 50% -10%,color-mix(in srgb,var(--gold) 8%,transparent),transparent 55%),var(--bg);
+    color:var(--ink); font:14px/1.45 "Segoe UI Variable Text","Segoe UI",system-ui,-apple-system,sans-serif; -webkit-font-smoothing:antialiased; min-height:100vh;}
+  .wrap{max-width:1140px; margin:0 auto; padding:14px 20px 40px;}
+  h1,h2,h3{margin:0;}
+  .mono{font-family:ui-monospace,"Cascadia Mono",Consolas,monospace; font-variant-numeric:tabular-nums;}
+  button{font:inherit; color:var(--ink);}
+
+  .marquee{display:flex; align-items:center; gap:14px; padding:8px 4px 14px;}
+  .brand{display:flex; align-items:center; gap:11px;}
+  .cab{width:34px; height:34px; border-radius:9px; display:grid; place-items:center;
+    background:linear-gradient(160deg,var(--gold),color-mix(in srgb,var(--gold) 55%,#ff5c2c)); color:var(--gold-ink); font-weight:900; font-size:17px;}
+  .brand h1{font-size:15.5px; font-weight:800; letter-spacing:.02em;} .brand h1 span{color:var(--gold);}
+  .brand .tag{display:block; font-size:10.5px; letter-spacing:.14em; text-transform:uppercase; color:var(--faint); font-weight:600; margin-top:1px;}
+  .marquee .right{margin-left:auto; display:flex; align-items:center; gap:9px; flex-wrap:wrap;}
+  .chip{display:inline-flex; align-items:center; gap:7px; font-size:12px; padding:6px 11px; border-radius:999px; border:1px solid var(--line); background:var(--panel); color:var(--dim); white-space:nowrap;}
+  .chip .led{width:8px; height:8px; border-radius:50%; background:var(--faint);}
+  .chip.on .led{background:var(--good); box-shadow:0 0 9px var(--good);}
+  .me{display:inline-flex; align-items:center; gap:8px; font-size:12.5px; padding:5px 11px 5px 6px; border-radius:999px; border:1px solid var(--line); background:var(--panel);}
+  .me .av{width:22px; height:22px; border-radius:50%; background:conic-gradient(from 210deg,var(--p1),var(--gold),var(--p1));}
+  .me b{font-weight:700;}
+  .icon-btn{width:34px; height:34px; border-radius:9px; border:1px solid var(--line); background:var(--panel); color:var(--dim); cursor:pointer; font-size:15px; display:grid; place-items:center; transition:.15s;}
+  .icon-btn:hover{color:var(--ink); border-color:var(--faint);}
+  .btn{font-weight:700; border:1px solid transparent; border-radius:9px; padding:8px 13px; cursor:pointer; background:var(--gold); color:var(--gold-ink); transition:.14s;}
+  .btn:hover{filter:brightness(1.06);} .btn:disabled{opacity:.45; cursor:default;}
+  .btn.ghost{background:var(--panel-2); color:var(--ink); border-color:var(--line); font-weight:600;}
+  .btn.ghost:hover{border-color:var(--faint);}
+  .btn.sm{padding:7px 11px; font-size:12.5px;}
+
+  /* netplay sync bar */
+  .link{display:grid; grid-template-columns:1fr auto 1fr; align-items:center; gap:18px; padding:13px 18px; border:1px solid var(--line); border-radius:var(--r);
+    background:linear-gradient(180deg,var(--panel),var(--panel-2)); box-shadow:var(--shadow); position:relative; overflow:hidden;}
+  .link::before{content:""; position:absolute; inset:0; background:linear-gradient(90deg,var(--p1-soft),transparent 30%,transparent 70%,var(--p2-soft)); pointer-events:none;}
+  .node{display:flex; align-items:center; gap:11px; position:relative; z-index:1; min-width:0;}
+  .node.p2{justify-content:flex-end; text-align:right;}
+  .node .who{min-width:0;}
+  .node .who .nm{font-weight:800; font-size:15px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;}
+  .node .who .sid{font-size:11px; color:var(--faint); margin-top:1px;}
+  .node .por{width:40px; height:40px; border-radius:11px; flex:none; border:2px solid var(--p1-line); background:var(--p1-soft); display:grid; place-items:center; font-weight:900; color:var(--p1);}
+  .node.p2 .por{border-color:var(--p2-line); background:var(--p2-soft); color:var(--p2); order:2;}
+  .node.p2 .who{order:1;}
+  .sidetag{font-size:10px; letter-spacing:.16em; text-transform:uppercase; color:var(--faint); font-weight:700;}
+  .center{display:flex; flex-direction:column; align-items:center; gap:9px; z-index:1;}
+  .wire{position:relative; width:140px; height:22px;}
+  .wire i{position:absolute; top:50%; left:0; right:0; height:2px; transform:translateY(-50%); background:repeating-linear-gradient(90deg,var(--faint) 0 6px,transparent 6px 12px); opacity:.5;}
+  .synced .wire i{background:repeating-linear-gradient(90deg,var(--good) 0 7px,transparent 7px 14px); opacity:.95; animation:flow 1s linear infinite;}
+  @keyframes flow{to{background-position:14px 0;}}
+  .wire b{position:absolute; top:50%; left:50%; transform:translate(-50%,-50%); width:34px; height:22px; border-radius:6px; display:grid; place-items:center; font-style:italic; font-weight:900; font-size:13px; background:var(--board); border:1px solid var(--line); color:var(--faint);}
+  .synced .wire b{color:var(--good); border-color:color-mix(in srgb,var(--good) 45%,var(--line));}
+  .toggle{display:inline-flex; align-items:center; gap:10px; cursor:pointer; user-select:none; padding:8px 15px 8px 11px; border-radius:999px; border:1px solid var(--line); background:var(--panel); font-weight:700; font-size:13px; transition:.16s;}
+  .toggle:hover{border-color:var(--faint);}
+  .toggle .sw{width:38px; height:22px; border-radius:999px; background:var(--line); position:relative; transition:.18s; flex:none;}
+  .toggle .sw::after{content:""; position:absolute; top:2px; left:2px; width:18px; height:18px; border-radius:50%; background:var(--dim); transition:.18s;}
+  .synced .toggle{border-color:color-mix(in srgb,var(--good) 45%,var(--line)); color:var(--good); background:color-mix(in srgb,var(--good) 10%,var(--panel));}
+  .synced .toggle .sw{background:var(--good);} .synced .toggle .sw::after{left:18px; background:#fff;}
+  .toggle .lbl-on{display:none;} .synced .toggle .lbl-off{display:none;} .synced .toggle .lbl-on{display:inline;}
+
+  .board{margin-top:14px; display:grid; grid-template-columns:1fr 54px 1fr; gap:0; position:relative;}
+  .seam{position:relative;}
+  .seam::before{content:""; position:absolute; top:6px; bottom:6px; left:50%; width:2px; transform:translateX(-50%) skewX(-9deg); background:linear-gradient(180deg,transparent,var(--line) 20% 80%,transparent);}
+  .vsglyph{position:absolute; top:50%; left:50%; transform:translate(-50%,-50%); font-style:italic; font-weight:900; font-size:30px; letter-spacing:-.05em; color:var(--faint); text-shadow:0 2px 0 var(--bg); z-index:2;}
+  .team{border:1px solid var(--line); border-radius:var(--r); background:var(--panel); overflow:hidden; box-shadow:var(--shadow);}
+  .team.you{border-top:3px solid var(--p1);} .team.opp{border-top:3px solid var(--p2);}
+  .team-hd{display:flex; align-items:center; gap:11px; padding:11px 14px; border-bottom:1px solid var(--line-soft); background:linear-gradient(90deg,var(--p1-soft),transparent);}
+  .team.opp .team-hd{background:linear-gradient(270deg,var(--p2-soft),transparent); flex-direction:row-reverse; text-align:right;}
+  .team-hd .side{font-style:italic; font-weight:900; font-size:20px; letter-spacing:-.02em; color:var(--p1);}
+  .team.opp .team-hd .side{color:var(--p2);}
+  .team-hd .pl{min-width:0; flex:1;} .team-hd .pl .nm{font-weight:800; font-size:14.5px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;} .team-hd .pl .sid{font-size:11px; color:var(--faint); margin-top:1px;}
+  .team-hd .state{font-size:10.5px; letter-spacing:.1em; text-transform:uppercase; font-weight:700; padding:4px 9px; border-radius:999px; white-space:nowrap;}
+  .state.on{color:var(--good); background:color-mix(in srgb,var(--good) 13%,transparent); border:1px solid color-mix(in srgb,var(--good) 30%,transparent);}
+  .state.wait{color:var(--faint); background:var(--panel-2); border:1px solid var(--line);}
+  .cards{display:grid; grid-template-columns:repeat(3,1fr); gap:10px; padding:12px; min-height:150px;}
+  .card{position:relative; border:1px solid var(--line); border-radius:12px; background:var(--card); padding:11px 10px 12px; text-align:center; transition:.16s; overflow:hidden;}
+  .card .role{position:absolute; top:8px; left:8px; font-size:9px; letter-spacing:.1em; font-weight:800; text-transform:uppercase; color:var(--faint); padding:2px 6px; border-radius:5px; background:var(--panel-2);}
+  .card.point .role{color:var(--gold); background:var(--gold-soft);}
+  .you .card.editable{cursor:pointer;}
+  .you .card.editable:hover{border-color:var(--p1-line); transform:translateY(-3px); box-shadow:0 16px 30px -20px var(--p1);}
+  .you .card.editable:hover .edit{opacity:1; transform:translateY(0);}
+  .opp .card .lock{position:absolute; top:8px; right:8px; font-size:11px; color:var(--faint);}
+  .por-wrap{width:100%; aspect-ratio:1/1.05; border-radius:9px; margin:2px 0 9px; display:grid; place-items:center; background:radial-gradient(85% 70% at 50% 30%,color-mix(in srgb,var(--tint,var(--gold)) 15%,var(--board)),var(--board)); border:1px solid var(--line-soft); position:relative; overflow:hidden;}
+  .por-wrap canvas{max-width:88%; max-height:92%; width:auto; height:auto; image-rendering:pixelated;}
+  .live-dot{position:absolute; bottom:7px; right:7px; width:9px; height:9px; border-radius:50%; background:var(--live); box-shadow:0 0 8px var(--live);}
+  .card .cn{font-weight:800; font-size:13.5px;}
+  .card .sk{font-size:11.5px; color:var(--dim); margin-top:1px; min-height:15px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;}
+  .card .sk.stock{color:var(--faint); font-style:italic;}
+  .swatches{display:flex; margin-top:9px; height:9px; border-radius:3px; overflow:hidden; border:1px solid var(--line-soft);}
+  .swatches i{flex:1;}
+  .edit{position:absolute; left:0; right:0; bottom:0; font-size:10.5px; font-weight:700; letter-spacing:.05em; text-transform:uppercase; color:var(--p1); background:linear-gradient(0deg,var(--p1-soft),transparent); padding:7px 0 6px; opacity:0; transform:translateY(6px); transition:.16s;}
+  .card .dice{position:absolute; top:6px; right:6px; z-index:3; width:25px; height:25px; border-radius:7px; border:1px solid var(--line); background:var(--panel-2); color:var(--ink); font-size:12px; line-height:1; cursor:pointer; opacity:.72; transition:.14s; display:grid; place-items:center; padding:0;}
+  .card .dice:hover{opacity:1; border-color:var(--p1-line); transform:rotate(-12deg) scale(1.12);}
+  .card.add{display:flex; flex-direction:column; align-items:center; justify-content:center; gap:6px; border-style:dashed; color:var(--dim); cursor:pointer; min-height:150px;}
+  .card.add:hover{color:var(--ink); border-color:var(--p1-line);}
+  .card.add .plus{font-size:26px; font-weight:300; line-height:1;}
+  .empty{padding:26px 16px; text-align:center; color:var(--dim); font-size:13px; grid-column:1/-1;}
+  .empty b{color:var(--ink);}
+  .team.opp:not(.on) .cards{display:none;} .team.opp.on .empty{display:none;}
+
+  .dock{margin-top:14px; display:flex; align-items:center; gap:8px; flex-wrap:wrap; padding:10px 14px; border:1px solid var(--line); border-radius:var(--r); background:var(--panel);}
+  .dock .lbl{font-size:10.5px; letter-spacing:.13em; text-transform:uppercase; color:var(--faint); font-weight:700; margin-right:2px;}
+  .fx{font-size:12.5px; padding:6px 11px; border-radius:8px; border:1px solid var(--line); background:var(--panel-2); color:var(--dim); cursor:pointer; transition:.14s;}
+  .fx:hover{color:var(--ink); border-color:var(--faint);} .fx.on{color:var(--gold-ink); background:var(--gold); border-color:transparent; font-weight:700;}
+  .dock .sp{flex:1;}
+  .dock input[type=range]{width:110px;}
+
+  .banner{margin-top:12px; padding:10px 14px; border-radius:var(--r); background:var(--gold-soft); border:1px solid color-mix(in srgb,var(--gold) 30%,var(--line)); color:var(--ink); font-size:13px; display:none;}
+  .banner.show{display:block;}
+
+  .scrim{position:fixed; inset:0; background:rgba(4,6,12,.55); backdrop-filter:blur(3px); opacity:0; pointer-events:none; transition:.2s; z-index:40;}
+  .scrim.show{opacity:1; pointer-events:auto;}
+  .drawer{position:fixed; top:0; right:0; height:100%; width:min(440px,95vw); z-index:50; transform:translateX(102%); transition:transform .26s cubic-bezier(.4,.9,.3,1); background:var(--panel); border-left:1px solid var(--line); display:flex; flex-direction:column; box-shadow:-30px 0 60px -30px rgba(0,0,0,.7);}
+  .drawer.show{transform:none;}
+  .dh{display:flex; align-items:center; gap:13px; padding:15px 18px; border-bottom:1px solid var(--line-soft);}
+  .dh .por-wrap{width:66px; aspect-ratio:1/1.05; margin:0; flex:none;}
+  .dh .meta{flex:1; min-width:0;} .dh .meta .k{font-size:10.5px; letter-spacing:.13em; text-transform:uppercase; color:var(--p1); font-weight:700;}
+  .dh .meta h3{font-size:19px; font-weight:800;} .dh .meta .cur{font-size:12px; color:var(--dim); margin-top:2px;}
+  .dtools{display:flex; gap:8px; padding:11px 18px; border-bottom:1px solid var(--line-soft);}
+  .dtools input{flex:1; font:inherit; color:var(--ink); background:var(--panel-2); border:1px solid var(--line); border-radius:9px; padding:8px 12px;}
+  .dtools input::placeholder{color:var(--faint);}
+  .dgrid{overflow-y:auto; padding:12px 14px 26px; display:grid; grid-template-columns:1fr 1fr; gap:9px; align-content:start;}
+  .skin{border:1px solid var(--line); border-radius:11px; background:var(--card); padding:10px; cursor:pointer; transition:.14s;}
+  .skin:hover{border-color:var(--p1-line); transform:translateY(-2px);}
+  .skin.sel{border-color:var(--p1); box-shadow:0 0 0 1px var(--p1);}
+  .skin .bar{height:30px; border-radius:7px; border:1px solid rgba(0,0,0,.25); display:flex; overflow:hidden;}
+  .skin .bar i{flex:1;}
+  .skin .au{display:flex; align-items:center; justify-content:space-between; margin-top:8px;} .skin .au b{font-size:12.5px; font-weight:700;} .skin .au .by{font-size:10.5px; color:var(--faint);}
+  .dfoot{padding:12px 18px; border-top:1px solid var(--line-soft); display:flex; gap:8px;}
+
+  .toast{position:fixed; bottom:22px; left:50%; transform:translateX(-50%) translateY(10px); z-index:60; background:var(--panel-2); border:1px solid var(--line); color:var(--ink); font-size:13px; font-weight:600; padding:10px 16px; border-radius:11px; box-shadow:var(--shadow); opacity:0; pointer-events:none; transition:.2s; max-width:80vw;}
+  .toast.show{opacity:1; transform:translateX(-50%) translateY(0);} .toast .k{color:var(--good);}
+
+  @media (max-width:780px){ .board{grid-template-columns:1fr; gap:12px;} .seam{display:none;} .link{grid-template-columns:1fr; gap:12px; text-align:center;} .node,.node.p2{justify-content:center;} }
+  /* live match-state badge + side control */
+  .modebar{display:flex; align-items:center; gap:7px; z-index:1;}
+  .mode-pill{display:inline-flex; align-items:center; gap:6px; font-size:11px; font-weight:800; letter-spacing:.06em; text-transform:uppercase; padding:4px 10px; border-radius:999px; border:1px solid var(--line); background:var(--panel); color:var(--faint); white-space:nowrap; transition:.18s;}
+  .mode-pill .dot{width:7px; height:7px; border-radius:50%; background:currentColor; opacity:.85;}
+  .gs-chip{font-size:10px; font-weight:700; letter-spacing:.04em; color:var(--dim); background:var(--panel-2); border:1px solid var(--line); border-radius:999px; padding:3px 9px; font-family:var(--mono,ui-monospace,monospace); white-space:nowrap;}
+  .gs-chip b{color:var(--good);}
+  .mode-pill.st-menu{color:var(--p2); border-color:var(--p2-line); background:var(--p2-soft);}
+  .mode-pill.st-select{color:var(--gold); border-color:color-mix(in srgb,var(--gold) 42%,var(--line)); background:var(--gold-soft);}
+  .mode-pill.st-match{color:var(--good); border-color:color-mix(in srgb,var(--good) 45%,var(--line)); background:color-mix(in srgb,var(--good) 12%,var(--panel));}
+  .mode-pill.st-match .dot{animation:pulseDot 1.1s ease-in-out infinite; box-shadow:0 0 8px var(--good);}
+  @keyframes pulseDot{0%,100%{opacity:.4;} 50%{opacity:1;}}
+  .side-swap{font-size:10.5px; font-weight:700; letter-spacing:.04em; padding:4px 9px; border-radius:999px; border:1px solid var(--line); background:var(--panel); color:var(--dim); cursor:pointer; white-space:nowrap; transition:.16s;}
+  .side-swap:hover{color:var(--ink); border-color:var(--faint);}
+  .side-swap b{color:var(--p1);} .side-swap.p2 b{color:var(--p2);}
+  .card.detected{outline:1px dashed color-mix(in srgb,var(--p2) 40%,transparent); outline-offset:-1px;}
+  @media (prefers-reduced-motion:reduce){ *{animation:none !important; transition:none !important;} }
+
+  /* ══ suite: tabs / panels / target ══ */
+  .tabbar{display:flex; align-items:center; gap:9px; margin:0 0 14px; flex-wrap:wrap;}
+  .tabbar .tabs{display:flex; gap:4px; background:var(--panel-2); border:1px solid var(--line); border-radius:12px; padding:4px;}
+  .tabbar .tabs button{border:0; background:transparent; color:var(--dim); font-weight:700; font-size:13px; padding:8px 15px; border-radius:9px; cursor:pointer; transition:.15s;}
+  .tabbar .tabs button:hover{color:var(--ink);}
+  .tabbar .tabs button.on{color:var(--ink); background:var(--card); box-shadow:0 2px 10px -4px rgba(0,0,0,.5);}
+  .tabbar .tabs button.on[data-t="match"]{box-shadow:inset 0 -2px 0 var(--p1),0 2px 10px -4px rgba(0,0,0,.5);}
+  .tabbar .tabs button.on[data-t="library"]{box-shadow:inset 0 -2px 0 var(--gold),0 2px 10px -4px rgba(0,0,0,.5);}
+  .tabbar .tabs button.on[data-t="studio"]{box-shadow:inset 0 -2px 0 var(--p2),0 2px 10px -4px rgba(0,0,0,.5);}
+  .tabbar .hspace{flex:1;}
+  .target{display:flex; align-items:center; gap:8px; font-size:12.5px; font-weight:600; color:var(--dim); background:var(--panel); border:1px solid var(--line); padding:7px 12px; border-radius:999px; cursor:pointer;}
+  .target .tdot{width:7px;height:7px;border-radius:50%;background:var(--good);box-shadow:0 0 8px var(--good);}
+  .target b{color:var(--ink);} .target .tcar{color:var(--faint);font-size:11px;}
+  #romChip .tdot{background:var(--gold);box-shadow:0 0 8px var(--gold);} #romChip.set .tdot{background:var(--good);box-shadow:0 0 8px var(--good);}
+  #romChip{border-color:color-mix(in srgb, var(--gold) 40%, var(--line));} #romChip.set{border-color:var(--line);}
+  .panel{display:none;} .panel.on{display:block; animation:fadein .22s ease;}
+  /* Leaderboard (Ranks) */
+  #p-ranks .lb-wrap{max-width:720px; margin:0 auto;}
+  #p-ranks .lb-head{display:flex; align-items:center; gap:12px; margin:2px 0 16px; flex-wrap:wrap;}
+  #p-ranks .lb-head h2{margin:0; font-size:21px; letter-spacing:.02em;} #p-ranks .lb-head h2 span{color:var(--gold);}
+  #p-ranks .lb-sub{color:var(--dim); font-size:12px;}
+  #p-ranks .lb-tabs{display:flex; gap:6px; flex-wrap:wrap; margin-bottom:14px;}
+  #p-ranks .lb-tabs button{padding:8px 14px; border-radius:9px; border:1px solid var(--line); background:var(--panel); color:var(--dim); font-weight:700; font-size:13px; cursor:pointer; transition:all .15s;}
+  #p-ranks .lb-tabs button:hover{color:var(--ink); border-color:var(--gold-soft);}
+  #p-ranks .lb-tabs button.on{color:var(--gold-ink); background:var(--gold); border-color:var(--gold);}
+  #p-ranks .lb-list{display:flex; flex-direction:column; gap:7px;}
+  .lb-row{display:flex; align-items:center; gap:12px; padding:11px 15px; border-radius:11px; background:var(--card); border:1px solid var(--line);}
+  .lb-row.r1{background:linear-gradient(90deg,var(--gold-soft),transparent); border-color:var(--gold);}
+  .lb-row.me{box-shadow:0 0 0 1.5px var(--gold) inset;}
+  .lb-rank{width:32px; text-align:center; font-weight:800; font-size:15px; color:var(--gold); font-variant-numeric:tabular-nums;}
+  .lb-name{flex:1; font-weight:700; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
+  .lb-name .me-tag{font-size:10px; color:var(--gold); font-weight:800; margin-left:6px; letter-spacing:.06em;}
+  .lb-wl{color:var(--dim); font-size:12px; font-variant-numeric:tabular-nums; white-space:nowrap;}
+  .lb-stat{font-weight:800; font-size:16px; color:var(--ink); min-width:88px; text-align:right; font-variant-numeric:tabular-nums;}
+  .lb-empty{padding:34px; text-align:center; color:var(--dim); font-weight:600; letter-spacing:.03em;}
+  @keyframes fadein{from{opacity:0;transform:translateY(5px);}to{opacity:1;transform:none;}}
+  /* ══ native Studio (mockup UI) ══ */
+  .st-top{display:flex; align-items:center; gap:10px; flex-wrap:wrap; padding:11px 15px; border:1px solid var(--line); border-radius:14px; background:var(--panel); margin-bottom:14px;}
+  .st-charsel{display:flex; align-items:center; gap:8px; background:var(--panel-2); border:1px solid var(--line); border-radius:10px; padding:5px 10px 5px 5px;}
+  .st-mini{width:30px; height:30px; border-radius:7px; overflow:hidden; margin:0; aspect-ratio:auto;}
+  .st-mini canvas{image-rendering:pixelated; max-width:88%; max-height:92%; width:auto;}
+  .st-select{background:transparent; border:0; color:var(--ink); font:inherit; font-weight:700; outline:none; cursor:pointer;}
+  .st-name{color:var(--faint); font-size:12px;}
+  .st-apply{background:var(--p1)!important; border-color:var(--p1)!important; color:#fff!important;}
+  .st-bake{background:var(--gold)!important; border-color:var(--gold)!important; color:var(--gold-ink)!important;}
+  .st-menuwrap{position:relative;}
+  .st-menu{position:absolute; top:100%; right:0; margin-top:5px; background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:4px; display:none; flex-direction:column; gap:2px; z-index:40; min-width:170px; box-shadow:var(--shadow,0 10px 30px rgba(0,0,0,.5));}
+  .st-menu.open{display:flex;}
+  .st-menu button{border:0; background:transparent; color:var(--ink); text-align:left; font:inherit; font-size:12.5px; padding:8px 11px; border-radius:7px; cursor:pointer;}
+  .st-menu button:hover{background:var(--panel-2);}
+  .st-refbar{position:absolute; top:52px; left:50%; transform:translateX(-50%); display:none; align-items:center; gap:8px; padding:5px 11px; border-radius:10px; background:color-mix(in srgb,var(--panel) 92%,transparent); border:1px solid var(--line); backdrop-filter:blur(8px); z-index:2;}
+  .st-refbar.show{display:flex;}
+  .st-body{display:grid; grid-template-columns:52px minmax(320px,1fr) 262px; gap:14px; align-items:start;}
+  .st-rail{display:flex; flex-direction:column; gap:5px; padding:8px; border:1px solid var(--line); border-radius:14px; background:var(--panel); position:sticky; top:14px;}
+  .st-railsec{font-size:8.5px; letter-spacing:.1em; text-transform:uppercase; color:var(--faint); margin:5px 1px 1px; font-weight:700;}
+  .st-railsec:first-child{margin-top:0;}
+  .st-tool{width:36px; height:36px; border-radius:9px; border:1px solid transparent; background:transparent; color:var(--dim); display:grid; place-items:center; font-size:15px; cursor:pointer; transition:.14s;}
+  .st-tool:hover{color:var(--ink); background:var(--panel-2);}
+  .st-tool.on{color:var(--gold); background:var(--gold-soft); border-color:color-mix(in srgb,var(--gold) 42%,var(--line));}
+  .st-tool.soon{opacity:.4; cursor:default;} .st-tool.soon:hover{background:transparent; color:var(--dim);}
+  .st-stage{border:1px solid var(--line); border-radius:16px; min-height:460px; max-height:calc(100vh - 320px); position:relative; overflow:auto; display:grid; place-items:center;
+    background:repeating-conic-gradient(var(--panel-2) 0 25%,transparent 0 50%) 0 0/22px 22px, var(--board);}
+  .st-stage canvas{image-rendering:pixelated; width:auto; height:auto; max-width:64%; max-height:80%; filter:drop-shadow(0 18px 34px rgba(0,0,0,.5));}
+  .st-badge{position:absolute; bottom:12px; right:14px; font-size:11px; color:var(--faint);}
+  .st-editbar{position:absolute; top:10px; left:50%; transform:translateX(-50%); display:flex; align-items:center; gap:7px; padding:6px 11px; border-radius:11px; background:color-mix(in srgb,var(--panel) 92%,transparent); border:1px solid var(--line); backdrop-filter:blur(8px); z-index:2;}
+  .st-eb-l{font-size:9.5px; letter-spacing:.08em; text-transform:uppercase; color:var(--faint); font-weight:700;}
+  .st-eb{width:26px; height:24px; border-radius:6px; border:1px solid var(--line); background:var(--panel-2); color:var(--dim); font-size:12px; font-weight:700; cursor:pointer;}
+  .st-eb.on{color:var(--gold); border-color:color-mix(in srgb,var(--gold) 42%,var(--line)); background:var(--gold-soft);}
+  .st-eb-sep{width:1px; height:16px; background:var(--line);}
+  .st-editbar input[type=range]{width:86px;}
+  .st-side{display:flex; flex-direction:column; gap:12px;}
+  .st-box{border:1px solid var(--line); border-radius:14px; background:var(--panel); padding:13px;}
+  .st-box h3{font-size:11px; letter-spacing:.1em; text-transform:uppercase; color:var(--faint); margin-bottom:10px; display:flex; justify-content:space-between; align-items:center;}
+  .st-pal{display:grid; grid-template-columns:repeat(8,1fr); gap:5px;}
+  .st-pal i{aspect-ratio:1; border-radius:6px; border:1px solid rgba(0,0,0,.35); cursor:pointer; transition:.1s; position:relative;}
+  .st-pal i:hover{transform:scale(1.12);} .st-pal i.sel{outline:2px solid var(--gold); outline-offset:1px;}
+  .st-pal i.bg{box-shadow:inset 0 0 0 2px var(--p2);}
+  .st-pal i.tr{background:repeating-conic-gradient(#555 0 25%,#333 0 50%) 0 0/8px 8px;}
+  .st-adjust{margin-top:11px; display:flex; flex-direction:column; gap:7px;}
+  .st-adjust label{display:flex; align-items:center; gap:9px; font-size:10.5px; color:var(--dim); text-transform:uppercase; letter-spacing:.06em;}
+  .st-adjust input{flex:1;}
+  .st-kv{display:flex; justify-content:space-between; font-size:12px; padding:3px 0;} .st-kv span{color:var(--dim);}
+  .st-actions{display:flex; gap:8px;}
+  .st-frames{display:flex; gap:7px; overflow-x:auto; padding:11px; border:1px solid var(--line); border-radius:14px; background:var(--panel); margin-top:14px; min-height:76px; align-items:center;}
+  .st-frames .fr{width:50px; height:58px; border-radius:9px; border:1px solid var(--line); background:var(--board); flex:none; display:grid; place-items:center; overflow:hidden; cursor:pointer;}
+  .st-frames .fr.on{border-color:var(--p2); box-shadow:0 0 0 1px var(--p2);}
+  .st-frames .fr canvas{image-rendering:pixelated; max-width:76%; max-height:82%;}
+  .st-frames .empty{color:var(--faint); font-size:11px; padding-left:8px;}
+  .st-playbar{display:flex; align-items:center; gap:11px; padding:12px 4px 0;}
+  .st-sel{font:inherit; font-size:11.5px; color:var(--ink); background:var(--panel-2); border:1px solid var(--line); border-radius:8px; padding:5px 8px; max-width:190px; cursor:pointer;}
+  .st-sel:hover{border-color:var(--faint);}
+  .st-modal{position:fixed; inset:0; background:rgba(0,0,0,.55); display:none; align-items:center; justify-content:center; z-index:60;}
+  .st-modal.show{display:flex;}
+  .st-modal-card{background:var(--panel); border:1px solid var(--line); border-radius:14px; padding:16px 18px; width:380px; max-width:92vw; box-shadow:var(--shadow,0 18px 50px -22px rgba(0,0,0,.8));}
+  .st-modal-h{display:flex; align-items:center; justify-content:space-between; margin-bottom:12px;} .st-modal-h b{font-size:15px; font-weight:800;}
+  .st-keys{display:grid; grid-template-columns:1fr auto 1fr auto; gap:9px 12px; align-items:center; font-size:12.5px; color:var(--dim);}
+  .st-keys kbd{font-family:ui-monospace,monospace; font-size:11px; padding:3px 8px; border-radius:6px; border:1px solid var(--line); background:var(--board); color:var(--ink); justify-self:start;}
+  @media (max-width:820px){ .st-body{grid-template-columns:1fr;} .st-rail{flex-direction:row; flex-wrap:wrap; position:static;} }
+
+  /* ══ suite: library ══ */
+  .libbar{display:flex; align-items:center; gap:11px; flex-wrap:wrap; padding:12px 15px; border:1px solid var(--line); border-radius:14px; background:var(--panel); margin-bottom:14px;}
+  .libbar .search{flex:1; min-width:160px; display:flex; align-items:center; gap:9px; background:var(--panel-2); border:1px solid var(--line); border-radius:10px; padding:8px 13px; color:var(--faint);}
+  .libbar .search input{flex:1; border:0; background:transparent; color:var(--ink); font:inherit; outline:none;}
+  .lohead{display:flex; align-items:center; justify-content:space-between; margin:2px 2px 10px;}
+  .lohead .t{font-weight:800; font-size:14px; display:flex; align-items:center; gap:9px;}
+  .lohead .t .sub{color:var(--faint); font-weight:500; font-size:11.5px;}
+  .loadouts{display:flex; gap:11px; overflow-x:auto; padding:2px 2px 12px; margin-bottom:16px;}
+  .lo{flex:none; width:196px; border:1px solid var(--line); border-radius:15px; background:var(--card); padding:13px; cursor:pointer; transition:.15s; position:relative;}
+  .lo:hover{transform:translateY(-3px); border-color:color-mix(in srgb,var(--gold) 55%,var(--line));}
+  .lo.on{border-color:var(--gold); box-shadow:0 0 0 1px var(--gold),0 16px 34px -20px var(--gold);}
+  .lo .lon{display:flex; align-items:center; gap:8px; font-weight:800; font-size:13.5px; margin-bottom:11px;}
+  .lo .lon .tag{width:10px;height:10px;border-radius:3px;flex:none;}
+  .lo .team{display:flex; gap:7px;}
+  .lo .team .m{flex:1; aspect-ratio:1/1.12; border-radius:9px; overflow:hidden; display:grid; place-items:center; background:var(--board); border:1px solid var(--line-soft);}
+  .lo .team .m canvas{image-rendering:pixelated; max-width:82%; max-height:88%;}
+  .lo .meta{display:flex; align-items:center; justify-content:space-between; margin-top:10px; font-size:11px; color:var(--faint);}
+  .lo .meta .load{color:var(--gold); font-weight:700;}
+  .lo .abadge{position:absolute; top:-9px; right:12px; font-size:9px; font-weight:800; letter-spacing:.06em; color:var(--gold-ink,#241700); background:var(--gold); border-radius:6px; padding:3px 8px;}
+  .lo.new{display:grid; place-items:center; border-style:dashed; color:var(--dim); text-align:center; min-height:150px;}
+  .lo.new:hover{color:var(--ink); border-color:var(--gold);}
+  .libgrid{display:grid; grid-template-columns:repeat(auto-fill,minmax(122px,1fr)); gap:11px;}
+  .lc{position:relative; border:1px solid var(--line); border-radius:13px; background:var(--card); padding:10px; text-align:center; cursor:pointer; transition:.15s;}
+  .lc:hover{transform:translateY(-3px); border-color:var(--gold); box-shadow:0 16px 30px -20px var(--gold);}
+  .lc.skinned{border-color:color-mix(in srgb,var(--gold) 40%,var(--line));}
+  .lc .por-wrap{width:100%; aspect-ratio:1/1.05; margin-bottom:8px; --tint:var(--gold);}
+  .lc .cn{font-weight:700; font-size:12.5px;}
+  .lc .sk{font-size:10.5px; margin:1px 0 7px; color:var(--dim); white-space:nowrap; overflow:hidden; text-overflow:ellipsis;}
+  .lc .sk.stock{color:var(--faint);}
+  .lc .badge{position:absolute; top:7px; right:7px; font-size:9px; font-weight:800; color:var(--gold-ink,#241700); background:var(--gold); border-radius:6px; padding:2px 5px;}
+  .lc .dice{position:absolute; top:6px; left:6px; width:23px;height:23px;border-radius:7px;border:1px solid var(--line);background:var(--panel-2);color:var(--ink);font-size:11px;display:grid;place-items:center;opacity:0;transition:.14s;}
+  .lc:hover .dice{opacity:.85;}
+  .applybar{position:sticky; bottom:14px; margin-top:16px; display:flex; align-items:center; gap:14px; flex-wrap:wrap; padding:13px 18px; border:1px solid var(--line); border-radius:14px; background:color-mix(in srgb,var(--panel) 88%,transparent); backdrop-filter:blur(10px); box-shadow:var(--shadow,0 18px 50px -22px rgba(0,0,0,.8));}
+  .applybar .radio{display:flex; align-items:flex-start; gap:9px; padding:9px 13px; border:1px solid var(--line); border-radius:11px; background:var(--panel-2); cursor:pointer; max-width:250px; transition:.15s;}
+  .applybar .radio.on{border-color:var(--gold); background:var(--gold-soft);}
+  .applybar .radio .rb{width:15px;height:15px;border-radius:50%;border:2px solid var(--faint);margin-top:2px;flex:none;}
+  .applybar .radio.on .rb{border-color:var(--gold); background:radial-gradient(circle,var(--gold) 40%,transparent 45%);}
+  .applybar .radio .tt{font-weight:700; font-size:12.5px;} .applybar .radio .dd{font-size:10.5px; color:var(--dim); line-height:1.3;}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header class="marquee">
+    <div class="brand">
+      <div class="cab">M</div>
+      <div><h1>MvC <span>Skin Suite</span></h1><span class="tag">live · library · studio · <b id="buildTag" style="color:var(--gold)">build gs-46</b></span></div>
+    </div>
+    <div class="right">
+      <span class="chip" id="cGame"><span class="led"></span>Game</span>
+      <span class="chip" id="cOnline" title="MvC Live Skins users online now"><span class="led"></span><b id="onlineN">–</b>&nbsp;online</span>
+      <span class="me"><span class="av"></span><span>You: <b id="meName">…</b></span></span>
+      <button class="icon-btn" id="themeBtn" title="Toggle theme">◑</button>
+    </div>
+  </header>
+
+  <div class="tabbar">
+    <div class="tabs" id="tabs">
+      <button data-t="match" class="on">🎮 Match</button>
+      <button data-t="library">▦ Library</button>
+      <button data-t="studio">✎ Studio</button>
+      <button data-t="ranks">🏆 Ranks</button>
+    </div>
+    <div class="hspace"></div>
+    <button class="target" id="romChip" title="Your Steam install / game_50.arc — required for Bake"><span class="tdot" id="romDot"></span>ROM: <b id="romChipTxt">not set</b></button>
+    <button class="target" id="targetSel" title="Where skins apply"><span class="tdot"></span>Target: <b>Steam Collection</b><span class="tcar">▾</span></button>
+  </div>
+
+  <section class="panel on" id="p-match">
+  <section class="link" id="link">
+    <div class="node p1">
+      <div class="por" id="p1por">P1</div>
+      <div class="who"><div class="sidetag">Your side</div><div class="nm" id="p1name">You</div><div class="sid mono" id="p1sid">—</div></div>
+    </div>
+    <div class="center">
+      <div class="wire"><i></i><b>VS</b></div>
+      <div class="toggle" id="syncToggle" role="switch" tabindex="0" aria-checked="false" title="Both players run the app; you trade skins. Read-only — never modifies the game.">
+        <span class="sw"></span><span class="lbl-off">Sync off</span><span class="lbl-on">Live sync on</span>
+      </div>
+      <div class="modebar">
+        <span class="mode-pill" id="modePill" title="Detected live from the game — updates through menus, character select, and the match."><span class="dot"></span><span id="modeTxt">detecting…</span></span>
+        <span class="side-swap auto" id="sideSwap" title="Your in-game side — detected automatically from your own inputs (mirror-proof). The app figures out which fighter is yours; there's no manual toggle.">You: <b id="sideTxt">P1</b> <i id="sideAuto" style="font-style:normal;opacity:.6">· auto</i></span>
+        <button class="side-swap" id="paintToggle" title="Live Paint — writes your skins straight into the game's palette memory, per-side. Recolors the correct fighter even in same-character/same-color mirrors, across every move. Local & cosmetic (only your screen; never affects the opponent's game or match state).">🎨 Paint: <b id="paintTxt">off</b></button>
+        <span class="gs-chip" id="gsChip" title="Ground truth read straight from the game (hook injected): screen · in_match · match_state · stage. If match_state's number is stable per screen, tell me the values so I can label them." style="display:none"></span>
+        <span class="gs-chip" id="scoreChip" title="Games won this set (computed from KO events). Resets when the opponent changes." style="display:none"></span>
+      </div>
+    </div>
+    <div class="node p2">
+      <div class="who"><div class="sidetag">Opponent</div><div class="nm" id="p2name">—</div><div class="sid mono" id="p2sid">not synced</div></div>
+      <div class="por" id="p2por">P2</div>
+    </div>
+  </section>
+
+  <main class="board">
+    <section class="team you" id="teamYou">
+      <div class="team-hd">
+        <div class="side">P1</div>
+        <div class="pl"><div class="nm" id="youHdName">Your team</div><div class="sid mono" id="youHdSid">—</div></div>
+        <div class="state wait" id="youState">Auto</div>
+      </div>
+      <div class="cards" id="youCards"></div>
+    </section>
+
+    <div class="seam"><div class="vsglyph">VS</div></div>
+
+    <section class="team opp" id="teamOpp">
+      <div class="team-hd">
+        <div class="side">P2</div>
+        <div class="pl"><div class="nm" id="oppHdName">Opponent</div><div class="sid mono" id="oppHdSid">—</div><div class="sid mono" id="oppRecord" style="color:var(--gold)"></div></div>
+        <div class="state wait" id="oppState">Sync off</div>
+      </div>
+      <div class="cards" id="oppCards"></div>
+      <div class="empty" id="oppEmpty"><b>No opponent synced yet</b><br>Turn on Live sync in a match. If they're running Live Skins too, their skins appear here — and yours on their screen.</div>
+    </section>
+  </main>
+
+  <div class="dock">
+    <span class="lbl">Effects</span>
+    <button class="fx on" data-m="0">Off</button>
+    <button class="fx" data-m="1">🌈 Rainbow</button>
+    <button class="fx" data-m="2">🎨 Spread</button>
+    <button class="fx" data-m="3">🧪 Acid</button>
+    <button class="fx" data-m="4">⚡ Strobe</button>
+    <button class="fx" data-m="5">💗 Pulse</button>
+    <label class="lbl" style="margin-left:4px">speed</label><input type="range" id="fxSpeed" min="10" max="300" value="80">
+    <span class="sp"></span>
+    <button class="btn ghost sm" id="btnReset">↺ Reset all</button>
+  </div>
+
+  <div class="banner" id="banner"></div>
+  </section>
+
+  <section class="panel" id="p-ranks">
+    <div class="lb-wrap">
+      <div class="lb-head">
+        <h2>🏆 <span>Hall of Fame</span></h2>
+        <span class="lb-sub">Skin Suite players · tracked live from your matches</span>
+        <div style="flex:1"></div>
+        <button class="btn ghost sm" id="lbRefresh" title="Refresh">↻</button>
+      </div>
+      <div class="lb-tabs" id="lbTabs">
+        <button data-lt="streak" class="on">🔥 Streak</button>
+        <button data-lt="wins">🏅 Wins</button>
+        <button data-lt="ocv">💥 OCV</button>
+        <button data-lt="perfect">✨ Perfect</button>
+        <button data-lt="comeback">🔄 Comeback</button>
+        <button data-lt="combo">🎯 Combo</button>
+      </div>
+      <div class="lb-list" id="lbList"><div class="lb-empty">LOADING…</div></div>
+    </div>
+  </section>
+
+  <style>
+  .pf-modal{position:fixed;inset:0;background:rgba(0,0,0,.72);display:none;z-index:200;align-items:center;justify-content:center}
+  .pf-modal.show{display:flex}
+  .pf-card{background:#161822;border:1px solid #2a2e3f;border-radius:12px;max-width:660px;width:92%;max-height:86vh;overflow:auto;padding:20px 22px;position:relative;box-shadow:0 20px 60px rgba(0,0,0,.6)}
+  .pf-x{position:absolute;top:10px;right:12px;background:none;border:none;color:#8b90a5;font-size:18px;cursor:pointer}
+  .pf-body h3{margin:0 0 2px;font-size:22px}
+  .pf-body h4{margin:16px 0 6px;font-size:11px;letter-spacing:.09em;text-transform:uppercase;color:#8b90a5}
+  .pf-stats{display:flex;flex-wrap:wrap;gap:14px;font-size:13px;color:#c7ccdb;margin:8px 0 4px}
+  .pf-stats b{color:#fff}
+  .pf-tbl{width:100%;border-collapse:collapse;font-size:12.5px}
+  .pf-tbl th{text-align:left;color:#8b90a5;font-weight:600;padding:4px 8px;border-bottom:1px solid #2a2e3f}
+  .pf-tbl td{padding:4px 8px;border-bottom:1px solid #20232f}
+  .pf-tbl tr.w td:first-child{color:#4ade80;font-weight:700}
+  .pf-tbl tr.l td:first-child{color:#f87171;font-weight:700}
+  .lb-click{cursor:pointer}.lb-click:hover{text-decoration:underline}
+  </style>
+  <div class="pf-modal" id="pfModal"><div class="pf-card">
+    <button class="pf-x" id="pfX">✕</button>
+    <div class="pf-body" id="pfBody"></div>
+  </div></div>
+
+  <section class="panel" id="p-library">
+    <div class="libbar">
+      <div class="search"><span>🔍</span><input placeholder="Search 56 characters…" id="libSearch"></div>
+      <button class="btn ghost sm" id="btnImportPack">⬇ Import pack</button>
+    </div>
+    <div class="lohead">
+      <div class="t"><span style="color:var(--gold)">🗂</span> Team Loadouts <span class="sub">— save whole-team looks &amp; swap them like CS loadouts</span></div>
+      <button class="btn ghost sm" id="btnManageLo">Manage</button>
+    </div>
+    <div class="loadouts" id="loadouts"></div>
+    <div class="libgrid" id="libGrid"></div>
+    <div class="applybar">
+      <div style="font-weight:800;font-size:13px;white-space:nowrap">Apply team</div>
+      <label class="radio on" data-m="live"><span class="rb"></span><span><span class="tt">Live on launch</span><br><span class="dd">Auto-paints when the game runs. No files touched — <b style="color:var(--good)">ranked-safe</b>.</span></span></label>
+      <label class="radio" data-m="bake"><span class="rb"></span><span><span class="tt">Bake into files</span><br><span class="dd" style="color:var(--gold)">Permanent patch (auto .bak). ⚠ ranked may checksum files.</span></span></label>
+      <div class="hspace" style="flex:1"></div>
+      <button class="btn ghost sm" id="btnLibRevert">↺ Revert</button>
+      <button class="btn" id="btnLibApply" style="background:var(--gold);border-color:var(--gold);color:var(--gold-ink,#241700)">Apply skins →</button>
+    </div>
+  </section>
+
+  <section class="panel" id="p-studio">
+    <div class="st-top">
+      <div class="st-charsel"><span class="st-mini por-wrap" style="--tint:var(--p2)"><canvas id="stMini"></canvas></span>
+        <select id="stChar" class="st-select"></select></div>
+      <span class="st-name mono" id="stName">stock palette</span>
+      <div class="hspace" style="flex:1"></div>
+      <button class="icon-btn" id="stUndo" title="Undo">↶</button>
+      <button class="icon-btn" id="stRedo" title="Redo">↷</button>
+      <div class="st-menuwrap">
+        <button class="btn ghost sm" id="stExport" title="Export">⇪ Export ▾</button>
+        <div class="st-menu" id="stExportMenu">
+          <button data-x="frame">Current frame · PNG</button>
+          <button data-x="sheet">Sprite sheet · PNG</button>
+          <button data-x="json">skin.json</button>
+        </div>
+      </div>
+      <button class="btn ghost sm" id="stRefBtn" title="Load a reference image to trace over">🖼 Ref</button>
+      <button class="btn ghost sm" id="stStock">↺ Stock</button>
+      <button class="btn sm st-apply" id="stApplyLive">◉ Apply live</button>
+      <button class="btn sm st-bake" id="stBake">⬇ Bake</button>
+    </div>
+    <div class="st-body">
+      <div class="st-rail" id="stRail">
+        <div class="st-railsec">Color</div>
+        <button class="st-tool on" data-tool="recolor" title="Recolor palette">🎨</button>
+        <button class="st-tool" data-tool="pick" title="Eyedropper">💧</button>
+        <div class="st-railsec">Pixels</div>
+        <button class="st-tool" data-tool="pencil" title="Pencil — paint pixels (B)">✏️</button>
+        <button class="st-tool" data-tool="fill" title="Fill — flood-fill a region (G)">🪣</button>
+        <button class="st-tool" data-tool="erase" title="Erase — to transparent (E)">◽</button>
+        <button class="st-tool" data-tool="line" title="Line — drag to draw (L)">╱</button>
+        <button class="st-tool" data-tool="rect" title="Rectangle — drag to draw (R)">▭</button>
+        <button class="st-tool" data-tool="ellipse" title="Ellipse — drag to draw (O)">◯</button>
+        <div class="st-railsec">View</div>
+        <button class="st-tool" data-tool="sym" title="Symmetry — mirror strokes vertically">⇋</button>
+        <button class="st-tool" data-tool="onion" title="Onion skin — ghost previous frame">🧅</button>
+        <button class="st-tool" data-tool="grid" title="Pixel grid">▦</button>
+      </div>
+      <div class="st-stage" id="stStage">
+        <div class="st-editbar" id="stEditBar" style="display:none">
+          <span class="st-eb-l">brush</span>
+          <button class="st-eb on" data-b="1">1</button><button class="st-eb" data-b="2">2</button><button class="st-eb" data-b="3">3</button>
+          <span class="st-eb-sep"></span>
+          <span class="st-eb-l">zoom</span><input type="range" id="stZoomR" min="2" max="16" value="7"><span class="st-eb-l mono" id="stZoomN">7×</span>
+          <button class="st-eb" id="stFit" title="Fit to window" style="width:auto;padding:0 9px">fit</button>
+        </div>
+        <div class="st-refbar" id="stRefBar"><span class="st-eb-l">ref opacity</span><input type="range" id="stRefOp" min="0" max="100" value="45"><button class="st-eb" id="stRefClear" style="width:auto;padding:0 8px">clear</button></div>
+        <canvas id="stCanvas"></canvas><span class="st-badge mono" id="stBadge">idle</span>
+      </div>
+      <input type="file" id="stRefInput" accept="image/*" style="display:none">
+      <div class="st-side">
+        <div class="st-box">
+          <h3>Palette · bank 0 <span style="display:flex;gap:5px"><button class="btn ghost sm" id="stRampBtn" style="padding:2px 8px" title="Blend a ramp between the FG and BG slots">▚ ramp</button><button class="btn ghost sm" id="stCopyHex" style="padding:2px 8px" title="Copy the 16 colors as hex">⧉ hex</button><button class="btn ghost sm" id="stRandom" style="padding:2px 8px" title="Random palette">🎲</button></span></h3>
+          <div class="st-pal" id="stPal"></div>
+          <div class="st-adjust">
+            <label>hue<input type="range" id="stHue" min="-180" max="180" value="0"></label>
+            <label>sat<input type="range" id="stSat" min="-100" max="100" value="0"></label>
+            <label>lum<input type="range" id="stLum" min="-100" max="100" value="0"></label>
+          </div>
+        </div>
+        <div class="st-box">
+          <h3>Character</h3>
+          <div class="st-kv"><span>Unit</span><b class="mono" id="stUnit">PL00</b></div>
+          <div class="st-kv"><span>Edit</span><b>palette (live)</b></div>
+          <div class="st-kv"><span>Pixels</span><b style="color:var(--faint)">porting next</b></div>
+        </div>
+        <div class="st-actions">
+          <button class="btn ghost sm" id="stToMatch" style="flex:1">→ Send to Match</button>
+          <button class="btn ghost sm" id="stSave" style="flex:1">💾 Save skin</button>
+        </div>
+      </div>
+    </div>
+    <div class="st-playbar">
+      <button class="btn ghost sm" id="stPlay" title="Play the animation">▶ Play</button>
+      <span class="st-eb-l">speed</span><input type="range" id="stSpeed" min="60" max="360" value="170" style="width:100px">
+      <label style="display:flex;gap:6px;align-items:center;font-size:11px;color:var(--dim)"><input type="checkbox" id="stLoop" checked> loop</label>
+      <span class="st-anim-wrap" id="stAnimWrap" style="display:none; align-items:center; gap:8px; margin-left:6px; padding-left:12px; border-left:1px solid var(--line)">
+        <span class="st-eb-l" title="Every animation extracted from the game ROM">animation</span>
+        <select id="stAnimGrp" class="st-sel" title="Animation group (walk, attacks, specials…)"></select>
+        <select id="stAnimSub" class="st-sel" title="Variant within this animation"></select>
+      </span>
+      <span class="st-anim-hint" id="stAnimHint" title="Set your ROM to unlock every in-game animation" style="margin-left:8px; font-size:11px; color:var(--faint); cursor:pointer">◦ idle only — set ROM for all animations</span>
+      <span style="flex:1"></span>
+      <button class="btn ghost sm" id="stKeys" title="Keyboard shortcuts">⌨ Shortcuts</button>
+    </div>
+    <div class="st-frames" id="stFrames"></div>
+  </section>
+
+  <div class="st-modal" id="romModal">
+    <div class="st-modal-card" style="width:440px">
+      <div class="st-modal-h"><b>⚙ Game ROM</b><button class="icon-btn" id="romModalX">✕</button></div>
+      <p style="margin:0 0 12px; color:var(--dim); font-size:12.5px; line-height:1.5">Point this at your <b>Steam install</b> (or <span class="mono">game_50.arc</span> directly). Needed to <b>Bake</b> skins permanently and to extract full character data.</p>
+      <div style="display:flex; align-items:center; gap:8px; margin-bottom:10px; font-size:12.5px">Current: <b id="romPath" class="mono" style="color:var(--ink)">(not set)</b></div>
+      <button class="btn ghost sm" id="btnDetectRom" style="width:100%; justify-content:center; margin-bottom:8px">🔍 Auto-detect Steam install</button>
+      <div style="display:flex; gap:8px; margin-bottom:8px">
+        <button class="btn ghost sm" id="btnBrowseArc" style="flex:1; justify-content:center" title="Pick game_50.arc directly (…\nativeDX11x64\arc\pc\game_50.arc)">📂 Browse for .arc</button>
+        <button class="btn ghost sm" id="btnBrowseFolder" style="flex:1; justify-content:center" title="Pick your Steam install folder — we'll find game_50.arc inside it">📁 Browse folder</button>
+      </div>
+      <input type="text" id="romInput" placeholder="…or paste install folder / game_50.arc path" style="width:100%; font:inherit; color:var(--ink); background:var(--panel-2); border:1px solid var(--line); border-radius:9px; padding:9px 12px; margin-bottom:8px; outline:none">
+      <button class="btn sm" id="btnSaveRom" style="width:100%; justify-content:center; background:var(--gold); border-color:var(--gold); color:var(--gold-ink)">Save path</button>
+    </div>
+  </div>
+
+  <div class="st-modal" id="stKeysModal">
+    <div class="st-modal-card">
+      <div class="st-modal-h"><b>Studio shortcuts</b><button class="icon-btn" id="stKeysX">✕</button></div>
+      <div class="st-keys">
+        <span>Pencil</span><kbd>B</kbd><span>Fill</span><kbd>G</kbd><span>Erase</span><kbd>E</kbd><span>Eyedropper</span><kbd>I</kbd>
+        <span>Line</span><kbd>L</kbd><span>Rectangle</span><kbd>R</kbd><span>Ellipse</span><kbd>O</kbd><span>Recolor</span><kbd>C</kbd>
+        <span>Swap FG/BG</span><kbd>X</kbd><span>Undo</span><kbd>Ctrl+Z</kbd><span>Redo</span><kbd>Ctrl+Shift+Z</kbd><span>Secondary color</span><kbd>right-drag</kbd>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="scrim" id="scrim"></div>
+<aside class="drawer" id="drawer" aria-label="Skin picker">
+  <div class="dh">
+    <div class="por-wrap" id="dPor" style="--tint:var(--p1)"><canvas></canvas></div>
+    <div class="meta"><div class="k" id="dRole">Your character</div><h3 id="dName">—</h3><div class="cur" id="dCur">stock</div></div>
+    <button class="icon-btn" id="dClose" style="margin-left:auto">✕</button>
+  </div>
+  <div class="dtools"><input type="text" placeholder="Search author / pack…" id="dSearch"><button class="btn ghost sm" id="dRandom">🎲</button></div>
+  <div class="dgrid" id="dGrid"></div>
+  <div class="dfoot"><button class="btn ghost sm" id="dStock" style="flex:1">Revert to stock</button></div>
+</aside>
+
+<div class="toast" id="toast"></div>
+
+<script>
+const invoke = window.__TAURI__?.core?.invoke;
+const $ = s=>document.querySelector(s), $$ = s=>[...document.querySelectorAll(s)];
+const reduce = matchMedia("(prefers-reduced-motion:reduce)").matches;
+
+// ── data ──
+let idleData={};                 // cid -> {w,h,bank0:[16][r,g,b,a], frames:[{px:b64}]}
+let dirById={}, nameById={}, charByDir={};
+let activeSkins={};              // cid -> {sigs, palette(pal48), author, skinName}
+let myTeam=[];                   // ordered cids on your side
+let peerSkins={};                // steamid -> [{cid,sigs,palette,author,skinName}]
+// Baked skins live permanently in game_50.arc (loaded at launch). When SYNC is ON we share LIVE palettes,
+// so baked ones are disabled: any baked-but-unshared character is reverted to stock at runtime (the hook
+// paints stock over the baked palette). Covered baked chars are already overridden by their live skin via
+// capture_live. When sync is OFF, we push no reverts → baked/saved palettes apply. We only need the on-
+// screen sig of the baked palette (quantized to the game's ARGB4444 → *17 expansion) to target the revert.
+let bakedSkins={};               // cid -> { sig: <baked bank0 RGBA hex> }
+function loadBaked(){ try{ bakedSkins=JSON.parse(localStorage.getItem('suite_baked')||'{}'); }catch(e){ bakedSkins={}; } }
+function bakedSigHex(cols){ const q=x=>Math.round(x/17)*17; return cols.map((c,i)=>hex2(q(c[0]))+hex2(q(c[1]))+hex2(q(c[2]))+hex2(i===0?0:255)).join(''); }
+function recordBaked(cid, cols){ bakedSkins[cid]={sig:bakedSigHex(cols)}; try{ localStorage.setItem('suite_baked', JSON.stringify(bakedSkins)); }catch(e){} }
+function stockPalInts(cid){ const b=idleData[cid]?.bank0; if(!b) return null; return b.map(c=>((c[0]<<16)|(c[1]<<8)|c[2])>>>0); }
+let oppTeam=[];                  // [{cid, name, palette, author, skinName}]
+let mySteam={}, syncOn=false, syncTimer=null, oppMeta=null;
+let matchState='detecting', prevMode='', mySide='p1', stateTimer=null, detLocalSide=0;
+let detTeams={p1:[],p2:[]};       // last detect_state rosters, each [{cid,name,addr}]
+let detSlots=[];                  // last detect_state per-fighter slots [{player,cid,datpal,...}] (real array)
+let livePaint=false;              // Live Paint: write skins into guest palette per-side
+let oppRandom={}, oppRandomKey=''; // opponent (no app): cid -> random custom skin palette, re-rolled per match
+let oppManual={};                  // cid -> {palette,author,skinName} : your manual pick for an opponent char (dice on opp cards) — overrides synced/random
+// Effective opponent skin for a character: your manual pick > their synced skin (only if truly published) > per-match random.
+function oppSkinFor(cid){
+  if(oppManual[+cid]) return oppManual[+cid];
+  for(const pid in peerSkins){ const s=(peerSkins[pid]||[]).find(x=>+x.cid===+cid); if(s&&s.palette) return s; }
+  if(oppRandom[+cid]) return {palette:oppRandom[+cid], author:'random', skinName:'Random'};
+  return null;
+}
+let mirrorOn=false;               // Mirror Mode: clone YOUR look onto the opponent's matching characters
+// Match tab holds the LAST ACTUAL in-match team through the ranked in-between-games churn, then clears
+// when you're genuinely out of a game. It is NEVER populated from the sig-scan roster (that lingers in
+// RAM and would show a stale team at menus) — only from the real player array (st.has_game).
+let lastTeams={p1:[],p2:[]}, teamHold=0; const TEAM_HOLD_TICKS=15;  // ~18s at the 1200ms poll cadence
+let oppDetected=[];               // opponent's detected roster [{cid,name}] (skins merge in from sync)
+let oppIdentity=null, oppBackoff=0, oppEmpty=0; // opponent {steamid,name}; sticky-mirrored from the backend (oppEmpty = consecutive empty polls before we drop a locked opponent)
+
+// ── helpers (proven) ──
+function b64bytes(s){ const raw=atob(s); const a=new Uint8Array(raw.length); for(let i=0;i<raw.length;i++)a[i]=raw.charCodeAt(i); return a; }
+function lum(r,g,b){ return 0.299*r+0.587*g+0.114*b; }
+function bodyPalette(pal48, bank0){
+  let best=0,bc=1e18;
+  for(let bi=0;bi<3;bi++){ let cost=0; for(let i=1;i<16;i++){ const v=pal48[bi*16+i]||0; cost+=Math.abs(lum((v>>16)&255,(v>>8)&255,v&255)-lum(bank0[i][0],bank0[i][1],bank0[i][2])); } if(cost<bc){bc=cost;best=bi;} }
+  const out=[[0,0,0,0]]; for(let i=1;i<16;i++){ const v=pal48[best*16+i]||0; out.push([(v>>16)&255,(v>>8)&255,v&255,255]); } return out;
+}
+function gradientFromPal16(pal16){ const cols=pal16.slice(1); const n=cols.length;
+  return `linear-gradient(90deg,${cols.map((c,i)=>`rgb(${c[0]},${c[1]},${c[2]}) ${(i*100/n).toFixed(1)}% ${((i+1)*100/n).toFixed(1)}%`).join(',')})`; }
+function swatchesFromPal16(pal16){ return pal16.slice(1).map(c=>`<i style="background:rgb(${c[0]},${c[1]},${c[2]})"></i>`).join(''); }
+function hex2(n){ return (n&255).toString(16).padStart(2,'0'); }
+function sigFromBank0(cid){ const b=idleData[cid]?.bank0; if(!b) return null; return b.map(c=>hex2(c[0])+hex2(c[1])+hex2(c[2])+hex2(c[3]===undefined?255:c[3])).join(''); }
+function pal16For(cid, skinPal48){ const d=idleData[cid]; if(!d) return null; return skinPal48? bodyPalette(skinPal48,d.bank0) : d.bank0.map(c=>[c[0],c[1],c[2],c[3]===undefined?(c===d.bank0[0]?0:255):c[3]]); }
+function toast(html){ const t=$('#toast'); t.innerHTML=html; t.classList.add('show'); clearTimeout(t._h); t._h=setTimeout(()=>t.classList.remove('show'),2400); }
+
+// ── per-card idle animation registry ──
+let animCards=[]; // {cv, cid, pal16, idx}
+function regIdle(cv, cid, pal16){ animCards.push({cv,cid,pal16,idx:0}); drawIdle(animCards[animCards.length-1]); }
+function drawIdle(e){ const d=idleData[e.cid]; if(!d||!e.pal16){ return; } const cv=e.cv, {w,h}=d; cv.width=w; cv.height=h;
+  const f=d.frames[e.idx%d.frames.length]; const px=f._px||(f._px=b64bytes(f.px));
+  const ctx=cv.getContext('2d'); const img=ctx.createImageData(w,h);
+  for(let i=0;i<w*h;i++){ const c=e.pal16[px[i]]; const p=i*4; if(px[i]===0||!c||c[3]===0){ img.data[p+3]=0; } else { img.data[p]=c[0]; img.data[p+1]=c[1]; img.data[p+2]=c[2]; img.data[p+3]=255; } }
+  ctx.putImageData(img,0,0); }
+let lastAnim=0;
+function animLoop(t){ if(t-lastAnim>170){ lastAnim=t; for(const e of animCards){ const d=idleData[e.cid]; if(d&&d.frames.length>1){ e.idx++; drawIdle(e); } } } requestAnimationFrame(animLoop); }
+
+// ── team rendering ──
+function skinLabel(a){ return a? ((a.skinName&&a.skinName!=='Stock')? `${a.skinName} · ${a.author}` : (a.author||'custom')) : null; }
+function renderYou(){
+  const host=$('#youCards'); host.innerHTML=''; animCards=animCards.filter(e=>!e.cv._you);
+  if(!myTeam.length){ host.innerHTML=`<div class="empty"><b>Waiting for a match</b><br>Your team appears automatically when you reach character select. Pick a skin per character — it applies live and re-applies every match.</div>`; return; }
+  myTeam.forEach((cid,idx)=>{
+    const a=activeSkins[cid]; const p16=pal16For(cid, a?.palette); const role= idx===0?'point':'assist';
+    const el=document.createElement('div'); el.className='card editable '+role;
+    el.innerHTML=`<span class="role">${idx===0?'Point':'Assist'}</span>
+      <button class="dice" title="Random skin">🎲</button>
+      <div class="por-wrap" style="--tint:var(--p1)"><canvas></canvas></div>
+      <div class="cn">${nameById[cid]||('char'+cid)}</div>
+      <div class="sk ${a?'':'stock'}">${a?skinLabel(a):'stock palette'}</div>
+      <div class="swatches">${p16?swatchesFromPal16(p16):''}</div>
+      <span class="edit">✎ Reskin</span>`;
+    const cv=el.querySelector('canvas'); cv._you=true; if(p16) regIdle(cv,cid,p16);
+    el.querySelector('.dice').onclick=(e)=>{ e.stopPropagation(); randomSkin(cid); };
+    el.onclick=()=>openDrawer(cid); host.appendChild(el);
+  });
+}
+function renderOpp(){
+  const host=$('#oppCards'); host.innerHTML=''; animCards=animCards.filter(e=>!e.cv._opp);
+  const has=oppTeam.length>0;
+  $('#teamOpp').classList.toggle('on', has);
+  const emp=$('#oppEmpty'); if(emp) emp.style.display=has?'none':'';
+  oppTeam.forEach((o,idx)=>{
+    const p16=pal16For(o.cid,o.palette); const el=document.createElement('div'); el.className='card '+(idx===0?'point':'assist')+(o.detected&&!o.palette?' detected':'');
+    const label = o.palette ? ((o.skinName&&o.skinName!=='Stock')?`${o.skinName} · ${o.author||''}`:(o.author||'their skin'))
+                            : (o.detected ? 'in match · stock' : 'stock');
+    el.innerHTML=`<span class="role">${idx===0?'Point':'Assist'}</span><button class="dice" title="Roll a random skin for this opponent character (your screen)">🎲</button>
+      <div class="por-wrap" style="--tint:var(--p2)"><canvas></canvas><span class="live-dot"></span></div>
+      <div class="cn">${nameById[o.cid]||('char'+o.cid)}</div>
+      <div class="sk ${o.palette?'':'stock'}">${label}</div>
+      <div class="swatches">${p16?swatchesFromPal16(p16):''}</div>`;
+    const cv=el.querySelector('canvas'); cv._opp=true; if(p16) regIdle(cv,o.cid,p16);
+    el.querySelector('.dice').onclick=(e)=>{ e.stopPropagation(); rollOppSkin(o.cid); };
+    host.appendChild(el);
+  });
+}
+// one-click random skin for an OPPONENT character (your screen): sets your manual override, repaints their side
+async function rollOppSkin(cid){
+  const dir=dirById[cid]; if(!dir){ toast('unknown character'); return; }
+  const list=await fetchSkinList(dir); if(!list.length){ toast(`no skins for ${nameById[cid]||dir} yet`); return; }
+  const s=list[Math.floor(Math.random()*list.length)];
+  oppManual[+cid]={palette:s.palette, author:s.author, skinName:s.file||s.author};
+  rebuildOpp(); if(livePaint) paintTick();
+  toast(`<span class="k">Opponent</span> ${nameById[cid]}: ${s.author}`);
+}
+// compose the opponent board from the detected roster (base) overlaid with the effective skin (manual/synced/random)
+function rebuildOpp(){
+  if(oppDetected.length){
+    oppTeam=oppDetected.map(d=>{ const s=oppSkinFor(d.cid);
+      return s? {cid:d.cid,palette:s.palette,author:s.author,skinName:s.skinName,detected:true}
+              : {cid:d.cid,palette:null,detected:true}; });
+    const synced=oppTeam.some(o=>o.palette);
+    const st=$('#oppState'); if(st){ st.textContent = synced?'● Synced':'Detected'; st.className='state '+(synced?'on':'wait'); }
+  } else {
+    oppTeam = oppMeta? oppMeta.skins.map(s=>({cid:s.cid,palette:s.palette,author:s.author,skinName:s.skinName})) : [];
+  }
+  renderOpp();
+}
+
+// ── one-click random skin (dice button on the card, no drawer) ──
+const _skinListCache={};                                       // dir -> skins index.json (fetched once)
+async function fetchSkinList(dir){
+  if(_skinListCache[dir]) return _skinListCache[dir];
+  try{ const l=await(await fetch(`skins/${dir}/index.json`)).json(); _skinListCache[dir]=l||[]; return _skinListCache[dir]; }
+  catch(e){ return []; }
+}
+let _rollBusy=false, _lastRoll=0;
+async function randomSkin(cid){
+  const now=performance.now();
+  if(_rollBusy || now-_lastRoll<250) return;   // light debounce (rolls are cheap now: cached list + no per-roll publish)
+  _lastRoll=now; _rollBusy=true;
+  try{
+    const dir=dirById[cid]; if(!dir){ toast('unknown character'); return; }
+    const list=await fetchSkinList(dir);
+    if(!list.length){ toast(`no skins for ${nameById[cid]||dir} yet`); return; }
+    await applySkin(cid, list[Math.floor(Math.random()*list.length)]);
+  } finally { _rollBusy=false; }
+}
+
+// ── skin drawer ──
+let drawerCid=null, drawerSkins=[];
+async function openDrawer(cid){
+  drawerCid=cid; const dir=dirById[cid]; const a=activeSkins[cid];
+  $('#dRole').textContent='Your character'; $('#dName').textContent=nameById[cid]||dir;
+  $('#dCur').textContent=a?skinLabel(a):'stock palette';
+  animCards=animCards.filter(e=>!e.cv._drawer); const dcv=$('#dPor canvas'); dcv._drawer=true; regIdle(dcv,cid, pal16For(cid,a?.palette));
+  $('#dGrid').innerHTML='<div class="empty">loading skins…</div>';
+  $('#drawer').classList.add('show'); $('#scrim').classList.add('show');
+  try{ const res=await fetch(`skins/${dir}/index.json`); drawerSkins=await res.json(); }catch(e){ drawerSkins=[]; }
+  drawerSkins=[...getCustomSkins(cid), ...(drawerSkins||[])];   // your Studio-made skins first
+  renderDrawerGrid();
+}
+function renderDrawerGrid(){
+  const q=$('#dSearch').value.trim().toLowerCase();
+  const list=q?drawerSkins.filter(s=>(s.author||'').toLowerCase().includes(q)):drawerSkins;
+  const a=activeSkins[drawerCid];
+  $('#dGrid').innerHTML = list.length? list.map((s,i)=>{
+    const p16=bodyPalette(s.palette, idleData[drawerCid].bank0);
+    const sel=a&&a.author===s.author&&a.skinName===(s.file||s.author);
+    return `<div class="skin ${sel?'sel':''}" data-i="${drawerSkins.indexOf(s)}"><div class="bar">${swatchesFromPal16(p16)}</div>
+      <div class="au"><b>${s.author}</b><span class="by">${sel?'applied':'community'}</span></div></div>`;
+  }).join('') : '<div class="empty">no skins for this character yet</div>';
+  $$('#dGrid .skin').forEach(el=> el.onclick=()=>applySkin(drawerCid, drawerSkins[+el.dataset.i]));
+}
+function closeDrawer(){ $('#drawer').classList.remove('show'); $('#scrim').classList.remove('show'); }
+
+let _pubT=null;
+function publishMineSoon(){ if(!syncOn) return; clearTimeout(_pubT); _pubT=setTimeout(()=>publishMine(), 600); } // coalesce rapid rolls into one publish
+async function applySkin(cid, s){
+  // prefer the real live palette lines (captured) so the hook matches the on-screen color; fall back to stock sig
+  const sigs = liveSigs[cid]?.length ? liveSigs[cid] : (activeSkins[cid]?.sigs?.length ? activeSkins[cid].sigs : [sigFromBank0(cid)].filter(Boolean));
+  activeSkins[cid]={ sigs, palette:s.palette, author:s.author, skinName:s.file||s.author };
+  if(!myTeam.includes(cid)) myTeam.push(cid);
+  try{ localStorage.setItem('mvcskin_'+cid, JSON.stringify({palette:s.palette, author:s.author, skinName:s.file||s.author})); }catch(e){}
+  await writeAll(); publishMineSoon();
+  // (Live Paint's 500ms loop applies the new skin within ~0.5s — no per-roll write burst, so cycling is smooth)
+  renderYou(); const a=activeSkins[cid];
+  if(drawerCid===cid){ // only touch drawer UI when the drawer is actually open for this character
+    $('#dCur').textContent=skinLabel(a); renderDrawerGrid();
+    const dcv=$('#dPor canvas'); const e=animCards.find(x=>x.cv===dcv); if(e){ e.pal16=pal16For(cid,a.palette); drawIdle(e); }
+  }
+  toast(`<span class="k">Applied</span> · ${nameById[cid]}: ${s.author}${syncOn?' — shared live':''}`);
+}
+async function revertStock(cid){
+  delete activeSkins[cid]; try{ localStorage.removeItem('mvcskin_'+cid); }catch(e){}
+  await writeAll(); if(syncOn) publishMine(); renderYou(); if(drawerCid===cid){ $('#dCur').textContent='stock palette'; renderDrawerGrid(); const dcv=$('#dPor canvas'); const e=animCards.find(x=>x.cv===dcv); if(e){ e.pal16=pal16For(cid,null); drawIdle(e);} }
+  toast(`${nameById[cid]} reverted to stock`);
+}
+
+// Live-swap gate — reliability-first. Only SUPPRESS when the game itself reliably tells us we're not in
+// a match (hook feeding gamestate → screen != 'match'). When that ground truth is dark (between matches,
+// menus, hook not locked), we keep skins RESIDENT rather than clear them off the churny sig heuristic —
+// the hook only paints characters actually on screen anyway, so idle screens show nothing regardless.
+// (Trade-off: skins can show at character-select when gamestate is dark; the hook-side in_match gate
+// fixes that cleanly later. Reliable in-match sync matters more here.)
+function skinsAllowed(){ return gameScreen===null ? true : gameScreen==='match'; }
+let lastAllow=null, lastMirrorKey='';
+// ── write skins.dat (mine + synced opponent) ──
+async function writeAll(){
+  const mine=Object.values(activeSkins).filter(a=>a.sigs&&a.sigs.length).map(a=>({sigs:a.sigs, palette:paletteToHex(a.palette)}));
+  const theirs=[]; for(const pid in peerSkins){ for(const s of (peerSkins[pid]||[])){ if(s.sigs&&s.sigs.length) theirs.push({sigs:s.sigs, palette:paletteToHex(s.palette)}); } }
+  // Live Paint writes skins directly into guest palette memory (per-side), so the hook must NOT also paint
+  // (it would double-paint / bleed onto both sides). When Paint is on, hand the hook an empty set.
+  const entries = (skinsAllowed() && !livePaint) ? [...mine,...theirs] : [];
+  // SYNC ON = live palettes are authoritative → disable baked: revert any baked-but-unshared character to
+  // stock so online shows only the shared/live palettes (a covered baked char is already overridden live).
+  if(syncOn && skinsAllowed()){
+    const covered=new Set([...Object.keys(activeSkins).map(Number), ...Object.values(peerSkins).flat().map(s=>+s.cid)]);
+    for(const cid in bakedSkins){ if(covered.has(+cid)) continue; const stock=stockPalInts(+cid), sig=bakedSkins[cid]&&bakedSkins[cid].sig;
+      if(stock&&sig) entries.push({sigs:[sig], palette:stock}); }
+  }
+  // MIRROR MODE (hard/training): clone YOUR look onto the opponent's matching characters. Purely cosmetic
+  // and client-side — we add hook entries that repaint the OPPONENT fighter's live palette (match sig) to
+  // your fighter's look (your skin if set, else your fighter's own live colors). Because the game gives the
+  // two sides distinct palettes, each entry targets only the opponent's copy; yours is untouched.
+  if(mirrorOn && skinsAllowed()) entries.push(...mirrorEntries());
+  try{ await invoke('apply_multi',{entries}); }catch(e){ toast('⚠ '+e); }
+}
+// apply_multi expects palette as the same shape apply_sigs used; pass the raw pal48 through (backend already handled it)
+function paletteToHex(p){ return p; }
+
+// ── Live Paint: write skins into the guest palette per-side (offline/opt-in) ──
+// For each on-screen fighter, resolve its skin by SIDE (your skins → your fighter; synced opponent skins →
+// their fighter) and send {datpal address, 16 RGB colours} to the backend, which writes it into every real
+// palette row of that fighter's block. True per-side — recolors the right side even in identical mirrors.
+function buildPaintTargets(){
+  if(!detSlots.length) return [];
+  const meNum = mySide==='p2'?2:1; const out=[];
+  for(const s of detSlots){
+    const dp=s.datpal; if(!dp || dp==='0') continue;
+    let pal=null;
+    if(s.player===meNum){ const a=activeSkins[+s.cid]; if(a&&a.palette) pal=a.palette; }   // your side: your skin
+    else { const os=oppSkinFor(+s.cid); if(os&&os.palette) pal=os.palette; }               // opponent: manual > synced > random
+    if(!pal) continue;
+    const p16=pal16For(+s.cid, pal); if(!p16) continue;
+    out.push({ datpal:String(dp), colors: p16.map(c=>((c[0]<<16)|(c[1]<<8)|(c[2]))>>>0) });
+  }
+  return out;
+}
+// When the opponent ISN'T running the app, give each of their characters a RANDOM custom skin from the
+// local collection, re-rolled once per match (keyed to their live datpals, which change each match).
+async function ensureOppRandom(){
+  const meNum=mySide==='p2'?2:1;
+  const opp=detSlots.filter(s=>s.player!==meNum && s.cid!=null && s.datpal && s.datpal!=='0');
+  if(!opp.length) return;
+  // key to the SET, not the game: same opponent SteamID + same team → keep the same random skins all set.
+  const setId=(oppIdentity&&oppIdentity.steamid)||'anon';
+  const key=setId+'|'+opp.map(s=>s.cid).sort((a,b)=>a-b).join(',');
+  if(key===oppRandomKey) return;                                             // same set/team → keep the rolls
+  oppRandomKey=key; const next={};
+  for(const s of opp){
+    const cid=+s.cid;
+    if(oppManual[cid]) continue;                                            // you set it manually → keep it
+    const hasPeer=Object.values(peerSkins).some(a=>(a||[]).some(x=>+x.cid===cid && x.palette));
+    if(hasPeer) continue;                                                   // they actually published this char → use synced
+    const dir=dirById[cid]; if(!dir) continue;
+    const valid=(await fetchSkinList(dir)).filter(x=>x&&x.palette);
+    if(valid.length) next[cid]=valid[Math.floor(Math.random()*valid.length)].palette;
+  }
+  oppRandom=next;
+}
+let _painting=false;
+async function paintTick(){
+  if(!livePaint || !invoke || _painting || !skinsAllowed()) return;
+  _painting=true;
+  try{ await ensureOppRandom(); const targets=buildPaintTargets(); if(targets.length) await invoke('paint_palettes',{targets}); }
+  catch(e){} finally{ _painting=false; }
+}
+// Dedicated fast paint loop: cheap (backend skips fighters already skinned), so a 500ms cadence catches the
+// round-start palette reload quickly (skins show at match start, not after the first hit) and re-applies on
+// skin/side changes — without the per-roll write burst that caused lag.
+let paintTimer=null;
+function startPaintLoop(){ if(paintTimer) return; paintTimer=setInterval(paintTick, 500); }
+function stopPaintLoop(){ if(paintTimer){ clearInterval(paintTimer); paintTimer=null; } }
+async function toggleLivePaint(){
+  livePaint=!livePaint;
+  const b=$('#paintToggle'); if(b){ b.classList.toggle('p2',livePaint); $('#paintTxt').textContent=livePaint?'on':'off'; }
+  try{ localStorage.setItem('suite_paint', livePaint?'on':'off'); }catch(e){}
+  await writeAll();                                          // toggles the hook off (on) / back on (off)
+  if(livePaint){ startPaintLoop(); paintTick(); toast('<span class="k">Live Paint on</span> — per-side skins written live (local & cosmetic)'); }
+  else { stopPaintLoop(); toast('Live Paint off — reverts on the next round; hook skinning restored'); }
+}
+
+// Build the Mirror Mode override entries from the real per-fighter slots (side + cid + live palette sig).
+function mirrorEntries(){
+  const out=[]; if(!detSlots.length) return out;
+  const meNum = mySide==='p2'?2:1, oppNum = mySide==='p2'?1:2;
+  const withSig = s => s && typeof s.sig==='string' && s.sig.length===128 && !/^0+$/.test(s.sig);
+  const mineByCid={}, oppByCid={};
+  for(const s of detSlots){ if(!withSig(s)) continue; if(s.player===meNum) mineByCid[s.cid]=s; else if(s.player===oppNum) oppByCid[s.cid]=s; }
+  for(const cid in oppByCid){                                   // only characters present on BOTH sides
+    const mine=mineByCid[cid]; if(!mine) continue;
+    const a=activeSkins[+cid];                                  // your look = your skin if set, else your live colors
+    const yourLook = (a && a.palette && a.palette.length) ? paletteToHex(a.palette) : sigToPalInts(mine.sig);
+    out.push({ sigs:[oppByCid[cid].sig], palette: yourLook });  // repaint opponent's copy → your look
+  }
+  return out;
+}
+// 128-hex RGBA sig → Vec<u32> RGB (the shape apply_multi's `palette` expects)
+function sigToPalInts(sig){ const out=[]; for(let i=0;i<16;i++){ const o=i*8;
+  const r=parseInt(sig.slice(o,o+2),16), g=parseInt(sig.slice(o+2,o+4),16), b=parseInt(sig.slice(o+4,o+6),16);
+  out.push(((r<<16)|(g<<8)|b)>>>0); } return out; }
+async function toggleMirror(){
+  mirrorOn=!mirrorOn;
+  const b=$('#mirrorToggle'); if(b){ b.classList.toggle('p2',mirrorOn); $('#mirrorTxt').textContent=mirrorOn?'on':'off'; }
+  try{ localStorage.setItem('suite_mirror', mirrorOn?'on':'off'); }catch(e){}
+  await writeAll();
+  toast(mirrorOn ? '<span class="k">Mirror Mode on</span> — opponents cloned to your look (your screen only)' : 'Mirror Mode off');
+}
+
+// ── auto-capture live palettes → real per-character signatures ──
+// The hook matches skins.dat lines EXACTLY against the live palette bytes. A saved skin's stock
+// signature is the ROM's default color; the game may run a different color variant, so it won't
+// match. capture_live grabs the actual on-screen bytes; we key them to the detected roster and
+// auto-apply any saved skin onto its real palette lines. Runs continuously — no button.
+let liveSigs={};      // cid -> [live palette hex lines]
+let capturing=false;
+function parseBank0(hex){ const b=[]; for(let i=0;i<16;i++){ const o=i*8; b.push([parseInt(hex.slice(o,o+2),16),parseInt(hex.slice(o+2,o+4),16),parseInt(hex.slice(o+4,o+6),16)]); } return b; }
+async function refreshLiveSigs(){
+  if(capturing || !invoke) return;
+  if(!skinsAllowed()) return;                                 // only capture when we're actually painting (in a match)
+  capturing=true;
+  try{
+    const roster=new Set([...(detTeams.p1||[]),...(detTeams.p2||[])].map(x=>x.cid));
+    const allow = roster.size? roster : null;                 // constrain matches to the loaded 6 → no false hits
+    const pals=await invoke('capture_live'); const groups={};
+    for(const hex of pals){ const {cid,dist}=idFromPalette(parseBank0(hex), allow); if(cid===null||dist>2400) continue; (groups[cid]=groups[cid]||[]).push(hex); }
+    let applied=false;
+    for(const cid in groups){
+      const key=groups[cid].join('|'); liveSigs[+cid]=groups[cid];
+      const a=activeSkins[cid];                               // auto-apply saved skins onto the real live lines
+      if(a && (a.sigs||[]).join('|')!==key){ a.sigs=groups[cid]; applied=true; }
+    }
+    if(applied){ await writeAll(); renderYou(); if(syncOn) publishMine(); }
+  }catch(e){}
+  capturing=false;
+}
+function idFromPalette(bank0, allow){ let best=[1e18,null]; for(const cid in idleData){ if(allow && !allow.has(+cid)) continue; const b0=idleData[cid].bank0; let c=0; for(let i=1;i<16;i++) c+=Math.abs(bank0[i][0]-b0[i][0])+Math.abs(bank0[i][1]-b0[i][1])+Math.abs(bank0[i][2]-b0[i][2]); if(c<best[0]) best=[c,+cid]; } return {cid:best[1],dist:best[0]}; }
+
+// ── cross-play sync ──
+function setSyncStatus(t){ /* reflected in opp header */ }
+async function publishMine(){
+  if(!mySteam.steamid) return;
+  const skins=Object.entries(activeSkins).filter(([c,a])=>a.sigs&&a.sigs.length).map(([c,a])=>({cid:+c, sigs:a.sigs, palette:a.palette, author:a.author, skinName:a.skinName}));
+  try{ await invoke('sync_publish',{steamid:mySteam.steamid, name:mySteam.name||'', skins, effect: fxMode?String(fxMode):null}); }catch(e){}
+}
+let oppCandidates=[];
+async function syncTick(){
+  if(!syncOn) return;
+  try{
+    if(!mySteam.steamid){ mySteam=await invoke('sync_self'); refreshMe(); }
+    await publishMine();
+    // pollTick owns the (heavy) opponent scan and fills oppCandidates once per session; here we only
+    // do the light network fetch to pull their published skins (if they run the app).
+    if(!oppCandidates.length){ setOpp(oppMeta); return; }
+    const res=await invoke('sync_fetch_peers',{ids:oppCandidates}); const peers=res.peers||{};
+    peerSkins={}; let meta=null;
+    for(const pid in peers){ const lo=peers[pid]; peerSkins[pid]=(lo.skins||[]).map(s=>({cid:+s.cid, sigs:s.sigs, palette:s.palette, author:s.author, skinName:s.skinName})); meta={steamid:pid, name:lo.name||pid, skins:peerSkins[pid]}; }
+    setOpp(meta); await writeAll();
+  }catch(e){ setOpp(null,'waiting for a live match…'); }
+}
+function setOpp(meta, waitMsg){
+  oppMeta=meta;
+  if(meta){                                        // opponent runs the app (synced skins)
+    $('#oppHdName').textContent=meta.name; $('#oppHdSid').textContent=meta.steamid; $('#p2name').textContent=meta.name; $('#p2sid').textContent=meta.steamid;
+    $('#p2por').textContent=(meta.name[0]||'P').toUpperCase();
+  } else if(oppIdentity){                           // identified from memory even without their app
+    const nm=oppIdentity.name||'Opponent';
+    $('#oppHdName').textContent=nm; $('#oppHdSid').textContent=oppIdentity.steamid;
+    $('#p2name').textContent=nm; $('#p2sid').textContent=oppIdentity.steamid;
+    $('#p2por').textContent=(nm[0]||'P').toUpperCase();
+    $('#oppState').textContent = syncOn?'Facing · no app':'Facing'; $('#oppState').className='state on';
+  } else {
+    const detOpp=oppDetected.length;
+    $('#oppHdName').textContent='Opponent'; $('#oppHdSid').textContent = detOpp?'in match':(syncOn?'scanning…':'—');
+    $('#p2name').textContent = detOpp?'Opponent':(syncOn?'scanning…':'—'); $('#p2sid').textContent= waitMsg|| (detOpp?'identifying…':(syncOn?'looking for opponent':'not synced'));
+    $('#oppState').textContent = syncOn?'Scanning':'Sync off'; $('#oppState').className='state wait';
+    $('#p2por').textContent='P2';
+  }
+  rebuildOpp();
+}
+async function toggleSync(){
+  syncOn=!syncOn; $('#link').classList.toggle('synced',syncOn); $('#syncToggle').setAttribute('aria-checked',syncOn);
+  try{ localStorage.setItem('suite_sync', syncOn?'on':'off'); }catch(e){}
+  if(syncOn){ if(!mySteam.steamid){ try{ mySteam=await invoke('sync_self'); refreshMe(); }catch(e){} } setOpp(null); syncTick(); syncTimer=setInterval(syncTick,4000); toast('<span class="k">Live sync on</span> — trading skins in this match'); }
+  else { clearInterval(syncTimer); syncTimer=null; if(mySteam.steamid) invoke('sync_unpublish',{steamid:mySteam.steamid}).catch(()=>{}); peerSkins={}; setOpp(null); await writeAll(); toast('Sync off — only your own skins show'); }
+}
+// head-to-head W/L vs the current opponent (persisted per SteamID in the backend, keyed off KO + your side)
+let _recFor='';
+async function updateRecord(){
+  const el=$('#oppRecord'); if(!el||!invoke) return;
+  const id=(oppIdentity&&oppIdentity.steamid)?String(oppIdentity.steamid):'';
+  if(!id){ el.textContent=''; _recFor=''; return; }
+  try{ const r=await invoke('get_record',{steamid:id}); const w=r.wins||0, l=r.losses||0;
+    el.textContent=(w||l)?`vs you: ${w}W – ${l}L`:''; _recFor=id; }catch(e){}
+}
+function refreshMe(){ if(mySteam.name){ $('#meName').textContent=mySteam.name; $('#p1name').textContent=mySteam.name; $('#youHdName').textContent=mySteam.name+' · You'; } if(mySteam.steamid){ $('#p1sid').textContent=mySteam.steamid; $('#youHdSid').textContent=mySteam.steamid; $('#p1por').textContent=(mySteam.name?.[0]||'P').toUpperCase(); } }
+
+// ── live match-state detection (menu / character-select / match) — runs continuously, freeze-safe ──
+const MODE_LABEL={ game_off:['game not detected',''], menu:['In menus','st-menu'], select:['Character select','st-select'], match:['● In match','st-match'] };
+function setMode(state){
+  matchState=state; const [txt,cls]=MODE_LABEL[state]||MODE_LABEL.game_off;
+  $('#modeTxt').textContent=txt; $('#modePill').className='mode-pill'+(cls?' '+cls:'');
+  const ys=$('#youState'); if(ys){ const on=(state==='match'||state==='select'); ys.textContent = state==='match'?'● Live': state==='select'?'Detecting':'Auto'; ys.className='state '+(on?'on':'wait'); }
+}
+// which detected side is "me": manual override wins, else the side my applied skins live on, else last
+function pickMySide(p1,p2){
+  // FACT (from flycast/netcode): "local side" is a NETPLAY-only concept — offline/Training there is no remote,
+  // so you are P1 by definition. A real opponent SteamID only exists in an online match, so with no opponent
+  // we return P1 and DON'T auto-detect (this is what was wrongly swapping in Training).
+  if(!oppIdentity || !oppIdentity.steamid) return 'p1';
+  // Online only: input-correlation detector (mirror-proof) → then saved-skin characters → else hold.
+  if(detLocalSide===1) return 'p1';                          // ★ input-correlation detector (mirror-proof)
+  if(detLocalSide===2) return 'p2';
+  const mine=new Set(Object.keys(activeSkins).map(Number));  // pre-lock fallback: your saved skins tag your side
+  if(mine.size){ const o1=p1.filter(x=>mine.has(x.cid)).length, o2=p2.filter(x=>mine.has(x.cid)).length; if(o1!==o2) return o1>o2?'p1':'p2'; }
+  return mySide;
+}
+let inMatch=null, gameScreen=null, matchStateRaw=null;   // null = hook not feeding real state
+async function stateTick(){
+  if(!invoke) return;
+  let st; try{ st=await invoke('detect_state'); }catch(e){ return; }
+  // Ground truth from the hook (real SH4 structs) wins over the RPM sig heuristic when present.
+  detSlots = st.has_game ? (st.slots||[]) : [];
+  detLocalSide = st.local_side||0;                           // 0=unknown, 1=P1, 2=P2 (input-correlation detector)
+  let p1, p2;
+  if(st.has_game){
+    // Real player array located → authoritative teams (true P1/P2 side by slot parity, from RPM).
+    inMatch = st.in_match===1; gameScreen = st.screen; matchStateRaw = st.match_state;
+    const nm=cid=>({cid, name:(nameById[cid]||('PL'+hex2(cid)))});
+    const side=pl=> (st.slots||[]).filter(s=>s.player===pl).sort((a,b)=>a.pos-b.pos).map(s=>nm(s.cid));
+    p1=side(1); p2=side(2);
+    setMode(st.screen);                                   // menu | select | match, straight from the game
+    const gs=$('#gsChip'); if(gs){ gs.style.display=''; gs.innerHTML=`<b>${st.screen}</b> · in_match ${st.in_match} · mstate ${st.match_state} · stage ${st.stage}`; }
+    lastTeams={p1,p2}; teamHold=TEAM_HOLD_TICKS;          // remember the live team; hold it through churn
+  } else {
+    // NOT in a live game. The Match tab must show NOTHING when you're out of a match — we do NOT fall back
+    // to the sig-scan roster (st.p1/p2), which lingers in RAM and shows a stale team at menus. During a
+    // ranked session we HOLD the last actual in-match team briefly (char-select / between games of a set);
+    // a sustained out-of-match stretch (or the game closing) clears it.
+    inMatch=null; gameScreen=null; matchStateRaw=null;
+    setMode(st.state);
+    const gs=$('#gsChip'); if(gs) gs.style.display='none';
+    if(st.state==='game_off'){ lastTeams={p1:[],p2:[]}; teamHold=0; }
+    else if(teamHold>0){ teamHold--; }
+    else { lastTeams={p1:[],p2:[]}; }
+    p1=lastTeams.p1; p2=lastTeams.p2;
+  }
+  detTeams={p1,p2};
+  const cnt=p1.length+p2.length, curScreen=(st.has_game?st.screen:st.state);
+  if(cnt>0){
+    const side=pickMySide(p1,p2); mySide=side;
+    $('#sideTxt').textContent=side.toUpperCase(); $('#sideSwap').classList.toggle('p2',side==='p2');
+    { const sa=$('#sideAuto'); if(sa){ sa.textContent = detLocalSide? '· auto ✓' : '· detecting…'; sa.style.opacity = detLocalSide? '.8':'.5'; } }
+    applySideLayout();
+    const mine = side==='p1'?p1:p2, opp = side==='p1'?p2:p1;
+    // your roster ← detected side (skins persist by cid via activeSkins); re-render + re-publish on change
+    if(mine.map(x=>x.cid).join(',')!==myTeam.join(',')){ myTeam=mine.map(x=>x.cid); renderYou(); if(syncOn) publishMine(); }
+    // opponent roster shows immediately from memory; their skins merge in from syncTick if they run the app
+    const newOpp=opp.map(x=>({cid:x.cid,name:x.name}));
+    if(JSON.stringify(newOpp)!==JSON.stringify(oppDetected)){ oppDetected=newOpp; if(!oppMeta) setOpp(null); else rebuildOpp(); }
+  } else if(curScreen==='menu' && oppDetected.length){
+    // dropped out of a match to menus — clear the detected opponent roster (keep synced skins if any)
+    oppDetected=[]; if(!oppMeta) setOpp(null); else rebuildOpp();
+  }
+  // entered/left a match → push overrides (or clear them so the hook reverts to stock at select/menu)
+  const allow=skinsAllowed(); if(allow!==lastAllow){ lastAllow=allow; writeAll(); }
+  // Mirror Mode: re-apply whenever the opponent's live palettes appear/change (so clones track the match)
+  if(mirrorOn && allow){ const mk=detSlots.map(s=>s.player+':'+s.cid+':'+(s.sig||'').slice(0,24)).join('|');
+    if(mk!==lastMirrorKey){ lastMirrorKey=mk; writeAll(); } } else lastMirrorKey='';
+  // set score (computed from KO events, keyed to the sticky opponent) → "set You – Opp"
+  const sc=st.score||{p1:0,p2:0}, scEl=$('#scoreChip');
+  if(scEl){ if(sc.p1||sc.p2){ const me=mySide==='p2'?sc.p2:sc.p1, them=mySide==='p2'?sc.p1:sc.p2;
+      scEl.style.display=''; scEl.innerHTML=`set <b>${me}</b> – ${them}`; } else scEl.style.display='none'; }
+}
+// (manual side swap removed — side is fully automatic via the input-correlation detector; see pickMySide)
+// Reflect your actual side in the layout: your name card + team panel sit on YOUR side (P1 left / P2 right),
+// opponent on the other. .link/.board are CSS grid, whose items honor `order`, so we just reorder them.
+function applySideLayout(){
+  const meP2 = mySide==='p2', o=(sel,v)=>{ const el=$(sel); if(el) el.style.order=v; };
+  o('#link .node.p1', meP2?'3':'1'); o('#link .center','2'); o('#link .node.p2', meP2?'1':'3');
+  o('#teamYou', meP2?'3':'1'); o('.board .seam','2'); o('#teamOpp', meP2?'1':'3');
+  const ys=$('#teamYou .side'), os=$('#teamOpp .side'); if(ys) ys.textContent=meP2?'P2':'P1'; if(os) os.textContent=meP2?'P1':'P2';
+}
+
+// ── one serialized poll loop (never overlaps → no IPC pile-up, no hangs) ──
+// detect_state is cheap (a ~1ms confirm once a match locks); capture_live is the only heavy call
+// (~1.3s), so we run it ONLY when a skinned character in the current match still lacks its live
+// palette. Once every skinned fighter is captured, capture goes idle until the team changes.
+let pollTimer=null, captureBackoff=0, lastRosterKey='';
+function rosterCids(){ return [...(detTeams.p1||[]),...(detTeams.p2||[])].map(x=>x.cid); }
+function skinnedNeedsCapture(){ const r=new Set(rosterCids()); return Object.keys(activeSkins).some(cid=> r.has(+cid) && !(liveSigs[+cid]?.length)); }
+async function pollTick(){
+  try{
+    await stateTick();                                   // roster + mode (freeze-safe)
+    // entering a new match session → tell the hook to drop its stale palette-region cache (crash-safety)
+    if((matchState==='select'||matchState==='match') && (prevMode===''||prevMode==='menu'||prevMode==='game_off'||prevMode==='detecting')){ try{ invoke('reset_hook_regions'); }catch(e){} }
+    prevMode=matchState;
+    const rk=rosterCids().slice().sort((a,b)=>a-b).join(',');
+    if(rk!==lastRosterKey){ lastRosterKey=rk; captureBackoff=0; liveSigs={}; } // new team → re-capture live
+    // palettes so each character's LAST SELECTED skin re-applies to this match's actual colors
+    // capture_live is a HEAVY (~1.3s) memory scan that only feeds the HOOK path. Live Paint doesn't use it
+    // (it writes by DatPal), so skip it entirely when Paint is on — a big in-game responsiveness win.
+    const inSession = (matchState==='match'||matchState==='select');
+    if(!livePaint && inSession && captureBackoff<=0 && skinnedNeedsCapture()){
+      await refreshLiveSigs();                            // grab real live palettes → auto-apply skins (hook mode)
+      if(skinnedNeedsCapture()) captureBackoff=3;         // a fighter isn't on screen yet → retry in ~4s
+    }
+    if(captureBackoff>0) captureBackoff--;
+    // opponent identity — the reader thread now holds the opponent STICKILY across the ranked in-between
+    // churn (a set is many games vs the same person), so we just MIRROR it: poll periodically regardless
+    // of screen, adopt when it appears, switch on a genuinely new opponent, and only drop it once the
+    // backend has cleared it for a sustained stretch (game closed). No match-state gating anymore.
+    if(oppBackoff<=0){
+      try{ const det=await invoke('detect_opponent'); let c=det.candidates||[];
+        // The opponent can NEVER be you. The Steam persona cache scatters your own name/ID next to other
+        // players', so a scan can hand back a candidate wearing YOUR name — which then shows on both P1 and
+        // P2 and makes the app think you're playing yourself. Drop any candidate matching your ID or name.
+        const meId=(mySteam.steamid||'').trim(), meNm=(mySteam.name||'').trim().toLowerCase();
+        c=c.filter(x=> String(x.steamid||'').trim()!==meId && (meNm==='' || String(x.name||'').trim().toLowerCase()!==meNm));
+        if(c.length){ const top=c[0]; oppEmpty=0;
+          if(!oppIdentity || oppIdentity.steamid!==top.steamid){ oppIdentity={steamid:top.steamid, name:top.name}; oppCandidates=c.map(x=>x.steamid); setOpp(oppMeta); if(syncOn) syncTick(); }
+          oppBackoff=3;
+        } else {
+          if(oppIdentity && ++oppEmpty>=8){ oppIdentity=null; oppCandidates=[]; oppEmpty=0; if(!oppMeta) setOpp(null); } // cleared ~10s → game closed
+          oppBackoff=3;
+        }
+      }catch(e){ oppBackoff=4; }
+    }
+    if(oppBackoff>0) oppBackoff--;
+    updateRecord();                                            // refresh the head-to-head W/L vs this opponent
+  }catch(e){}
+  pollTimer=setTimeout(pollTick, 1200);                   // schedule NEXT only after this finishes
+}
+
+// ── presence: heartbeat + live "online" count of connected apps ──
+function clientId(){
+  if(mySteam.steamid) return mySteam.steamid;                 // stable identity when the hook's up
+  let id=localStorage.getItem('skinsync_cid');
+  if(!id){ id='c'+Math.random().toString(36).slice(2,10)+Date.now().toString(36); localStorage.setItem('skinsync_cid',id); }
+  return id;
+}
+async function presenceTick(){
+  if(!invoke) return;
+  try{ await invoke('sync_heartbeat',{id:clientId(), name:mySteam.name||'Player'}); }catch(e){}
+  try{ const p=await invoke('sync_presence'); const n=p.online||0;
+    $('#onlineN').textContent=n; $('#cOnline').classList.toggle('on',n>0);
+    const list=(p.players||[]).filter(Boolean);
+    $('#cOnline').title = list.length? ('Online now: '+list.join(', ')) : 'MvC Live Skins users online now';
+  }catch(e){ $('#onlineN').textContent='–'; }
+}
+
+// ── effects ──
+let fxMode=0;
+function setEffect(mode){ fxMode=mode; $$('.fx').forEach(b=>b.classList.toggle('on',+b.dataset.m===mode)); invoke('set_effect',{mode,speed:+$('#fxSpeed').value}).then(()=>toast(mode?'effect on':'effects off')).catch(e=>toast('⚠ '+e)); }
+
+// ── status / inject ──
+async function pollStatus(){ try{ const s=await invoke('detect_state'); const on=!!(s&&s.state&&s.state!=='game_off'); $('#cGame').classList.toggle('on',on);
+  const b=$('#banner'); if(!on){ b.textContent='Launch the Marvel vs Capcom Fighting Collection — skins apply automatically (no hook to inject).'; b.classList.add('show'); } else b.classList.remove('show'); }catch(e){} }
+
+// ══ suite: tabs / library / loadouts / studio ══
+let studioLoaded=false, libApplyMode='live';
+function drawStill(cv,cid,pal16,idx=0){ if(cv&&pal16) drawIdle({cv,cid,pal16,idx}); }
+function switchTab(t){
+  $$('#tabs button').forEach(b=>b.classList.toggle('on', b.dataset.t===t));
+  $$('.panel').forEach(p=>p.classList.toggle('on', p.id==='p-'+t));
+  if(t==='studio' && !studioLoaded){ studioInit(); studioLoaded=true; }
+  else if(t==='studio' && stTool==='recolor'){ studioRender(); }   // resume animation
+  else { stAnimStop(); }                                            // leaving Studio → stop the anim timer
+  if(t==='library') renderLibrary();
+  if(t==='ranks') renderLeaderboard();
+  window.scrollTo({top:0,behavior:'smooth'});
+}
+function renderLibrary(){
+  const grid=$('#libGrid'); if(!grid) return; grid.innerHTML='';
+  const cids=Object.keys(nameById).map(Number).sort((a,b)=>a-b);
+  const q=($('#libSearch')?.value||'').toLowerCase();
+  cids.forEach(cid=>{
+    if(q && !(nameById[cid]||'').toLowerCase().includes(q)) return;
+    const a=activeSkins[cid]; const p16=pal16For(cid,a?.palette);
+    const el=document.createElement('div'); el.className='lc'+(a?' skinned':'');
+    el.innerHTML=`${a?'<span class="badge">SET</span>':''}<button class="dice" title="Random skin">🎲</button>
+      <div class="por-wrap"><canvas></canvas></div>
+      <div class="cn">${nameById[cid]||('char'+cid)}</div>
+      <div class="sk ${a?'':'stock'}">${a?skinLabel(a):'stock'}</div>
+      <div class="swatches">${p16?swatchesFromPal16(p16):''}</div>`;
+    drawStill(el.querySelector('canvas'),cid,p16);
+    el.querySelector('.dice').onclick=(e)=>{ e.stopPropagation(); randomSkin(cid); };
+    el.onclick=()=>openDrawer(cid);
+    grid.appendChild(el);
+  });
+  renderLoadouts();
+}
+function getLoadouts(){ try{ return JSON.parse(localStorage.getItem('suite_loadouts')||'[]'); }catch(e){ return []; } }
+function setLoadouts(l){ try{ localStorage.setItem('suite_loadouts', JSON.stringify(l)); }catch(e){} }
+function renderLoadouts(){
+  const host=$('#loadouts'); if(!host) return; host.innerHTML='';
+  getLoadouts().forEach((lo,i)=>{
+    const el=document.createElement('div'); el.className='lo';
+    const cids=Object.keys(lo.skins||{}).map(Number).slice(0,3);
+    el.innerHTML=`<div class="lon"><span class="tag" style="background:${lo.accent||'#ffb020'}"></span>${lo.name}</div>
+      <div class="team">${(cids.length?cids:[0,0,0]).map(()=>'<div class="m"><canvas></canvas></div>').join('')}</div>
+      <div class="meta"><span>${Object.keys(lo.skins||{}).length} skins</span><span class="load">Load ▶</span></div>`;
+    const cvs=el.querySelectorAll('canvas'); cids.forEach((cid,j)=>drawStill(cvs[j],cid,pal16For(cid, lo.skins[cid]?.palette)));
+    el.onclick=()=>loadLoadout(i); host.appendChild(el);
+  });
+  const nw=document.createElement('div'); nw.className='lo new';
+  nw.innerHTML='<div><div style="font-size:24px;line-height:1">＋</div><div style="font-size:11.5px;font-weight:700;margin-top:4px">Save current team</div></div>';
+  nw.onclick=saveLoadout; host.appendChild(nw);
+}
+function saveLoadout(){
+  const name=prompt('Name this loadout:'); if(!name) return;
+  const skins={}; for(const cid in activeSkins){ const a=activeSkins[cid]; skins[cid]={palette:a.palette,author:a.author,skinName:a.skinName}; }
+  if(!Object.keys(skins).length){ toast('no skins applied yet — skin some characters first'); return; }
+  const los=getLoadouts(); const accents=['#ff6a3d','#3fb1ff','#35d07f','#ffb020','#c07bff'];
+  los.push({name, skins, accent:accents[los.length%accents.length]}); setLoadouts(los); renderLoadouts();
+  toast(`Saved loadout “${name}”`);
+}
+async function loadLoadout(i){
+  const lo=getLoadouts()[i]; if(!lo) return;
+  activeSkins={}; myTeam=[];
+  for(let k=localStorage.length-1;k>=0;k--){ const key=localStorage.key(k); if(key&&key.startsWith('mvcskin_')) localStorage.removeItem(key); }
+  for(const cid in lo.skins){ const s=lo.skins[cid]; activeSkins[+cid]={sigs:[sigFromBank0(+cid)].filter(Boolean), palette:s.palette, author:s.author, skinName:s.skinName}; if(!myTeam.includes(+cid)) myTeam.push(+cid); try{ localStorage.setItem('mvcskin_'+cid, JSON.stringify(s)); }catch(e){} }
+  await writeAll(); renderYou(); renderLibrary(); if(syncOn) publishMine();
+  toast(`Loaded “${lo.name}” — ${Object.keys(lo.skins).length} skins`);
+}
+
+// ══ native Studio — feature 1 (display) + 2 (palette editing), on idleData ══
+let stCid=null, stBase=null, stPal=null, stEntry=null;
+let stTool='recolor', stFrame=0, stFG=1, stBrush=1, stZoom=7, stGrid=false, stOnion=false, stSym=false;
+let stEditPx={}, stUndoStk=[], stRedoStk=[], stDrawing=false, stShapeStart=null;  // per-cid edited frame indices
+let stRefImg=null, stRefOp=0.45, stBG=0, stPaintIdx=1;
+const ST_SHAPES=['line','rect','ellipse'];
+function clone16(p){ return p.map(c=>[c[0],c[1],c[2],c[3]]); }
+
+// ══ Full ROM animation — extract ALL of a character's PL data (every animation, not just idle) ══
+// Pulls the char DAT out of game_50.arc (backend extract_char_dat) and decodes it with the shared
+// rom-reader/rom-bake decoders → part atlas + sprite assemblies + every animation group. In recolor
+// (preview) mode we composite each cell live and tint it with the *edited* palette, so you can watch
+// your skin play across walks, attacks and specials — not only the idle loop idleData gives us.
+let stFullCache={};   // cid -> decoded bundle | 'loading' | 'fail'
+let stFull=null;      // decoded bundle for the current stCid (null → fall back to idle)
+let stAnimCells=[], stAnimBounds=null, stAnimFi=0, stAnimTimer=null;
+function stFullReady(){ return !!(stFull && stFull.cid===stCid && stFull.anim && Object.keys(stFull.anim.groups).length); }
+async function loadFullChar(cid){
+  const c=stFullCache[cid];
+  if(c && c!=='fail' && c!=='loading') return c;
+  if(c==='loading') return null;
+  let arc=''; try{ arc=await invoke('get_rom_path'); }catch(e){}
+  if(!arc){ stFullCache[cid]='fail'; return null; }
+  stFullCache[cid]='loading';
+  try{
+    const raw=await invoke('extract_char_dat',{arcPath:arc, charId:cid});
+    const dat=raw instanceof Uint8Array ? raw : new Uint8Array(raw);
+    const { decodeChar }=await import('./studio/rom-reader.mjs?v=7');
+    const dec=await decodeChar(dat, cid); dec.cid=cid;
+    stFullCache[cid]=dec; return dec;
+  }catch(e){ console.warn('full char decode failed', cid, e); stFullCache[cid]='fail'; return null; }
+}
+// composite one sprite cell → indexed buffer + absolute origin (ax,ay). Port of tile-editor _compositeCell:
+// part left = -dx (asm dx is negated vs atlas), flipy mirrors the quad in Y, 0x4000 is a pixel-mirror only,
+// record 0 draws on top (reverse order). Part pixels are read straight out of the indexed atlas.
+function compositeCell(full, sid){
+  if(sid==null || sid===0xFFFF) return null;
+  const asm=full.asm.assemblies, recs=asm[String(sid&0x7fff)]||asm[String(sid)]; if(!recs) return null;
+  const parts=full.bundle.parts, idxA=full.idxData, AW=full.bundle.w;
+  const pl=[]; let minx=1e9,miny=1e9,maxx=-1e9,maxy=-1e9;
+  for(const r of recs){ const pr=parts[r.part]; if(!pr) continue; const w=pr.w,h=pr.h,flipy=!!r.flipy;
+    const pdx=-r.dx, pdy=flipy?-(r.dy+h):r.dy;
+    pl.push({pr, flip:!!r.flip, flipy, x:pdx, y:pdy});
+    minx=Math.min(minx,pdx); miny=Math.min(miny,pdy); maxx=Math.max(maxx,pdx+w); maxy=Math.max(maxy,pdy+h); }
+  if(!pl.length) return null;
+  const W=maxx-minx, H=maxy-miny, out=new Uint8Array(W*H);
+  for(const p of [...pl].reverse()){ const pr=p.pr;
+    for(let py=0;py<pr.h;py++)for(let px=0;px<pr.w;px++){
+      const sx=p.flip?pr.w-1-px:px, sy=p.flipy?pr.h-1-py:py;
+      const v=idxA[(pr.y+sy)*AW+(pr.x+sx)]; if(v===0) continue;
+      out[(p.y-miny+py)*W+(p.x-minx+px)]=v; } }
+  return {out, W, H, ax:minx, ay:miny};
+}
+function stComputeBounds(){ stAnimBounds=null; if(!stFull||!stAnimCells.length) return;
+  let minx=1e9,miny=1e9,maxx=-1e9,maxy=-1e9,any=false;
+  for(const c of stAnimCells){ const comp=compositeCell(stFull,c.sprite_id); if(!comp) continue; any=true;
+    minx=Math.min(minx,comp.ax); miny=Math.min(miny,comp.ay); maxx=Math.max(maxx,comp.ax+comp.W); maxy=Math.max(maxy,comp.ay+comp.H); }
+  if(any) stAnimBounds={minx,miny,W:Math.max(1,maxx-minx),H:Math.max(1,maxy-miny)}; }
+function stDrawAnim(){ const cv=$('#stCanvas'); if(!stFullReady()||!stAnimBounds||!stAnimCells.length||!stPal) return;
+  const cell=stAnimCells[stAnimFi%stAnimCells.length], comp=compositeCell(stFull,cell.sprite_id), B=stAnimBounds;
+  cv.width=B.W; cv.height=B.H; const ctx=cv.getContext('2d'); ctx.imageSmoothingEnabled=false; ctx.clearRect(0,0,B.W,B.H);
+  if(comp){ const img=ctx.createImageData(comp.W,comp.H);
+    for(let i=0;i<comp.W*comp.H;i++){ const v=comp.out[i], c=stPal[v], p=i*4;
+      if(!v||!c||c[3]===0){ img.data[p+3]=0; } else { img.data[p]=c[0];img.data[p+1]=c[1];img.data[p+2]=c[2];img.data[p+3]=255; } }
+    ctx.putImageData(img, comp.ax-B.minx, comp.ay-B.miny); }
+  cv.style.width='';cv.style.height='';cv.style.maxWidth='';cv.style.maxHeight='';
+  $('#stBadge').textContent='ROM · '+stAnimCells.length+'-frame animation'; }
+function stAnimStop(){ if(stAnimTimer){ clearTimeout(stAnimTimer); stAnimTimer=null; } }
+function stAnimSchedule(){ stAnimStop(); if(!stFullReady()||stAnimCells.length<2) return;
+  const dur=Math.max(1,(stAnimCells[stAnimFi%stAnimCells.length].duration)||3), base=(+$('#stSpeed').value)/6;
+  stAnimTimer=setTimeout(()=>{ stAnimFi=(stAnimFi+1)%stAnimCells.length;
+    if(!$('#stLoop').checked && stAnimFi===0){ stAnimStop(); return; }
+    stDrawAnim(); drawStill($('#stMini'),stCid,stPal); stAnimSchedule(); }, dur*base); }
+function stAnimStart(){ stAnimStop(); if(!stFullReady()) return; stAnimFi=0; stComputeBounds(); stDrawAnim(); stAnimSchedule(); }
+function stAnimPopulate(){ const wrap=$('#stAnimWrap'), hint=$('#stAnimHint'), gEl=$('#stAnimGrp');
+  if(!stFullReady()){ if(wrap)wrap.style.display='none'; if(hint)hint.style.display=''; return; }
+  if(wrap)wrap.style.display='flex'; if(hint)hint.style.display='none';
+  const groups=stFull.anim.groups, keys=Object.keys(groups).sort((a,b)=>a-b);
+  gEl.innerHTML=keys.map(g=>`<option value="${g}">g${g} · ${groups[g].kind||'?'} · ${groups[g].subanims.length}</option>`).join('');
+  stAnimSelectGroup(keys[0]); }
+function stAnimSelectGroup(g){ const grp=stFull&&stFull.anim.groups[g]; if(!grp) return; $('#stAnimGrp').value=g;
+  $('#stAnimSub').innerHTML=grp.subanims.map((s,i)=>`<option value="${i}">#${i} · ${s.cells.length}f</option>`).join('');
+  stAnimSelectSub(g,0); }
+function stAnimSelectSub(g,si){ const grp=stFull&&stFull.anim.groups[g], sub=grp&&grp.subanims[si]; if(!sub) return;
+  $('#stAnimSub').value=si; stAnimCells=sub.cells.filter(c=>c.sprite_id!==0xFFFF); stAnimFi=0;
+  if(stTool==='recolor') stAnimStart(); }
+function stTryFull(cid){ stFull=null; stAnimStop(); stAnimPopulate();
+  loadFullChar(cid).then(dec=>{ if(dec && stCid===cid){ stFull=dec; if(stTool==='recolor') studioRender(); else stAnimPopulate(); } }); }
+function studioInit(){
+  const sel=$('#stChar'); const cids=Object.keys(nameById).map(Number).sort((a,b)=>a-b);
+  sel.innerHTML=cids.map(c=>`<option value="${c}">PL${hex2(c).toUpperCase()} · ${nameById[c]}</option>`).join('');
+  sel.onchange=()=>studioLoad(+sel.value);
+  // canvas paint handlers (set once)
+  const cv=$('#stCanvas');
+  cv.addEventListener('contextmenu',e=>{ if(stTool!=='recolor') e.preventDefault(); });
+  cv.addEventListener('mousedown',e=>{ if(stTool==='recolor'||stTool==='onion'||stTool==='grid'||stTool==='sym') return; const pt=pxAt(e); if(!pt) return;
+    stPaintIdx = e.button===2 ? stBG : stFG;                 // left = FG, right = BG
+    if(stTool==='pick'){ if(e.button===2){ stBG=curPx(stFrame)[pt.i]; renderStPal(); } else paintPixel(pt); return; }
+    pushUndo();
+    if(stTool==='fill'){ floodFill(pt); }
+    else if(ST_SHAPES.includes(stTool)){ stShapeStart=pt; stDrawing=true; }
+    else { stDrawing=true; paintPixel(pt); } });
+  window.addEventListener('mousemove',e=>{ if(!stDrawing) return; const pt=pxAt(e); if(!pt) return;
+    if(ST_SHAPES.includes(stTool)) previewShape(stShapeStart,pt); else paintPixel(pt); });
+  window.addEventListener('mouseup',e=>{ if(!stDrawing) return; stDrawing=false;
+    if(ST_SHAPES.includes(stTool) && stShapeStart){ const pt=pxAt(e); if(pt) commitShape(stShapeStart,pt); else renderEditor(); stShapeStart=null; }
+    renderStFrames(); });
+  studioLoad(stCid!=null?stCid:(cids[0]??0));
+}
+function studioLoad(cid){
+  stCid=cid; const d=idleData[cid]; stFrame=0; stUndoStk=[]; stRedoStk=[];
+  stBase = d ? d.bank0.map((c,i)=>[c[0],c[1],c[2], i===0?0:(c[3]===undefined?255:c[3])]) : null;
+  const a=activeSkins[cid];
+  stPal = (a?.palette && d) ? bodyPalette(a.palette, d.bank0) : (stBase?clone16(stBase):null);
+  $('#stChar').value=cid; $('#stUnit').textContent='PL'+hex2(cid).toUpperCase();
+  $('#stName').textContent = a?skinLabel(a):'stock palette';
+  $('#stHue').value=0; $('#stSat').value=0; $('#stLum').value=0;
+  studioRender();
+  stTryFull(cid);   // async: pull the full DAT (every animation) from the ROM if one is set
+}
+// ── pixel data (indexed) — edited copy per frame, initialised from the decoded idle frames ──
+function origPx(f){ const fr=idleData[stCid]?.frames?.[f]; if(!fr) return null; return fr._px||(fr._px=b64bytes(fr.px)); }
+function curPx(f){ return (stEditPx[stCid]&&stEditPx[stCid][f]) || origPx(f); }
+function framePx(f){ stEditPx[stCid]=stEditPx[stCid]||{}; if(!stEditPx[stCid][f]){ const o=origPx(f); stEditPx[stCid][f]=o?new Uint8Array(o):null; } return stEditPx[stCid][f]; }
+function drawPx(cv,f){ const d=idleData[stCid]; const px=curPx(f); if(!d||!px||!stPal) return;
+  cv.width=d.w; cv.height=d.h; const ctx=cv.getContext('2d'); const img=ctx.createImageData(d.w,d.h);
+  for(let i=0;i<d.w*d.h;i++){ const c=stPal[px[i]]; const p=i*4; if(px[i]===0||!c||c[3]===0){ img.data[p+3]=0; } else { img.data[p]=c[0];img.data[p+1]=c[1];img.data[p+2]=c[2];img.data[p+3]=255; } }
+  ctx.putImageData(img,0,0);
+}
+function studioRender(){
+  animCards=animCards.filter(e=>!e.cv._st);
+  const cv=$('#stCanvas'), eb=$('#stEditBar');
+  if(stTool==='recolor'){
+    stEntry=null; stAnimStop(); stAnimPopulate();
+    if(stFullReady()){                                   // full ROM animation (every move), tinted live
+      if(eb) eb.style.display='none'; stAnimStart();
+    } else if(stPal && idleData[stCid]){                 // fall back to the idle-only loop
+      stEntry={cv,cid:stCid,pal16:stPal,idx:0}; cv._st=true; animCards.push(stEntry); drawIdle(stEntry);
+      cv.style.width=''; cv.style.height=''; cv.style.maxWidth=''; cv.style.maxHeight=''; if(eb) eb.style.display='none'; $('#stBadge').textContent='idle · animating';
+    }
+  } else {
+    stEntry=null; stAnimStop(); if(eb) eb.style.display='flex'; renderEditor();
+  }
+  drawStill($('#stMini'), stCid, stPal);
+  renderStPal(); renderStFrames();
+}
+function cv0(){ return $('#stCanvas'); }
+function renderEditor(){
+  const d=idleData[stCid]; if(!d||!stPal) return;
+  const cv=$('#stCanvas'), z=stZoom, W=d.w*z, H=d.h*z, ctx=cv.getContext('2d');
+  cv.width=W; cv.height=H; cv.style.width=''; cv.style.height=''; cv.style.maxWidth='none'; cv.style.maxHeight='none';
+  ctx.imageSmoothingEnabled=false; ctx.clearRect(0,0,W,H);
+  if(stOnion && stFrame>0) drawBlocks(ctx, stFrame-1, z, .28);
+  drawBlocks(ctx, stFrame, z, 1);
+  if(stRefImg){ ctx.globalAlpha=stRefOp; ctx.imageSmoothingEnabled=true; ctx.drawImage(stRefImg,0,0,W,H); ctx.imageSmoothingEnabled=false; ctx.globalAlpha=1; }
+  if(stGrid && z>=4){ ctx.strokeStyle='rgba(150,170,210,.12)'; ctx.lineWidth=1;
+    for(let x=0;x<=d.w;x++){ ctx.beginPath(); ctx.moveTo(x*z+.5,0); ctx.lineTo(x*z+.5,H); ctx.stroke(); }
+    for(let y=0;y<=d.h;y++){ ctx.beginPath(); ctx.moveTo(0,y*z+.5); ctx.lineTo(W,y*z+.5); ctx.stroke(); } }
+  $('#stBadge').textContent=z+'× · frame '+(stFrame+1)+'/'+(d.frames?.length||1)+' · '+stTool;
+}
+function drawBlocks(ctx,f,z,alpha){ const d=idleData[stCid], px=curPx(f); if(!px) return; ctx.globalAlpha=alpha;
+  for(let i=0;i<d.w*d.h;i++){ const c=stPal[px[i]]; if(px[i]===0||!c||c[3]===0) continue; ctx.fillStyle=`rgb(${c[0]},${c[1]},${c[2]})`; ctx.fillRect((i%d.w)*z,((i/d.w)|0)*z,z,z); } ctx.globalAlpha=1; }
+function pxAt(e){ const cv=$('#stCanvas'), r=cv.getBoundingClientRect(), d=idleData[stCid]; if(!d) return null;
+  const x=Math.floor((e.clientX-r.left)/(r.width/d.w)), y=Math.floor((e.clientY-r.top)/(r.height/d.h));
+  if(x<0||y<0||x>=d.w||y>=d.h) return null; return {x,y,i:y*d.w+x}; }
+function paintBlock(ctx,x,y,val,z){ ctx.clearRect(x*z,y*z,z,z);
+  if(val){ const c=stPal[val]; if(c&&c[3]!==0){ ctx.fillStyle=`rgb(${c[0]},${c[1]},${c[2]})`; ctx.fillRect(x*z,y*z,z,z); } }
+  if(stGrid&&z>=4){ ctx.strokeStyle='rgba(150,170,210,.12)'; ctx.strokeRect(x*z+.5,y*z+.5,z,z); } }
+function setPix(px,d,x,y,val,ctx,z){ if(x<0||y<0||x>=d.w||y>=d.h) return; px[y*d.w+x]=val; paintBlock(ctx,x,y,val,z); }
+function paintPixel(pt){ const px=framePx(stFrame), d=idleData[stCid]; if(!px||!d) return;
+  if(stTool==='pick'){ stFG=px[pt.i]; renderStPal(); return; }
+  const val=stTool==='erase'?0:stPaintIdx, r=stBrush-1, z=stZoom, ctx=cv0().getContext('2d');
+  for(let dy=-r;dy<=r;dy++)for(let dx=-r;dx<=r;dx++){ const x=pt.x+dx, y=pt.y+dy; setPix(px,d,x,y,val,ctx,z); if(stSym) setPix(px,d,d.w-1-x,y,val,ctx,z); } }
+function floodFill(pt){ const px=framePx(stFrame), d=idleData[stCid]; if(!px||!d) return;
+  const target=px[pt.i]; if(target===stPaintIdx) return; const w=d.w,h=d.h,stack=[pt.i];
+  while(stack.length){ const i=stack.pop(); if(px[i]!==target) continue; px[i]=stPaintIdx; const x=i%w,y=(i/w)|0;
+    if(x>0)stack.push(i-1); if(x<w-1)stack.push(i+1); if(y>0)stack.push(i-w); if(y<h-1)stack.push(i+w); }
+  renderEditor(); renderStFrames(); }
+function stLine(x0,y0,x1,y1,out){ let dx=Math.abs(x1-x0),dy=Math.abs(y1-y0),sx=x0<x1?1:-1,sy=y0<y1?1:-1,err=dx-dy;
+  while(true){ out.push([x0,y0]); if(x0===x1&&y0===y1)break; const e2=2*err; if(e2>-dy){err-=dy;x0+=sx;} if(e2<dx){err+=dx;y0+=sy;} } }
+function stShapePts(a,b){ const out=[];
+  if(stTool==='line') stLine(a.x,a.y,b.x,b.y,out);
+  else if(stTool==='rect'){ const x0=Math.min(a.x,b.x),x1=Math.max(a.x,b.x),y0=Math.min(a.y,b.y),y1=Math.max(a.y,b.y);
+    for(let x=x0;x<=x1;x++){out.push([x,y0]);out.push([x,y1]);} for(let y=y0;y<=y1;y++){out.push([x0,y]);out.push([x1,y]);} }
+  else if(stTool==='ellipse'){ const x0=Math.min(a.x,b.x),x1=Math.max(a.x,b.x),y0=Math.min(a.y,b.y),y1=Math.max(a.y,b.y);
+    const rx=(x1-x0)/2,ry=(y1-y0)/2,cx=(x0+x1)/2,cy=(y0+y1)/2,steps=Math.max(16,Math.round((rx+ry)*5));
+    for(let i=0;i<steps;i++){ const t=i/steps*6.283185; out.push([Math.round(cx+rx*Math.cos(t)),Math.round(cy+ry*Math.sin(t))]); } }
+  return out; }
+function previewShape(a,b){ renderEditor(); const d=idleData[stCid],z=stZoom,ctx=cv0().getContext('2d'),c=stPal[stPaintIdx];
+  ctx.fillStyle=c?`rgb(${c[0]},${c[1]},${c[2]})`:'#fff';
+  stShapePts(a,b).forEach(([x,y])=>{ if(x>=0&&y>=0&&x<d.w&&y<d.h) ctx.fillRect(x*z,y*z,z,z); if(stSym){const m=d.w-1-x; if(m>=0&&m<d.w&&y>=0&&y<d.h) ctx.fillRect(m*z,y*z,z,z);} }); }
+function commitShape(a,b){ const px=framePx(stFrame),d=idleData[stCid]; if(!px) return;
+  stShapePts(a,b).forEach(([x,y])=>{ if(x>=0&&y>=0&&x<d.w&&y<d.h) px[y*d.w+x]=stPaintIdx; if(stSym){const m=d.w-1-x; if(m>=0&&m<d.w&&y>=0&&y<d.h) px[y*d.w+m]=stPaintIdx;} }); renderEditor(); }
+function stRamp(){ if(!stPal) return; const a=stPal[stFG], b=stPal[stBG===0?15:stBG]; if(!a||!b) return;
+  const lo=Math.min(stFG, stBG===0?15:stBG), hi=Math.max(stFG, stBG===0?15:stBG); if(hi-lo<2) { toast('pick FG + BG slots further apart'); return; }
+  for(let i=lo;i<=hi;i++){ const t=(i-lo)/(hi-lo); stPal[i]=[Math.round(a[0]+(b[0]-a[0])*t),Math.round(a[1]+(b[1]-a[1])*t),Math.round(a[2]+(b[2]-a[2])*t),255]; }
+  stRefresh(); toast('ramp filled between FG & BG'); }
+function pushUndo(){ const px=framePx(stFrame); if(!px) return; stUndoStk.push({f:stFrame,px:new Uint8Array(px)}); stRedoStk=[]; if(stUndoStk.length>60) stUndoStk.shift(); }
+function stUndo(){ if(!stUndoStk.length){ toast('nothing to undo'); return; } const op=stUndoStk.pop();
+  stRedoStk.push({f:op.f,px:new Uint8Array(framePx(op.f))}); stEditPx[stCid][op.f]=new Uint8Array(op.px); stFrame=op.f; renderEditor(); renderStFrames(); }
+function stRedo(){ if(!stRedoStk.length) return; const op=stRedoStk.pop();
+  stUndoStk.push({f:op.f,px:new Uint8Array(framePx(op.f))}); stEditPx[stCid][op.f]=new Uint8Array(op.px); stFrame=op.f; renderEditor(); renderStFrames(); }
+function stSetTool(tool){ stTool=tool; $$('#stRail .st-tool').forEach(x=>x.classList.toggle('on',x.dataset.tool===tool)); studioRender(); }
+function renderStPal(){
+  const host=$('#stPal'); host.innerHTML='';
+  (stPal||[]).forEach((c,i)=>{ const el=document.createElement('i');
+    if(i===0||c[3]===0) el.className='tr'; else el.style.background=`rgb(${c[0]},${c[1]},${c[2]})`;
+    if(i===stFG) el.classList.add('sel');
+    if(i===stBG && stBG!==0) el.classList.add('bg');
+    el.oncontextmenu=(e)=>{ e.preventDefault(); stBG=i; renderStPal(); };
+    el.onclick=()=>{ if(stTool==='recolor') editSwatch(i,el); else { stFG=i; renderStPal(); } };
+    host.appendChild(el); });
+}
+function stRefresh(){
+  document.querySelectorAll('#stPal i').forEach((el,i)=>{ const c=stPal[i]; const sel=el.classList.contains('sel');
+    if(i===0||c[3]===0){ el.className='tr'+(sel?' sel':''); el.style.background=''; }
+    else { el.className=sel?'sel':''; el.style.background=`rgb(${c[0]},${c[1]},${c[2]})`; } });
+  if(stEntry){ stEntry.pal16=stPal; drawIdle(stEntry); }
+  if(stFullReady() && stTool==='recolor' && !stAnimTimer) stDrawAnim();   // reflect palette edits when paused
+  drawStill($('#stMini'), stCid, stPal); renderStFrames();
+}
+function editSwatch(i,el){
+  if(i===0) return;
+  document.querySelectorAll('#stPal i').forEach(x=>x.classList.remove('sel')); el.classList.add('sel');
+  const inp=document.createElement('input'); inp.type='color'; const c=stPal[i];
+  inp.value='#'+hex2(c[0])+hex2(c[1])+hex2(c[2]); inp.style.cssText='position:fixed;left:-9999px;opacity:0';
+  document.body.appendChild(inp);
+  inp.oninput=()=>{ const v=inp.value; stPal[i]=[parseInt(v.slice(1,3),16),parseInt(v.slice(3,5),16),parseInt(v.slice(5,7),16),255]; stRefresh(); };
+  inp.onchange=()=>inp.remove(); inp.click();
+}
+function rgb2hsl(r,g,b){ r/=255;g/=255;b/=255; const mx=Math.max(r,g,b),mn=Math.min(r,g,b); let h,s,l=(mx+mn)/2;
+  if(mx===mn){h=0;s=0;}else{const d=mx-mn; s=l>.5?d/(2-mx-mn):d/(mx+mn); h=mx===r?(g-b)/d+(g<b?6:0):mx===g?(b-r)/d+2:(r-g)/d+4; h/=6;} return [h*360,s*100,l*100]; }
+function hsl2rgb(h,s,l){ h/=360;s/=100;l/=100; const f=n=>{const k=(n+h*12)%12; return l - s*Math.min(l,1-l)*Math.max(-1,Math.min(k-3,9-k,1));}; return [Math.round(f(0)*255),Math.round(f(8)*255),Math.round(f(4)*255)]; }
+function studioAdjust(){
+  if(!stBase) return; const dh=+$('#stHue').value, ds=+$('#stSat').value, dl=+$('#stLum').value;
+  stPal = stBase.map((c,i)=>{ if(i===0) return [0,0,0,0]; let [h,s,l]=rgb2hsl(c[0],c[1],c[2]); h=(h+dh+360)%360; s=Math.max(0,Math.min(100,s+ds)); l=Math.max(0,Math.min(100,l+dl)); const [r,g,b]=hsl2rgb(h,s,l); return [r,g,b,255]; });
+  stRefresh();
+}
+function renderStFrames(){
+  const host=$('#stFrames'); if(!host) return;
+  const d=idleData[stCid];
+  if(!d||!d.frames||!stPal){ host.innerHTML='<span class="empty">load a character to see frames</span>'; return; }
+  host.innerHTML='';
+  d.frames.slice(0,24).forEach((f,i)=>{ const el=document.createElement('div'); el.className='fr'+(i===stFrame?' on':''); el.innerHTML='<canvas></canvas>';
+    drawPx(el.querySelector('canvas'), i);
+    el.onclick=()=>{ stFrame=i; $$('#stFrames .fr').forEach((x,j)=>x.classList.toggle('on',j===i)); if(stTool!=='recolor') renderEditor(); };
+    host.appendChild(el); });
+}
+function stNm(){ return (nameById[stCid]||('PL'+hex2(stCid))).replace(/\s+/g,''); }
+function stDl(href,name){ const a=document.createElement('a'); a.download=name; a.href=href; a.click(); }
+function stFrameCanvas(f,scale){ const d=idleData[stCid], px=curPx(f), cv=document.createElement('canvas'); cv.width=d.w*scale; cv.height=d.h*scale;
+  const ctx=cv.getContext('2d'); ctx.imageSmoothingEnabled=false;
+  for(let i=0;i<d.w*d.h;i++){ const c=stPal[px[i]]; if(px[i]===0||!c||c[3]===0) continue; ctx.fillStyle=`rgb(${c[0]},${c[1]},${c[2]})`; ctx.fillRect((i%d.w)*scale,((i/d.w)|0)*scale,scale,scale); } return cv; }
+let stPlayTimer=null;
+function stPlayStep(){ const d=idleData[stCid]; if(!d||!d.frames) return; stFrame=(stFrame+1)%d.frames.length;
+  if(!$('#stLoop').checked && stFrame===0){ stPlayStop(); return; }
+  const cv=$('#stCanvas'); drawPx(cv,stFrame); cv.style.width=''; cv.style.height=''; cv.style.maxWidth=''; cv.style.maxHeight='';
+  drawStill($('#stMini'),stCid,stPal,stFrame); $$('#stFrames .fr').forEach((x,j)=>x.classList.toggle('on',j===stFrame)); }
+function stPlayStart(){ if(stPlayTimer||!idleData[stCid]) return; animCards=animCards.filter(e=>!e.cv._st); stEntry=null;
+  $('#stPlay').textContent='⏸ Pause'; stPlayTimer=setInterval(stPlayStep, +$('#stSpeed').value); }
+function stPlayStop(){ if(stPlayTimer){ clearInterval(stPlayTimer); stPlayTimer=null; } $('#stPlay').textContent='▶ Play'; studioRender(); }
+function stExportFrame(){ if(!idleData[stCid]||!stPal){ toast('nothing to export'); return; } stDl(stFrameCanvas(stFrame,6).toDataURL('image/png'), `${stNm()}_frame${stFrame+1}.png`); toast('frame PNG exported'); }
+function stExportSheet(){ const d=idleData[stCid]; if(!d||!stPal) return; const n=Math.min(d.frames.length,24), s=4;
+  const cv=document.createElement('canvas'); cv.width=d.w*s*n; cv.height=d.h*s; const ctx=cv.getContext('2d'); ctx.imageSmoothingEnabled=false;
+  for(let f=0;f<n;f++){ ctx.drawImage(stFrameCanvas(f,s), f*d.w*s, 0); }
+  stDl(cv.toDataURL('image/png'), `${stNm()}_sheet.png`); toast(`sheet PNG (${n} frames) exported`); }
+function stExportJson(){ const skin={ char_id:stCid, name:nameById[stCid], palette_hex:(stPal||[]).map(c=>'#'+hex2(c[0])+hex2(c[1])+hex2(c[2])), source:'MvC Skin Suite · Studio' };
+  stDl('data:application/json;charset=utf-8,'+encodeURIComponent(JSON.stringify(skin,null,2)), `${stNm()}_skin.json`); toast('skin.json exported'); }
+// ── reference overlay ──
+function stLoadRef(file){ if(!file) return; const url=URL.createObjectURL(file); const img=new Image();
+  img.onload=()=>{ stRefImg=img; $('#stRefBar').classList.add('show'); if(stTool==='recolor') stSetTool('pencil'); else renderEditor(); toast('reference loaded — trace away'); };
+  img.src=url; }
+// ── custom skins → Library drawer ──
+function getCustomSkins(cid){ try{ return (JSON.parse(localStorage.getItem('suite_custom_skins')||'{}')[cid]||[]); }catch(e){ return []; } }
+function saveCustomSkin(cid, name, pal){ let all={}; try{ all=JSON.parse(localStorage.getItem('suite_custom_skins')||'{}'); }catch(e){}
+  all[cid]=all[cid]||[]; all[cid].unshift({author:'You', file:name, skinName:name, palette:pal}); all[cid]=all[cid].slice(0,24);
+  try{ localStorage.setItem('suite_custom_skins', JSON.stringify(all)); }catch(e){} }
+function stApply(){ if(stCid==null||!stPal) return null;
+  const pal=stPal.map(c=>(c[0]<<16)|(c[1]<<8)|c[2]);
+  activeSkins[stCid]={sigs:(liveSigs[stCid]?.length?liveSigs[stCid]:[sigFromBank0(stCid)].filter(Boolean)), palette:pal, author:'Studio', skinName:'Custom'};
+  try{ localStorage.setItem('mvcskin_'+stCid, JSON.stringify({palette:pal,author:'Studio',skinName:'Custom'})); }catch(e){}
+  if(!myTeam.includes(stCid)) myTeam.push(stCid); return pal;
+}
+
+// ── boot ──
+async function boot(){
+  console.log('%c MvC Skin Suite — build gs-46 (rich logging: per-game TEAMS + biggest COMBO + METERS used pushed to the server; team-comp win-rate profiles [click a name on Ranks]; 🎯 Combo leaderboard tab. Combat offsets confirmed on the Steam NAOMI build via render-buffer + relative offsets.) ','background:#ffb020;color:#241700;font-weight:800;padding:3px 8px;border-radius:4px');
+  loadBaked();
+  try{ const d=await(await fetch('idle_frames.json')).json(); idleData=d; }catch(e){}
+  try{ const chars=await(await fetch('skins/characters.json')).json(); for(const c of chars){ dirById[c.char_id]=c.dir; nameById[c.char_id]=c.name; charByDir[c.dir]=c.char_id; } }catch(e){}
+  // restore saved skins
+  for(let i=0;i<localStorage.length;i++){ const k=localStorage.key(i); if(k&&k.startsWith('mvcskin_')){ const cid=+k.slice(8); try{ const v=JSON.parse(localStorage.getItem(k)); activeSkins[cid]={sigs:[sigFromBank0(cid)].filter(Boolean), palette:v.palette, author:v.author, skinName:v.skinName}; if(!myTeam.includes(cid)) myTeam.push(cid); }catch(e){} } }
+  invoke('sync_self').then(s=>{ mySteam=s||{}; refreshMe(); }).catch(()=>{ $('#meName').textContent='(inject hook)'; });
+  invoke('get_rom_path').then(p=>{ if(p){ $('#romPath').textContent=p; } refreshRomChip(p); }).catch(()=>refreshRomChip(''));
+  renderYou(); renderOpp(); pollStatus(); setInterval(pollStatus,3000);
+  pollTick();                                            // single serialized loop (state + on-demand capture)
+  presenceTick(); setInterval(presenceTick, 20000);      // heartbeat + live online count
+  if((localStorage.getItem('suite_sync')||'on')==='on' && !syncOn) toggleSync();  // Live sync defaults ON
+  if((localStorage.getItem('suite_paint')||'on')==='on' && !livePaint) toggleLivePaint();  // Live Paint default ON
+  if(!reduce) requestAnimationFrame(animLoop);
+  if(Object.values(activeSkins).some(a=>a.sigs.length)) writeAll();
+}
+
+// wire
+$('#syncToggle').onclick=toggleSync;
+$('#syncToggle').onkeydown=e=>{ if(e.key===' '||e.key==='Enter'){ e.preventDefault(); toggleSync(); } };
+$('#paintToggle').onclick=toggleLivePaint;
+$('#dClose').onclick=closeDrawer; $('#scrim').onclick=closeDrawer;
+$('#dSearch').oninput=renderDrawerGrid;
+$('#dRandom').onclick=()=>{ if(drawerSkins.length) applySkin(drawerCid, drawerSkins[Math.floor(Math.random()*drawerSkins.length)]); };
+$('#dStock').onclick=()=>{ if(drawerCid!=null) revertStock(drawerCid); };
+$$('.fx').forEach(b=> b.onclick=()=>setEffect(+b.dataset.m));
+$('#fxSpeed').oninput=()=>{ if(fxMode) invoke('set_effect',{mode:fxMode,speed:+$('#fxSpeed').value}); };
+$('#btnReset').onclick=async()=>{ activeSkins={}; myTeam=[]; for(let i=localStorage.length-1;i>=0;i--){ const k=localStorage.key(i); if(k&&k.startsWith('mvcskin_')) localStorage.removeItem(k); } fxMode=0; $$('.fx').forEach(b=>b.classList.toggle('on',+b.dataset.m===0)); try{ await invoke('reset_all'); }catch(e){} if(syncOn) publishMine(); renderYou(); toast('reset to stock'); };
+
+// ── Leaderboard (Ranks tab) — global Hall of Fame from the skinsync server ──
+let lbTab='streak', lbLoading=false;
+const LB_STAT_LABEL={streak:'streak',wins:'wins',ocv:'OCVs',perfect:'perfects',comeback:'comebacks',combo:'max combo'};
+const esc=s=>String(s==null?'':s).replace(/[<>&"]/g,c=>({'<':'&lt;','>':'&gt;','&':'&amp;','"':'&quot;'}[c]));
+async function renderLeaderboard(tab){
+  lbTab=tab||lbTab;
+  $$('#lbTabs button').forEach(b=>b.classList.toggle('on',b.dataset.lt===lbTab));
+  const list=$('#lbList'); if(!list||!invoke) return;
+  if(lbLoading) return; lbLoading=true;
+  if(!list.children.length||list.querySelector('.lb-empty')) list.innerHTML='<div class="lb-empty">LOADING…</div>';
+  try{
+    const res=await invoke('leaderboard',{tab:lbTab,limit:15});
+    const players=(res&&res.players)||[];
+    const mine=(mySteam&&mySteam.steamid)?String(mySteam.steamid):null;
+    if(!players.length){ list.innerHTML='<div class="lb-empty">NO RANKINGS YET — WIN A MATCH TO GET ON THE BOARD</div>'; return; }
+    const lab=LB_STAT_LABEL[lbTab]||'';
+    list.innerHTML=players.map((p,i)=>{
+      const isMe=mine&&String(p.steamid)===mine;
+      const rank=i===0?'👑':(i+1);
+      return `<div class="lb-row ${i===0?'r1':''} ${isMe?'me':''}">
+        <div class="lb-rank">${rank}</div>
+        <div class="lb-name lb-click" data-sid="${esc(p.steamid)}" data-nm="${esc(p.name||'Player')}">${esc(p.name||'Player')}${isMe?'<span class="me-tag">YOU</span>':''}</div>
+        <div class="lb-wl">${p.wins||0}W · ${p.losses||0}L</div>
+        <div class="lb-stat">${p.stat||0} ${lab}</div>
+      </div>`;
+    }).join('');
+  }catch(e){ list.innerHTML='<div class="lb-empty">LEADERBOARD UNAVAILABLE</div>'; }
+  finally{ lbLoading=false; }
+}
+$('#lbTabs')?.addEventListener('click',e=>{ const b=e.target.closest('button'); if(b) renderLeaderboard(b.dataset.lt); });
+$('#lbRefresh')?.addEventListener('click',()=>renderLeaderboard());
+
+// ── Click-a-name PROFILE: record + team-comp win-rates + recent matchup history (from server /profile) ──
+function charName(id){ return nameById[id] || ('#'+id); }
+function teamStr(t){ return (Array.isArray(t)&&t.length) ? t.map(charName).join(' / ') : '—'; }
+async function openProfile(sid,nm){
+  const modal=$('#pfModal'), body=$('#pfBody'); if(!modal||!invoke) return;
+  modal.classList.add('show'); body.innerHTML='<div class="lb-empty">LOADING…</div>';
+  try{
+    const p=await invoke('profile',{steamid:String(sid)});
+    if(!p||!p.found){ body.innerHTML=`<h3>${esc(nm||'Player')}</h3><div class="lb-empty">No games logged yet.</div>`; return; }
+    const gp=(p.wins||0)+(p.losses||0), wr=gp?Math.round(100*(p.wins||0)/gp):0;
+    const teams=(p.teams||[]).slice(0,8).map(t=>{ const cids=String(t.team).split(',').map(Number); const tw=t.games?Math.round(100*t.wins/t.games):0;
+      return `<tr><td>${esc(teamStr(cids))}</td><td>${t.games}</td><td>${t.wins}</td><td>${tw}%</td></tr>`; }).join('');
+    const recent=(p.recent||[]).slice(0,15).map(m=>`<tr class="${m.won?'w':'l'}">
+      <td>${m.won?'W':'L'}</td><td>${esc(m.opp||'?')}</td><td>${esc(teamStr(m.my_team))}</td><td>${esc(teamStr(m.opp_team))}</td>
+      <td>${m.combo?('🎯'+m.combo):''}${m.ocv?' 💥':''}${m.perfect?' ✨':''}${m.comeback?' 🔄':''}</td></tr>`).join('');
+    body.innerHTML=`<h3>${esc(p.name||nm||'Player')}</h3>
+      <div class="pf-stats"><span><b>${p.wins||0}</b>W · <b>${p.losses||0}</b>L</span><span><b>${wr}%</b> win</span>
+        <span>🔥 <b>${p.best_streak||0}</b></span><span>🎯 <b>${p.best_combo||0}</b></span>
+        <span>💥 ${p.ocvs||0} · ✨ ${p.perfects||0} · 🔄 ${p.comebacks||0}</span></div>
+      <h4>Team compositions</h4>
+      <table class="pf-tbl"><tr><th>Team</th><th>GP</th><th>W</th><th>WR</th></tr>${teams||'<tr><td colspan="4">—</td></tr>'}</table>
+      <h4>Recent matches</h4>
+      <table class="pf-tbl"><tr><th></th><th>Opp</th><th>Your team</th><th>Their team</th><th></th></tr>${recent||'<tr><td colspan="5">—</td></tr>'}</table>`;
+  }catch(e){ body.innerHTML='<div class="lb-empty">PROFILE UNAVAILABLE</div>'; }
+}
+$('#lbList')?.addEventListener('click',e=>{ const n=e.target.closest('.lb-click'); if(n) openProfile(n.dataset.sid,n.dataset.nm); });
+$('#pfX')?.addEventListener('click',()=>$('#pfModal').classList.remove('show'));
+$('#pfModal')?.addEventListener('click',e=>{ if(e.target.id==='pfModal') e.currentTarget.classList.remove('show'); });
+function refreshRomChip(p){ const ok=p&&p!=='(not set)'&&p!=='(not found)'; $('#romChipTxt').textContent = ok ? (p.split(/[\\/]/).pop()||p) : 'not set'; $('#romChip').classList.toggle('set',!!ok); $('#romChip').title = ok?('ROM: '+p):'Set your Steam install / game_50.arc — required for Bake'; }
+$('#romChip').onclick=()=>$('#romModal').classList.add('show');
+$('#romModalX').onclick=()=>$('#romModal').classList.remove('show');
+$('#romModal').onclick=e=>{ if(e.target.id==='romModal') e.currentTarget.classList.remove('show'); };
+function onRomChanged(){ stFullCache={}; if(studioLoaded && stCid!=null) stTryFull(stCid); }
+async function saveRomPath(p){ if(!p) return; try{ const r=await invoke('set_rom_path',{path:p}); $('#romPath').textContent=r; $('#romInput').value=r; refreshRomChip(r); onRomChanged(); toast('ROM saved'); }catch(e){ toast('⚠ '+e); } }
+async function browseRom(directory){
+  const dlg=window.__TAURI__ && window.__TAURI__.dialog;
+  if(!dlg||!dlg.open){ toast('file dialog unavailable — paste the path instead'); return; }
+  try{
+    const picked=await dlg.open({ multiple:false, directory,
+      filters: directory ? undefined : [{ name:'Capcom ARC — game_50.arc', extensions:['arc'] }] });
+    if(picked) saveRomPath(String(picked));
+  }catch(e){ toast('⚠ '+e); }
+}
+$('#btnBrowseArc').onclick=()=>browseRom(false);
+$('#btnBrowseFolder').onclick=()=>browseRom(true);
+$('#btnDetectRom').onclick=async()=>{ $('#romPath').textContent='detecting…'; try{ const p=await invoke('detect_rom'); $('#romPath').textContent=p; $('#romInput').value=p; refreshRomChip(p); onRomChanged(); toast('ROM found'); }catch(e){ $('#romPath').textContent='(not found)'; toast('⚠ '+e); } };
+$('#btnSaveRom').onclick=()=>saveRomPath($('#romInput').value);
+$('#themeBtn').onclick=()=>{ const r=document.documentElement; const now=r.getAttribute('data-theme')||(matchMedia('(prefers-color-scheme:dark)').matches?'dark':'light'); r.setAttribute('data-theme', now==='dark'?'light':'dark'); };
+// suite tabs / library / target
+$('#tabs').addEventListener('click',e=>{ const b=e.target.closest('button'); if(b) switchTab(b.dataset.t); });
+$('#libSearch').oninput=renderLibrary;
+$('#targetSel').onclick=function(){ const b=this.querySelector('b'); const opts=['Steam Collection','Dreamcast ROM']; b.textContent=opts[(opts.indexOf(b.textContent)+1)%opts.length]; };
+$$('.applybar .radio').forEach(r=>r.onclick=()=>{ $$('.applybar .radio').forEach(x=>x.classList.remove('on')); r.classList.add('on'); libApplyMode=r.dataset.m; });
+$('#btnLibApply').onclick=async()=>{ await writeAll(); if(syncOn) publishMine(); toast(libApplyMode==='live'?'Applied — live (auto-paints on launch / in match)':'Bake pipeline lands in the next build — using Live for now'); };
+$('#btnLibRevert').onclick=()=>$('#btnReset').click();
+$('#btnManageLo').onclick=()=>toast('loadout manager — coming soon');
+$('#btnImportPack').onclick=()=>toast('skin-pack import — coming soon');
+// native Studio wiring
+$('#stHue').oninput=studioAdjust; $('#stSat').oninput=studioAdjust; $('#stLum').oninput=studioAdjust;
+$('#stStock').onclick=()=>{ stPal=stBase?clone16(stBase):null; $('#stHue').value=0;$('#stSat').value=0;$('#stLum').value=0; stRefresh(); $('#stName').textContent='stock palette'; };
+$('#stRandom').onclick=()=>{ $('#stHue').value=Math.floor(Math.random()*360-180); $('#stSat').value=Math.floor(Math.random()*80-30); $('#stLum').value=Math.floor(Math.random()*40-20); studioAdjust(); };
+$('#stApplyLive').onclick=async()=>{ if(stApply()==null) return; await writeAll(); if(syncOn) publishMine(); renderYou(); $('#stName').textContent='Custom · applied'; toast(`Applied ${nameById[stCid]} live`); };
+$('#stToMatch').onclick=async()=>{ if(stApply()==null) return; await writeAll(); if(syncOn) publishMine(); renderYou(); switchTab('match'); toast(`${nameById[stCid]} sent to Match`); };
+$('#stSave').onclick=()=>{ const pal=stApply(); if(pal==null) return; const nm=prompt('Skin name:', 'My '+(nameById[stCid]||'skin'))||'Custom'; saveCustomSkin(stCid, nm, pal); $('#stName').textContent=nm+' · saved'; toast(`Saved “${nm}” to Library`); };
+$('#stExport').onclick=(e)=>{ e.stopPropagation(); $('#stExportMenu').classList.toggle('open'); };
+$('#stExportMenu').addEventListener('click',e=>{ const b=e.target.closest('button'); if(!b) return; $('#stExportMenu').classList.remove('open');
+  ({frame:stExportFrame,sheet:stExportSheet,json:stExportJson})[b.dataset.x]?.(); });
+document.addEventListener('click',()=>$('#stExportMenu')?.classList.remove('open'));
+$('#stRefBtn').onclick=()=>$('#stRefInput').click();
+$('#stRefInput').onchange=e=>stLoadRef(e.target.files[0]);
+$('#stRefOp').oninput=e=>{ stRefOp=+e.target.value/100; if(stTool!=='recolor') renderEditor(); };
+$('#stRefClear').onclick=()=>{ stRefImg=null; $('#stRefBar').classList.remove('show'); if(stTool!=='recolor') renderEditor(); toast('reference cleared'); };
+$('#stBake').onclick=async()=>{
+  if(stCid==null||!stPal){ return; }
+  let arc=''; try{ arc=await invoke('get_rom_path'); }catch(e){}
+  if(!arc){ toast('set your Steam install / game_50.arc first (⚙ ROM on the Match tab)'); return; }
+  const colors=stPal.map(c=>(c[0]<<16)|(c[1]<<8)|c[2]);
+  if(!confirm(`Bake ${nameById[stCid]}'s palette PERMANENTLY into the game files?\n\n${arc}\n\nA .bak backup is made automatically first. ⚠ Online ranked may checksum game files.`)) return;
+  const b=$('#stBake'); b.textContent='Baking…'; b.disabled=true;
+  try{ const r=await invoke('bake_palette',{arcPath:arc, charId:stCid, colors}); recordBaked(stCid, stPal); toast('✓ '+r); $('#stName').textContent='baked · restart game to see it'; }
+  catch(e){ toast('⚠ bake failed: '+e); }
+  b.textContent='⬇ Bake'; b.disabled=false;
+};
+$('#stUndo').onclick=stUndo; $('#stRedo').onclick=stRedo;
+$$('#stRail .st-tool').forEach(t=>t.onclick=()=>{ if(t.classList.contains('soon')){ toast('select/stamp — later phase'); return; }
+  const tool=t.dataset.tool;
+  if(tool==='onion'){ stOnion=!stOnion; t.classList.toggle('on',stOnion); if(stTool!=='recolor') renderEditor(); return; }
+  if(tool==='grid'){ stGrid=!stGrid; t.classList.toggle('on',stGrid); if(stTool!=='recolor') renderEditor(); return; }
+  if(tool==='sym'){ stSym=!stSym; t.classList.toggle('on',stSym); return; }
+  stSetTool(tool); });
+$('#stCopyHex').onclick=(e)=>{ e.stopPropagation(); const hex=(stPal||[]).map(c=>'#'+hex2(c[0])+hex2(c[1])+hex2(c[2])).join(' '); if(navigator.clipboard) navigator.clipboard.writeText(hex).then(()=>toast('palette hex copied'),()=>toast('copy blocked')); else toast('clipboard unavailable'); };
+$('#stFit').onclick=()=>{ const d=idleData[stCid], stg=$('#stStage'); if(!d||!stg) return; const z=Math.max(2,Math.min(16,Math.floor(Math.min((stg.clientWidth-30)/d.w,(stg.clientHeight-30)/d.h)))); stZoom=z; $('#stZoomR').value=z; $('#stZoomN').textContent=z+'×'; if(stTool!=='recolor') renderEditor(); };
+$$('#stEditBar .st-eb[data-b]').forEach(b=>b.onclick=()=>{ $$('#stEditBar .st-eb[data-b]').forEach(x=>x.classList.remove('on')); b.classList.add('on'); stBrush=+b.dataset.b; });
+$('#stZoomR').oninput=e=>{ stZoom=+e.target.value; $('#stZoomN').textContent=stZoom+'×'; if(stTool!=='recolor') renderEditor(); };
+window.addEventListener('keydown',e=>{ if(!$('#p-studio').classList.contains('on')) return; const tg=e.target.tagName; if(tg==='INPUT'||tg==='SELECT'||tg==='TEXTAREA') return;
+  if(e.ctrlKey||e.metaKey){ if(e.key.toLowerCase()==='z'){ e.preventDefault(); e.shiftKey?stRedo():stUndo(); } else if(e.key.toLowerCase()==='y'){ e.preventDefault(); stRedo(); } return; }
+  if(e.key.toLowerCase()==='x'){ e.preventDefault(); [stFG,stBG]=[stBG,stFG]; renderStPal(); return; }
+  const m={b:'pencil',g:'fill',e:'erase',i:'pick',c:'recolor',l:'line',r:'rect',o:'ellipse'}; const t=m[e.key.toLowerCase()]; if(t){ e.preventDefault(); stSetTool(t); } });
+$('#stRampBtn').onclick=stRamp;
+$('#stPlay').onclick=()=>{
+  if(stFullReady() && stTool==='recolor'){ if(stAnimTimer){ stAnimStop(); $('#stPlay').textContent='▶ Play'; } else { stAnimSchedule(); $('#stPlay').textContent='⏸ Pause'; } return; }
+  stPlayTimer?stPlayStop():stPlayStart();
+};
+$('#stSpeed').oninput=()=>{ if(stAnimTimer){ stAnimStop(); stAnimSchedule(); } else if(stPlayTimer){ stPlayStop(); stPlayStart(); } };
+$('#stAnimGrp').onchange=e=>stAnimSelectGroup(e.target.value);
+$('#stAnimSub').onchange=e=>stAnimSelectSub($('#stAnimGrp').value, +e.target.value);
+$('#stAnimHint').onclick=()=>$('#romModal').classList.add('show');
+$('#stKeys').onclick=()=>$('#stKeysModal').classList.add('show');
+$('#stKeysX').onclick=()=>$('#stKeysModal').classList.remove('show');
+$('#stKeysModal').onclick=e=>{ if(e.target.id==='stKeysModal') e.currentTarget.classList.remove('show'); };
+
+boot();
+</script>
+</body>
+</html>

@@ -1,0 +1,12 @@
+{
+  "Sentinel": {
+    "char_dir": "Sentinel",
+    "char_id": 52,
+    "lines": 3,
+    "stock_lines": [
+      "00000000000000ffeeeeffffbbbbeeff9988bbff776699ff554477ff443344ffccccffff99aaeeff7788ccff5566aaff334488ff002255ffffffffffff8800ff",
+      "00000000ffffffffeeeeeeffddddddff777777ff555555ff444444ff222222ffffdd44ffffbb33ffff9900ffffff99ffffee00ffffdd44ffff9933ffff6600ff",
+      "00000000999999ff666666ff444444ff333333ff111111ffffff22ffffee22ffffbb22ffbb7711ff995500ffffffccffffdd88ffdd9966ffff2222ff000000ff"
+    ]
+  }
+}

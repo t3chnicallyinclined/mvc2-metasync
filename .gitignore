@@ -1,0 +1,36 @@
+# ── Rust / Tauri build output ──
+/src-tauri/target/
+
+# ── Node ──
+**/node_modules/
+
+# ── Local data / logs / backups (never ship) ──
+*.log
+*.bak
+*.bak.*
+records.json
+matches.json
+
+# ── Secrets (none are in-repo; keep them out forever) ──
+.env
+*.env
+.env.*
+*.pem
+*.key
+secrets.json
+credentials.json
+
+# ── ROM-derived game data (BYOR — the app ships NO game data) ──
+/web/test-atlas/
+**/track*.bin
+**/*.arc
+**/*.gdi
+# Skin-library sprite RENDERS = character art + palette (ROM-derived). Palette/metadata JSON is kept.
+/web/skins/**/*.png
+
+# ── Claude local overrides (permissions) ──
+.claude/settings.local.json
+
+# ── OS ──
+Thumbs.db
+.DS_Store
