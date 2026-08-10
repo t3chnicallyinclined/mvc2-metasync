@@ -180,7 +180,7 @@ live events (take damage → find the field that drops; enter/leave match → fi
 
 ---
 
-## 7. THE PLAN (pointer-path RE)
+## 7. THE PLAN (pointer-path RE)  —  ✅ CORE SOLVED, see §7b (THE ANCHOR METHOD)
 
 **Goal:** stable, always-live reads with zero scanning → correct both-sides health, real match state, real
 opponent, no frame hitches.
@@ -201,6 +201,44 @@ opponent, no frame hitches.
 
 **Verification harness:** a small probe that, given the guest-RAM base, prints both sides' health + `in_match`
 live during a match and confirms they animate (the `saw_both` / frame-counter liveness idea, but anchored).
+
+---
+
+## 7b. ✅ SOLVED (2026-08-04) — THE ANCHOR METHOD (read guest structs scan-free)
+
+**Status: shipped in `mvc-live-skins/src-tauri/src/sync.rs` (build gs-69).** The fighter array is now read with NO scan via a computed anchor. This is the concrete realization of §7's pointer-path goal — and it turned out *simpler* than a pointer deref because of a property found live.
+
+### The two facts that make it work
+1. **`flycast_base` is fingerprintable, no content scan.** flycast reserves the whole guest address space as ONE ~512 MB `PAGE_READWRITE` committed block. It is the **`>=128 MB` RW committed region that CONTAINS the working-buffer window (host `0x10000000`)**. Enumerate regions with `VirtualQueryEx`, pick that block → `flycast_base`. ~microseconds, no reads. ASLR'd per launch (measured 0x95e0000, 0x9760000) but always found this way.
+2. **The live array is at a FIXED offset from it, and rollback copies share DatPals.** `array = flycast_base + ARRAY_OFF` where **`ARRAY_OFF = 0x10b33fc8`** — verified IDENTICAL across launches (0x95e0000→0x1a113fc8, 0x9760000→0x1a293fc8). The rollback netcode keeps **~14 savestate COPIES** of the array at ~0x110000 intervals; a fixed offset lands on one deterministically. Crucially, **every copy carries the SAME DatPal pointers** (dp0=0x1207e8a0 on all copies, confirmed live), so a palette write is correct from ANY copy. And 0x10b33fc8 is exactly where the old liveness-preferring `find_array` landed → it's the ANIMATING copy (so health/cards read live too).
+
+### Why NOT a pointer deref (we tried)
+`scratchpad/ptrhunt` searched every RW region for a stored pointer to a live copy in all forms (host64 / host-lo32 / offset32) — **none exists.** flycast addresses guest RAM by computed `base + (addr & mask)`, not a stored global pointer, so there is nothing to deref; a genuine pointer hunt would need Ghidra. The fixed-offset anchor + shared-DatPals property makes the deref unnecessary.
+
+### The code (sync.rs)
+```rust
+const ARRAY_OFF: usize = 0x10b3_3fc8;
+unsafe fn flycast_base(h) -> usize          // the >=128MB RW block containing 0x10000000
+unsafe fn anchor_array(h) -> Option<usize>  // flycast_base + ARRAY_OFF, accepted IFF array_valid()
+                                            // AND some fighter has health 1..=144 (rejects the
+                                            // between-games [0,1,2,3,4,5] template)
+```
+Wired FIRST in `read_gamestate_rpm` (before the `hint` reuse and before the heavy `find_array`). `find_array` (the ~1 GB cluster scan) is kept ONLY as a fallback if a future game build shifts the offset.
+
+### THE GENERAL RECIPE — anchor ANY guest structure scan-free
+Repeat this to move roster / battle-globals / set-score / char-select onto the anchor:
+1. **During a live occurrence** (a fight, a specific screen), find the struct by a cheap content signature. The read-only probes in the session scratchpad do this: `arrayfind`/`ptrhunt` (fighter array by the stride-0x738 + char_id@+0x554 + WB-DatPal@+0x4c fingerprint), `palhunt` (palette rows), `slotread` (dump 6 slots from a base). Record its host address.
+2. **`offset = host_addr − flycast_base`** (`rambase` probe prints both).
+3. **Verify `offset` STABLE across ≥2 launches** — relaunch the game, re-measure. ASLR moves `flycast_base`; the offset must be constant (as ARRAY_OFF was, to the byte).
+4. **Anchor:** `struct = flycast_base + OFFSET`, gated by a cheap invariant, old scan kept as fallback.
+5. **If the struct is rollback-copied,** confirm the field you use is consistent across copies (as the DatPals are) — then any copy at the fixed offset is fine. If it must be the *live* frame, verify the fixed offset lands on an animating copy (find_array's liveness heuristic is a good cross-check).
+
+### What the anchor unlocks
+- **Paint BEFORE the round starts.** The anchor locks the moment fighters are on the stage with health (the pre-round "Ready?" beat), so DatPals are known and skins paint before "FIGHT!" — not after the first hit.
+- **Optimization roadmap, all the SAME method** (see the data-source table this doc's owner keeps): (a) ✅ **DONE (gs-70)** — **roster** now comes from the anchored array's char_ids (`anchor_roster` in sync.rs), deleting the ~1 GB `rpm_occurrences` wide relocate from the hot path; the sig-scan is kept only as the character-select fallback (bonus: a mirror reads 6 slots so the `n>=6` "match" gate finally fires). (b) **battle-globals** page `flycast_base + GLOBALS_OFF` (find via differential across screens) → real `in_match`/`timer`/`stage`/**Battle-State screen discriminator (≤5 pre-fight / ≥6 active)**/combo/meter; (c) **`num_wins` set-score** from the anchored P1C1/P2C1 structs (+~0x540 — confirm on Steam) → authoritative W/L, retires the health-KO heuristic; (d) **opponent SteamID is HOST-side**, so NOT a guest offset — anchor it via a fixed exe pointer (separate Ghidra/differential hunt), not this recipe. (b)+(c)+(d) are the "next session, scan everything the same way" batch.
+
+### Offsets known on the Steam build (all struct-relative to a slot `cl = array_base + i*0x738`, i=0..5, order P1C1,P2C1,P1C2,P2C2,P1C3,P2C3)
+`char_id @ cl+0x554` · `color @ cl+0x6` · `DatPal @ cl+0x4c` (WB pointer 0x10000000..0x14200000) · `health @ cl+0xb44` (0..144) · `combo @ cl+0x1ca`. Meter @ `array_base+0x2e636` (P1) / +1 (P2). These are Steam-empirical — the DC/marvelous2 offsets in §10 do NOT map (§5); use §10 for SEMANTICS only.
 
 ---
 
@@ -458,3 +496,55 @@ fields — the logic transfers verbatim once the Steam offsets are located. Samp
   (4) **char_pal_effect @ +0x40** — free per-hit flash pulse for frame-precise combo/damage timing;
   (5) **hitstun_flag @ +0x275** (0xFF in hitstun) — clean "is being combo'd" bit; (6) **x_opponent_distance
   @ +0x298** — spacing/footsies analytics; (7) **is_cpu @ +0x525** — filter CPU/training frames.
+
+## 11. ROM EXTRACTION + BOOTING THE COLLECTION'S OWN BUILD (2026-08-10)
+
+**Goal shift.** State-INJECTION into *stock* flycast (make a standard `mvsc2` romset reproduce the Collection
+layout, then write Collection RAM into it) = **NO-GO** (naomi-re-expert): flycast boots only standard **0x5A4**
+builds; the Collection is **0x738**. The tractable reframe: **boot the Collection's OWN build in an emulator we
+control** (maplecast-flycast). Then savestates, state-cloning, and 0x738-native training data all fall out.
+Nobody has extracted/booted this before (game-extraction-toolbox: "MVC2 not yet extractable").
+
+### 11a. Architecture model (confirmed + inferred)
+- The Collection = a **flycast-DERIVED emulator** + a menu/wrapper front-end that **navigates modes by loading
+  savestates** — the live guest RAM holds a ring of ~6 byte-identical 32MiB savestate copies (rollback + instant
+  mode entry). Training mode = a **Dreamcast** feature (arcade NAOMI lacks it) ⟹ the wrapped game is DC-lineage
+  (build banner `__DEV_TYPE_DC__`).
+- ⟹ The Collection's savestate format is a **flycast DERIVATIVE** → parseable against upstream `dc_serialize`
+  (aica/sb/nvmem/gdrom/maple/pvr/sh4…). A Collection savestate therefore carries clean guest RAM **+ the SH4
+  register context** (the CPU state that's hard to find in raw RAM). KEY: a savestate only loads into an emulator
+  running the SAME build → everything routes back to "boot the build."
+
+### 11b. Extraction chain (BYOR — DONE, novel)
+- `nativeDX11x64/arc/pc/game_50.arc` = Capcom "ARC" v7, SINGLE entry `bin\mvsc2`. Header: name[8..72], csize
+  u32@0x4c, dsize(low-29b)@0x50, doff u32@0x54. For `game_50.arc.ORIGINAL` (clean; the live one has skin edits):
+  doff=0x8000, payload = raw zlib (0x789c) → `zlib.decompress` → **112.6MB**.
+- 112.6MB = `IBIS`(hdr, ptr→0x40) → Sega `AFS\0` @0x40, **890 entries** (TOC @0x48: u32 off rel-0x40, u32 size;
+  char sprite DAT = entry **209+char_id**). ASSET+data ONLY — no IP.BIN/ISO9660/GDS/cart header ⟹ NOT a bootable
+  image, it's the game's data filesystem.
+- Build banner @ payload 0x2b08847: `D:\Naomi\bin\shcprm.exe` / `D:\Naomi\temp\SHC211c\` / Hitachi
+  `SH C/C++ Compiler 5.1(Release08)` / `-CP=SH4 -Fpu=Single -DEF=...,__DEV_TYPE_DC__`. 224 embedded source
+  FILENAMES (compiler debug crumbs, NOT source): chrdef.c, hit_def.h, hit_equ.h, em_play.c, s_pl03.c, game.c,
+  am_load.c, ef01.c… → a Ghidra module map.
+
+### 11c. The 0x738 open question (resolve FIRST)
+Stock DC-retail NTSC-U (marvelous2 / maplecast `mvc2.gdi`) = fighter stride **0x5A4**. Collection = **0x738**
+(+404 B/fighter) ⟹ NOT stock DC retail. Candidates: (a) DC **"Matching Service" online** JP version (per-fighter
+netplay state ≈ +404B) — a REAL dump may exist → BYOR + boot in flycast directly; (b) a Capcom recompile unique
+to the Collection. Decide via `SHC211c` cross-ref + a **live mid-match dump** (non-mirror team, all 6 healths
+distinct) to confirm whether a 0x5A4 core array ALSO exists (0x738 may be only the render/display record; the
+core logic could still be 0x5A4 — the skin tool only ever anchored the DatPal/render record).
+
+### 11d. Boot roadmap (cheapest first)
+1. **Match a known dump** — if 0x738 == a real DC revision (esp. JP online), BYOR that GDI, boot in flycast/Demul,
+   verify 0x738. Shortcuts everything.
+2. **Reconstruct a bootable image** — locate the SH4 executable among the 890 AFS entries (candidates: entry 1 =
+   73KB; the `0c000000`-headed = memory-load records), rebuild IP.BIN + ISO9660/GDI, boot in a DC emulator.
+3. **Port the loader** — Collection is a flycast FORK; diff its exe (8.8MB, image base 0x140000000; anchor via
+   `kcode @ exe+0xac6f58`, §2) vs upstream flycast in Ghidra to recover the AFS→guest loader + SH4 boot setup +
+   savestate format; replicate in maplecast-flycast. Most reliable; also yields the savestate parser.
+
+**RISK:** the 0x738 executable may call Collection host hooks — but core guest SH4 logic runs on emulated HW
+(rollback/savestate are host-side snapshotting, not guest calls), so the game itself is likely bootable; stub any
+host callbacks. Inner AFS entries may carry Capcom-specific encoding beyond the outer zlib. Extracted payload:
+session scratchpad `mvsc2_rom.bin`. Cross-ref memory `mvc-steam-naomi-revision` §2026-08-10.
