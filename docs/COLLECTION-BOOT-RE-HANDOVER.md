@@ -220,3 +220,30 @@ flycast+retail-ROM is the deterministic emulated twin; input-replay bridges them
 **PIVOT (final):** abandon boot/state-clone; proceed with **input-replay → harvest corpus → train**. The
 extraction work is not wasted — `capcom_texlz.py` + the decoded `20 00 00 00`/AFS containers are reusable for
 the skin pipeline and any future asset work.
+
+## 10. UPDATE 2026-08-10 — native-instrumentation feasibility (can we hook/drive the real game?)
+
+The exe is **Enigma-packed** (all sections RWX/nameless, "Enigma" ×7; disk file = garbage in Ghidra). Native MvC2
+lives in **`.text @ 0x140001000`** (~8.85 MB, dense `0x738`/`0x554`/`0x4FC` accessors) — the ~63 MB EXECUTE_READ
+region is `nvgpucomp64.dll` (NVIDIA), not game code. **Decrypted RVA-preserving dump for Ghidra:
+`C:\g\mvc2coll_dump_140000000.bin` @ base `0x140000000`.**
+- **Input injection = FEASIBLE, LOW effort:** `kcode @ exe+0xac6f58` is plain writable RW (no static xref — reader
+  holds a register pointer). Hook XInput/DInput in the co-resident DLL (recommended), or WPM `kcode` / per-fighter
+  input `struct+0x4FC` at a frame hook. **We can drive the real game.**
+- **Game-tick:** anchors — battle/match ctor `0x14011a500` (memsets `0xe00` block + `0x1c`-stride attack records),
+  serialization ctor `0x140040140` (magic `0x20240517` = a 1.22 MB match/replay record, NOT the 32 MB arena),
+  memcpy `0x140800aa0`. Finish via a DR0 write-watchpoint (VEH in the DLL) on a live health field → the writer →
+  walk to the 60 Hz root; cross-ref SH4 `Damage_Calc` (`bank05.asm:16681`). MED. ⚠ `0xb44` also indexes a
+  `0x9ac`-stride table — NOT unique to health.
+- **RNG:** DC `RngVal @ 0x8c16bc2c` (`work.asm`) → native = guest-arena-base + relocated offset (the recompile
+  keeps the DC memory model — `0x0C000000`/`0x8C000000` appear as code immediates); watchpoint to pin. MED.
+- **Rollback save/load:** 32 MB raw-arena memcpy, no serialize API, **~7-frame window** (not arbitrary savestates).
+  HIGH effort for an RL reset primitive.
+
+**VERDICT: do NOT make the native Collection the RL engine** — locked 1× real-time (no turbo; flycast does 100×+),
+no arbitrary savestate/reset, packed (anti-debug risk); flycast+retail-ROM already meets every RL need. **The
+Collection's genuine, low-effort value: (1) lossless real-player capture (in-DLL frame-hook), (2) fidelity oracle
+(drive identical inputs in both → diff → quantify flycast divergence), (3) drive-the-real-game showcase.** Final
+architecture stands: **Collection = real-player capture + fidelity oracle; flycast+retail-ROM = RL engine;
+input-replay bridges them.** Ghidra dump + probe scripts in the session scratchpad; live reader to extend =
+`src-tauri\src\sync.rs`.
