@@ -18,9 +18,11 @@ Companion: `MVC2-STEAM-EXPERT.md` (the RE bible; §11 = extraction/boot summary)
 - **Why the easy paths are gone (all ruled out, see §2):** stock flycast runs only `0x5A4` builds; no
   existing ROM matches `0x738`; and — live-proven — there is **no retail `0x5A4` core hiding inside
   the Collection**. The `0x738` record *is* the fighter struct.
-- **REMAINING PATH (B):** reconstruct a bootable DC image from the extracted program (**AFS entry
-  250**) by cracking the **inner Capcom codec**, rebuilding **IP.BIN + ISO9660 + GDI**, and stubbing
-  host callbacks — then boot in flycast/Demul. **Multi-day, AMBER/RED, may dead-end.**
+- **REMAINING PATH (B):** the `0x738` **engine** (~2.4 MB) is delivered **only** inside the compressed
+  **`0c000000` streams** — `entry250` turned out to be char DATA, not code (B2, 2026-08-10; see §8). So:
+  crack the **inner Capcom codec** → decompress + reconstruct the engine image at guest **`0x8c010000`**
+  (+ per-char code at `0x0CE30000`) → wrap in **IP.BIN + ISO9660 + GDI** → boot + stub host callbacks.
+  **The codec is the SOLE gate. Multi-day, AMBER/RED, may dead-end.**
 - **Fallback that already meets the training goal:** deterministic **input-replay** (validated
   2026-08-10 — a Magneto infinite reconstructed within a few HP, button counts 1:1). Arbitrary-moment
   cloning = replay the input log to any target frame. This stays available regardless of (B).
@@ -155,3 +157,31 @@ replicate in `maplecast-flycast`. Highest-reliability, highest-effort route.
   extraction + live-scan findings.
 - Scratchpad tools (not committed): `fp2_scan.py`, `core5a4_scan.py`, `fp_scan.py`, and the extracted
   `mvsc2_rom.bin` (BYOR — never commit).
+
+## 8. UPDATE 2026-08-10 — entry250 is DATA, not the program; the `0c000000` codec is the SOLE gate (B2)
+
+**B2 refuted the "entry250 = SH4 program" premise, decisively (grounded in bytes):**
+- **entry250 is character-3 DATA** (sprite/table overlay compiled from `s_pl03.c`), NOT executable code:
+  0 SH4 function prologues (`sts.l pr` = `22 4F`, `lds.l @r15+,pr` = `26 4F`) vs **2.572%** density in retail
+  `1ST_READ.BIN`. A sweep of **all 890 AFS entries** found max 0.016% (noise) → **no uncompressed AFS entry
+  contains the engine.**
+- **The `20 00 00 00` container is fully decoded** (reusable): 16-byte header = 4× u32 section-start offsets,
+  then sec0 (offset-table of u32 sub-records + blobs), sec1, sec2, and a systematic **64 KB sec3 trailer** =
+  the SH C build banner/module stamp. Same family as the char DATs the skin pipeline reads (`rom.rs`).
+- **99% lineage CONFIRMED:** entry210 carries a retail RCS module table dated **Dec 08–09 1999** (`game.c`,
+  `em_play.c`, `hit_def.h`, `s_pl03.c`, `plXX_tbl.s`, `hit_dtXX.s`, …) — the retail DC module set + SH C 5.1.
+- **`0x5A4→0x738` is a RELINK, not a constant.** `0x5A4` never appears as an immediate (it's a data-section
+  stride); enlarging the fighter struct relocates the 6 struct bases + everything after → genuine recompile.
+- **Load map (confirmed via runtime trace `trace_distinct_pcs.txt`):** engine @ guest **`0x8c010000`**
+  (~8500 of 8962 distinct PCs), per-character code @ **`0x0CE30000`**. entry250-class assets load into
+  `0x0c4xxxxx` datfile regions and **stream exactly as retail** once the engine boots.
+
+**Roadmap correction:**
+- **B2 is done / folded** — entry250 is not the program; its container work is reusable for asset streaming.
+- **B1 (inner `0c000000` codec) is now the SINGLE blocker** — the engine + per-char code exist ONLY in those
+  compressed streams. Codec correctness oracle: a correctly-decompressed **engine** record shows ~2.5%
+  `22 4F`/`26 4F` prologue density (asset records ~0%).
+- **B3 (revised):** decompress the `0c000000` memory-load records → reconstruct the `0x8c010000` engine image
+  (+ `0x0CE30000` char code) → wrap IP.BIN + ISO9660 + GDI (retail v1.001 GDI = template) → boot → stub host
+  callbacks. The eventual `0x5A4→0x738` diff (vs `_oracle\_re\pl_mem.asm` + `marv_symbols.json`) applies to the
+  **decompressed engine**, and the deltas will be **relocated absolute addresses**, not opcode edits.
