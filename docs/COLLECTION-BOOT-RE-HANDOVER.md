@@ -79,6 +79,24 @@ the `marvelous2` disassembly, and those module names. The recompile's diffs are 
 | `0x738` struct offsets | `src-tauri\src\sync.rs` | char_id +0x554, health +0xb44, DatPal +0x4c, input +0x4FC, pos_x +0x61c, combo +0x1ca. |
 | Extraction/scan tools | `…\scratchpad\`: `fp2_scan.py` (exact-order finder), `witness_capture.py` (array anchor), `core5a4_scan.py` | Read-only. |
 
+## 3a. RE data trove — SEARCH THESE to infer struct/pointer/routine/load info
+
+We hold a large MvC2 RE corpus — mine it before reversing from scratch. All under `maplecast-flycast`:
+- **Retail DC disassembly** (the ~99% baseline to diff entry250 against): `_oracle\_re\pl_mem.asm` (the
+  retail **0x5A4 fighter-struct** code), `bank03.asm`, `bank12.asm`, `work.asm`.
+- **Symbol table**: `tools\re_kb\ingest\data\marv_symbols.json` (retail function names→addresses — symbolize
+  the entry250 diff).
+- **RE knowledge base (SurQL)**: `tools\re_kb\` — `02_char_struct.surql`, `03_routines.surql`,
+  `04_memory_data.surql`, `05_characters.surql`; per-char move/frame data `ingest\data\anotak_PL*.json`
+  (+ `anotak_fields.json`); `disc_catalog.json`, `docs_findings.json`.
+- **asmtrace** (real SH4 runtime): `tools\render-replica-poc\` — `realcore\trace_distinct_pcs.txt` (function
+  entry map), `trace_entries.txt`, `trace_out.bin`, `sh4ctx_trace.h`, `trace_readset.c`. Confirms load address
+  (guest `0x8C010000`), entrypoint, and which routines actually touch the fighter struct.
+- **Oracle** (struct-field attribution / pointer anchoring): `_oracle\` — `mc_oracle.jsonl`,
+  `oracle_attribute.py`, `oracle_anchor.py`, `oracle_layers.py`.
+- **Inner-codec knowledge**: `mvc2-skin-studio\tools\gfx1_lzss.py` + `web\studio\rom-reader.mjs` (the skin
+  pipeline already reads sprite DATs from this AFS — check before writing a new decoder).
+
 ## 4. Path (B) roadmap
 
 ### B1 — Crack the inner Capcom codec  *(GATING; do first)*
