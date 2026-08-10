@@ -185,3 +185,38 @@ replicate in `maplecast-flycast`. Highest-reliability, highest-effort route.
   (+ `0x0CE30000` char code) → wrap IP.BIN + ISO9660 + GDI (retail v1.001 GDI = template) → boot → stub host
   callbacks. The eventual `0x5A4→0x738` diff (vs `_oracle\_re\pl_mem.asm` + `marv_symbols.json`) applies to the
   **decompressed engine**, and the deltas will be **relocated absolute addresses**, not opcode edits.
+
+## 9. UPDATE 2026-08-10 — (B) DEAD-END CONFIRMED: no SH4 engine exists; the Collection is a NATIVE x86-64 recompile
+
+**B1 cracked the inner codec** — Capcom **"Texture_compression"** (16-bit word-LZ, SH4 routine `loc_8c03552a`
+in `refs\marvelous2\bank03.asm`; decoder = `…\scratchpad\boot_re\capcom_texlz.py`, validated **52/52** →
+exact `0x8000`-byte outputs). **But the `0c000000` records are TEXTURES, not code** (SH4-density oracle =
+**0.000%** across 35.9 MB decoded; the routine is literally named "Texture_compression", target buffer
+`0x0ce60000`). No uncompressed AFS entry is code either (B2). So the engine is not in `game_50.arc`.
+
+**Then the calibrated live scan closed the whole question:**
+- Detector calibrated on retail `1ST_READ.BIN` = **2.572%** density (`4F22`/`4F26`, even-aligned; odd 0.001%).
+- **Live MvC2 match** (0x738 array present), scanned **2 GB** committed + all **twelve** 30–66 MB "guest-RAM"
+  blocks directly → **0.000% everywhere** (best 64 KB window 0.01%; blocks are 1–9% non-zero sparse data).
+- Host exe (8.8 MB): 0.003%, no embedded SH4.
+
+**Conclusion: there is NO resident SH4 code → the Collection does NOT emulate SH4 for MvC2. Its MvC2 logic was
+RECOMPILED from the original DC C source to NATIVE x86-64.** The "NAOMI/SH4 emulation" inferred from `0x8C`
+pointers was wrong — those are DATA-layout addresses preserved from the DC source (the recompile kept the DC
+memory map for the data model), not live SH4. The `SH C 5.1 / __DEV_TYPE_DC__` banner is a **fossil in the
+asset data**, not how the Collection runs.
+
+**⟹ (B) is a confirmed dead-end.** No SH4 "engine"/`1ST_READ` image exists to extract and boot in flycast —
+the Collection doesn't use one, and native x86 game logic can't run in a DC emulator. RE'ing the native x86
+logic is a massive undertaking and pointless for our goal.
+
+**Silver lining — this VALIDATES input-replay as the correct architecture:** `game_50.arc` = the ORIGINAL DC
+MvC2 assets (same data as retail — why skins work); the logic = a **99%-faithful native recompile** of the
+retail C source. So flycast running the REAL DC/NAOMI ROM (`mvsc2`/`marvelous2`) is a 99%-faithful twin of the
+Collection's logic — exactly why capturing the Collection's inputs and replaying them in flycast reproduces
+matches frame-accurately (proven 2026-08-10). **The Collection is the source of real-player INPUT data;
+flycast+retail-ROM is the deterministic emulated twin; input-replay bridges them.**
+
+**PIVOT (final):** abandon boot/state-clone; proceed with **input-replay → harvest corpus → train**. The
+extraction work is not wasted — `capcom_texlz.py` + the decoded `20 00 00 00`/AFS containers are reusable for
+the skin pipeline and any future asset work.
