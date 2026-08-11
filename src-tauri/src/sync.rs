@@ -769,6 +769,16 @@ pub fn set_share_gameplay(on: bool) -> Result<(), String> {
     Ok(())
 }
 
+/// Record Live-Sync consent to the service (audit trail). Fire-and-forget; never blocks the UI.
+#[tauri::command]
+pub fn record_consent(steamid: String, version: String) {
+    std::thread::spawn(move || {
+        let _ = ureq::post(&format!("{}/consent", SKINSYNC))
+            .timeout(std::time::Duration::from_secs(8))
+            .send_json(serde_json::json!({ "steamid": steamid, "version": version }));
+    });
+}
+
 // One captured frame row (matches GS_SCHEMA). Frame-keyed in a BTreeMap → sorted + last-write-wins.
 #[derive(Clone)]
 struct GsRow {
