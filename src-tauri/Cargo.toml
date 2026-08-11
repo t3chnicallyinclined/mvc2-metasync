@@ -1,6 +1,6 @@
 [package]
 name = "mvc-live-skins"
-version = "0.1.0"
+version = "0.1.9"
 description = "MvC Collection Live Skins — live palette skin changer for the Steam Marvel vs Capcom Fighting Collection"
 authors = ["tristech"]
 edition = "2021"
@@ -16,6 +16,7 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 tauri = { version = "2", features = [] }
 tauri-plugin-dialog = "2"
+tauri-plugin-updater = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 ureq = { version = "2", features = ["json", "tls"] }

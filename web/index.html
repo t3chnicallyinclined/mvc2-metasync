@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>MvC Collection Live Skins</title>
+<title>MetaSync</title>
 <style>
   /* ── MvC Live Skins · Match Board — fighting-game VS / netplay HUD ───── */
   :root{
@@ -124,6 +124,13 @@
   .swatches i{flex:1;}
   .edit{position:absolute; left:0; right:0; bottom:0; font-size:10.5px; font-weight:700; letter-spacing:.05em; text-transform:uppercase; color:var(--p1); background:linear-gradient(0deg,var(--p1-soft),transparent); padding:7px 0 6px; opacity:0; transform:translateY(6px); transition:.16s;}
   .card .dice{position:absolute; top:6px; right:6px; z-index:3; width:25px; height:25px; border-radius:7px; border:1px solid var(--line); background:var(--panel-2); color:var(--ink); font-size:12px; line-height:1; cursor:pointer; opacity:.72; transition:.14s; display:grid; place-items:center; padding:0;}
+  .card .confirm,.card .cancelp{position:absolute; top:6px; z-index:3; height:25px; border-radius:7px; border:1px solid var(--line); font-size:13px; line-height:1; cursor:pointer; display:grid; place-items:center; transition:.14s;}
+  .card .confirm{left:6px; padding:0 8px; background:#1e7d40; border-color:#31b365; color:#eafff1; font-weight:800;}
+  .card .confirm:hover{background:#25a052;}
+  .card .cancelp{left:36px; width:25px; padding:0; background:var(--panel-2); color:var(--ink); opacity:.7;}
+  .card .cancelp:hover{opacity:1;}
+  .card.pending{border-color:#31b365 !important; box-shadow:0 0 0 1px rgba(49,179,101,.4) inset;}
+  .card.pending .dice{opacity:1;}
   .card .dice:hover{opacity:1; border-color:var(--p1-line); transform:rotate(-12deg) scale(1.12);}
   .card.add{display:flex; flex-direction:column; align-items:center; justify-content:center; gap:6px; border-style:dashed; color:var(--dim); cursor:pointer; min-height:150px;}
   .card.add:hover{color:var(--ink); border-color:var(--p1-line);}
@@ -176,10 +183,14 @@
   .mode-pill.st-select{color:var(--gold); border-color:color-mix(in srgb,var(--gold) 42%,var(--line)); background:var(--gold-soft);}
   .mode-pill.st-match{color:var(--good); border-color:color-mix(in srgb,var(--good) 45%,var(--line)); background:color-mix(in srgb,var(--good) 12%,var(--panel));}
   .mode-pill.st-match .dot{animation:pulseDot 1.1s ease-in-out infinite; box-shadow:0 0 8px var(--good);}
+  .mode-pill.st-menu .dot{animation:pulseDot 1.5s ease-in-out infinite;}   /* "looking for a match" = live scan */
+  .mode-pill.st-off{color:var(--faint); opacity:.65;}
   @keyframes pulseDot{0%,100%{opacity:.4;} 50%{opacity:1;}}
   .side-swap{font-size:10.5px; font-weight:700; letter-spacing:.04em; padding:4px 9px; border-radius:999px; border:1px solid var(--line); background:var(--panel); color:var(--dim); cursor:pointer; white-space:nowrap; transition:.16s;}
   .side-swap:hover{color:var(--ink); border-color:var(--faint);}
   .side-swap b{color:var(--p1);} .side-swap.p2 b{color:var(--p2);}
+  .side-swap.unconfirmed{border-color:var(--gold,#ffb020); color:var(--gold,#ffb020); background:rgba(255,176,32,.10); animation:sidePulse 1.6s ease-in-out infinite;}
+  @keyframes sidePulse{0%,100%{box-shadow:0 0 0 0 rgba(255,176,32,.35);}50%{box-shadow:0 0 0 4px rgba(255,176,32,0);}}
   .card.detected{outline:1px dashed color-mix(in srgb,var(--p2) 40%,transparent); outline-offset:-1px;}
   @media (prefers-reduced-motion:reduce){ *{animation:none !important; transition:none !important;} }
 
@@ -320,22 +331,79 @@
   .applybar .radio .rb{width:15px;height:15px;border-radius:50%;border:2px solid var(--faint);margin-top:2px;flex:none;}
   .applybar .radio.on .rb{border-color:var(--gold); background:radial-gradient(circle,var(--gold) 40%,transparent 45%);}
   .applybar .radio .tt{font-weight:700; font-size:12.5px;} .applybar .radio .dd{font-size:10.5px; color:var(--dim); line-height:1.3;}
+  /* auto-update banner — built from the app's own tokens + .btn language so it reads as part of the app */
+  #updBanner.upd-banner{position:fixed; top:0; left:0; right:0; z-index:99999; display:flex; align-items:center; justify-content:center;
+    gap:11px; flex-wrap:wrap; padding:10px 18px; font-size:13px; font-weight:600; color:var(--ink);
+    background:linear-gradient(180deg,color-mix(in srgb,var(--gold) 15%,var(--panel)),var(--panel));
+    border-bottom:1px solid color-mix(in srgb,var(--gold) 40%,var(--line)); box-shadow:0 8px 24px rgba(0,0,0,.4);}
+  .upd-banner.ok{background:var(--panel); border-bottom-color:var(--line);}
+  .upd-banner .msg{display:inline-flex; align-items:center; gap:9px; line-height:1.3;}
+  .upd-banner .msg b{color:var(--gold); font-weight:800;}
+  .upd-banner.ok .msg b{color:var(--ink);}
+  .upd-banner .dot{width:8px; height:8px; border-radius:50%; flex:none; background:var(--gold); box-shadow:0 0 0 4px var(--gold-soft);}
+  .upd-banner.ok .dot{background:#37d67a; box-shadow:0 0 0 4px rgba(55,214,122,.16);}
+  .upd-banner .btn{padding:6px 14px; font-size:12.5px;}
+  .upd-banner .btn:hover{filter:brightness(1.07);}
+  .upd-banner .btn.ghost{background:transparent; color:var(--dim); border-color:var(--line); font-weight:700;}
+  .upd-banner .btn.ghost:hover{color:var(--ink); border-color:var(--faint); filter:none;}
+  .upd-banner .btn:disabled{opacity:.5; cursor:default; filter:none;}
+  /* matchup strip — win chance + team intel under the match board (built from the app's tokens) */
+  .matchup{margin:14px 0 0; padding:12px 16px; border:1px solid var(--line); border-radius:12px; background:var(--panel);
+    display:flex; flex-wrap:wrap; gap:14px 26px; align-items:center;}
+  .matchup .mu-main{display:flex; align-items:center; gap:14px; flex:1 1 300px; min-width:250px;}
+  .matchup .mu-win{text-align:center; flex:none;}
+  .matchup .mu-pct{font-size:26px; font-weight:900; line-height:1; color:var(--gold); font-variant-numeric:tabular-nums;}
+  .matchup .mu-lbl{font-size:9.5px; text-transform:uppercase; letter-spacing:.07em; color:var(--dim); margin-top:3px;}
+  .matchup .mu-bar{flex:1 1 auto; height:8px; border-radius:99px; background:var(--p2-soft); overflow:hidden; min-width:70px;}
+  .matchup .mu-fill{height:100%; border-radius:99px; background:linear-gradient(90deg,var(--p2),var(--gold)); width:50%; transition:width .45s ease;}
+  .matchup .mu-h2h{font-size:12px; color:var(--dim); white-space:nowrap;} .matchup .mu-h2h b{color:var(--ink); font-weight:800;}
+  .matchup .mu-teams{display:flex; gap:24px; flex-wrap:wrap;}
+  .matchup .mu-team{min-width:128px;}
+  .matchup .mu-tl{font-size:9.5px; text-transform:uppercase; letter-spacing:.04em; color:var(--dim); margin-bottom:3px;}
+  .matchup .mu-tv{font-size:12.5px; font-weight:700; color:var(--ink);} .matchup .mu-tv small{color:var(--dim); font-weight:600;}
+  .mirror-tag{display:inline-flex; align-items:center; gap:4px; font-size:10.5px; font-weight:700; padding:2px 8px; border-radius:99px;
+    background:var(--p2-soft); color:var(--p2); border:1px solid var(--p2-line); white-space:nowrap;}
+  /* live version-status pill + changelog modal */
+  .upd-status{display:inline-flex; align-items:center; gap:3px; font-size:9.5px; font-weight:800; letter-spacing:.03em; padding:1px 7px; border-radius:99px; cursor:pointer; border:1px solid var(--line); color:var(--faint); vertical-align:middle; transition:.14s;}
+  .upd-status:empty{display:none;}
+  .upd-status.ok{color:#37d67a; border-color:rgba(55,214,122,.4); background:rgba(55,214,122,.1);}
+  .upd-status.avail{color:var(--gold-ink); background:var(--gold); border-color:var(--gold);}
+  .upd-status.err{color:var(--p1); border-color:var(--p1-line);}
+  .cl-title{margin:0 0 12px; font-size:16px; font-weight:800;}
+  .cl-entry{padding:11px 0; border-top:1px solid var(--line-soft);}
+  .cl-entry.hi{background:var(--gold-soft); margin:0 -12px; padding:11px 12px; border-radius:9px; border-top:none;}
+  .cl-entry .cl-v{font-size:13px; color:var(--gold); font-weight:800; margin-bottom:6px;} .cl-entry .cl-v b{color:var(--ink); font-weight:700;}
+  .cl-here{font-size:9px; background:var(--p2-soft); color:var(--p2); border:1px solid var(--p2-line); padding:1px 6px; border-radius:99px; font-weight:800; text-transform:uppercase; letter-spacing:.03em;}
+  .cl-entry ul{margin:0; padding-left:18px;} .cl-entry li{font-size:12.5px; color:var(--dim); line-height:1.5; margin:3px 0;}
 </style>
 </head>
 <body>
+<div id="updBanner" class="upd-banner" style="display:none">
+  <span class="msg"><span class="dot"></span><span id="updMsg">Update available</span></span>
+  <button id="updGo" class="btn">Install &amp; restart</button>
+  <button id="updLater" class="btn ghost">Later</button>
+</div>
 <div class="wrap">
   <header class="marquee">
     <div class="brand">
       <div class="cab">M</div>
-      <div><h1>MvC <span>Skin Suite</span></h1><span class="tag">live · library · studio · <b id="buildTag" style="color:var(--gold)">build gs-46</b></span></div>
+      <div><h1>Meta<span>Sync</span></h1><span class="tag">live · library · studio · <b id="buildTag" style="color:var(--gold)">v0.1.9</b> <span id="updStatus" class="upd-status"></span></span></div>
     </div>
     <div class="right">
       <span class="chip" id="cGame"><span class="led"></span>Game</span>
-      <span class="chip" id="cOnline" title="MvC Live Skins users online now"><span class="led"></span><b id="onlineN">–</b>&nbsp;online</span>
-      <span class="me"><span class="av"></span><span>You: <b id="meName">…</b></span></span>
+      <span class="chip" id="cOnline" title="MetaSync users online now"><span class="led"></span><b id="onlineN">–</b>&nbsp;online</span>
+      <span class="me" id="meProfile" style="cursor:pointer" title="View your own stats — record, team win-rates, recent matches"><span class="av"></span><span>You: <b id="meName">…</b></span></span>
       <button class="icon-btn" id="themeBtn" title="Toggle theme">◑</button>
     </div>
   </header>
+
+  <!-- gs-78: visible data-sharing disclosure + consent toggle (per-frame recording upload; default ON for beta) -->
+  <div id="dataNotice" style="display:flex; align-items:center; gap:10px; flex-wrap:wrap; font-size:11px; color:var(--dim); background:var(--panel-2); border:1px solid var(--line); border-radius:8px; padding:6px 12px; margin:8px 0;">
+    <span>🛈 MetaSync auto-records anonymized per-frame match state and shares it to help train the game AI.</span>
+    <label style="display:inline-flex; align-items:center; gap:6px; cursor:pointer; color:var(--ink,inherit); font-weight:600; margin-left:auto;">
+      <input type="checkbox" id="shareGameplay" checked> Share gameplay data
+    </label>
+  </div>
 
   <div class="tabbar">
     <div class="tabs" id="tabs">
@@ -362,7 +430,7 @@
       </div>
       <div class="modebar">
         <span class="mode-pill" id="modePill" title="Detected live from the game — updates through menus, character select, and the match."><span class="dot"></span><span id="modeTxt">detecting…</span></span>
-        <span class="side-swap auto" id="sideSwap" title="Your in-game side — detected automatically from your own inputs (mirror-proof). The app figures out which fighter is yours; there's no manual toggle.">You: <b id="sideTxt">P1</b> <i id="sideAuto" style="font-style:normal;opacity:.6">· auto</i></span>
+        <span class="side-swap auto" id="sideSwap" style="cursor:pointer" title="Your in-game side (P1 = left, P2 = right). CLICK to set it. Stats are PAUSED until you confirm — this stops wins being credited to the wrong player. Your choice sticks for the set; games you already played this set are recorded the moment you confirm.">You: <b id="sideTxt">P1</b> <i id="sideAuto" style="font-style:normal;opacity:.6">· auto</i></span>
         <button class="side-swap" id="paintToggle" title="Live Paint — writes your skins straight into the game's palette memory, per-side. Recolors the correct fighter even in same-character/same-color mirrors, across every move. Local & cosmetic (only your screen; never affects the opponent's game or match state).">🎨 Paint: <b id="paintTxt">off</b></button>
         <span class="gs-chip" id="gsChip" title="Ground truth read straight from the game (hook injected): screen · in_match · match_state · stage. If match_state's number is stable per screen, tell me the values so I can label them." style="display:none"></span>
         <span class="gs-chip" id="scoreChip" title="Games won this set (computed from KO events). Resets when the opponent changes." style="display:none"></span>
@@ -378,7 +446,7 @@
     <section class="team you" id="teamYou">
       <div class="team-hd">
         <div class="side">P1</div>
-        <div class="pl"><div class="nm" id="youHdName">Your team</div><div class="sid mono" id="youHdSid">—</div></div>
+        <div class="pl"><div class="nm" id="youHdName">Your team</div><div class="sid mono" id="youHdSid">—</div><div class="sid mono" id="youRank" style="color:var(--gold)"></div><span id="mirrorTag" class="mirror-tag" style="display:none">🪞 mirror · your side</span></div>
         <div class="state wait" id="youState">Auto</div>
       </div>
       <div class="cards" id="youCards"></div>
@@ -389,13 +457,25 @@
     <section class="team opp" id="teamOpp">
       <div class="team-hd">
         <div class="side">P2</div>
-        <div class="pl"><div class="nm" id="oppHdName">Opponent</div><div class="sid mono" id="oppHdSid">—</div><div class="sid mono" id="oppRecord" style="color:var(--gold)"></div></div>
+        <div class="pl"><div class="nm" id="oppHdName">Opponent</div><div class="sid mono" id="oppHdSid">—</div><div class="sid mono" id="oppRecord" style="color:var(--gold)"></div><div class="sid mono" id="oppRank" style="color:var(--p2)"></div></div>
         <div class="state wait" id="oppState">Sync off</div>
       </div>
       <div class="cards" id="oppCards"></div>
-      <div class="empty" id="oppEmpty"><b>No opponent synced yet</b><br>Turn on Live sync in a match. If they're running Live Skins too, their skins appear here — and yours on their screen.</div>
+      <div class="empty" id="oppEmpty"><b>No opponent synced yet</b><br>Turn on Live sync in a match. If they're running MetaSync too, their skins appear here — and yours on their screen.</div>
     </section>
   </main>
+
+  <div id="matchupStrip" class="matchup" style="display:none">
+    <div class="mu-main">
+      <div class="mu-win"><div class="mu-pct" id="muPct">—</div><div class="mu-lbl">your win chance</div></div>
+      <div class="mu-bar"><div class="mu-fill" id="muFill"></div></div>
+      <div class="mu-h2h" id="muH2h"></div>
+    </div>
+    <div class="mu-teams">
+      <div class="mu-team"><div class="mu-tl">🏆 your best team vs them</div><div class="mu-tv" id="muBest">—</div></div>
+      <div class="mu-team"><div class="mu-tl">☠️ they lose most to</div><div class="mu-tv" id="muKryp">—</div></div>
+    </div>
+  </div>
 
   <div class="dock">
     <span class="lbl">Effects</span>
@@ -417,7 +497,7 @@
     <div class="lb-wrap">
       <div class="lb-head">
         <h2>🏆 <span>Hall of Fame</span></h2>
-        <span class="lb-sub">Skin Suite players · tracked live from your matches</span>
+        <span class="lb-sub">MetaSync players · tracked live from your matches</span>
         <div style="flex:1"></div>
         <button class="btn ghost sm" id="lbRefresh" title="Refresh">↻</button>
       </div>
@@ -428,6 +508,7 @@
         <button data-lt="perfect">✨ Perfect</button>
         <button data-lt="comeback">🔄 Comeback</button>
         <button data-lt="combo">🎯 Combo</button>
+        <button data-lt="rating">⚔️ Ranked</button>
       </div>
       <div class="lb-list" id="lbList"><div class="lb-empty">LOADING…</div></div>
     </div>
@@ -452,6 +533,11 @@
   <div class="pf-modal" id="pfModal"><div class="pf-card">
     <button class="pf-x" id="pfX">✕</button>
     <div class="pf-body" id="pfBody"></div>
+  </div></div>
+
+  <div class="pf-modal" id="clModal"><div class="pf-card">
+    <button class="pf-x" id="clX">✕</button>
+    <div class="pf-body" id="clBody"></div>
   </div></div>
 
   <section class="panel" id="p-library">
@@ -606,6 +692,9 @@
 
 <script>
 const invoke = window.__TAURI__?.core?.invoke;
+// ── AI training-session recorder (floating Record button) — HIDDEN for beta ──
+// The capture_start/capture_status/capture_stop Tauri commands stay in the backend
+// (used by our own tooling); the tester-facing Record button is removed for go-live.
 const $ = s=>document.querySelector(s), $$ = s=>[...document.querySelectorAll(s)];
 const reduce = matchMedia("(prefers-reduced-motion:reduce)").matches;
 
@@ -627,12 +716,16 @@ function recordBaked(cid, cols){ bakedSkins[cid]={sig:bakedSigHex(cols)}; try{ l
 function stockPalInts(cid){ const b=idleData[cid]?.bank0; if(!b) return null; return b.map(c=>((c[0]<<16)|(c[1]<<8)|c[2])>>>0); }
 let oppTeam=[];                  // [{cid, name, palette, author, skinName}]
 let mySteam={}, syncOn=false, syncTimer=null, oppMeta=null;
-let matchState='detecting', prevMode='', mySide='p1', stateTimer=null, detLocalSide=0;
+let matchState='detecting', prevMode='', mySide='p1', stateTimer=null, detLocalSide=0, inSessionNow=false, sideManual=null, sideConfirmed=false;
 let detTeams={p1:[],p2:[]};       // last detect_state rosters, each [{cid,name,addr}]
 let detSlots=[];                  // last detect_state per-fighter slots [{player,cid,datpal,...}] (real array)
+let perSideCids=new Set();        // cids Live Paint is confidently painting per-side THIS tick — the hook skips exactly these
+let readerRoster=[];              // the reader's sig-scan roster (available at match START, array-free) — used to trigger/constrain live-palette capture before the fighter array locks
+let paintSlots=[];                // EXACT per-fighter render-palette pointers {player,cid,datpal} — NOT liveness-gated, so painting follows the pointer at match start (no scan)
 let livePaint=false;              // Live Paint: write skins into guest palette per-side
 let oppRandom={}, oppRandomKey=''; // opponent (no app): cid -> random custom skin palette, re-rolled per match
 let oppManual={};                  // cid -> {palette,author,skinName} : your manual pick for an opponent char (dice on opp cards) — overrides synced/random
+let pendingOppSkins={};            // cid -> rolled-but-unconfirmed opponent skin (PREVIEW only until ✓)
 // Effective opponent skin for a character: your manual pick > their synced skin (only if truly published) > per-match random.
 function oppSkinFor(cid){
   if(oppManual[+cid]) return oppManual[+cid];
@@ -681,17 +774,22 @@ function renderYou(){
   const host=$('#youCards'); host.innerHTML=''; animCards=animCards.filter(e=>!e.cv._you);
   if(!myTeam.length){ host.innerHTML=`<div class="empty"><b>Waiting for a match</b><br>Your team appears automatically when you reach character select. Pick a skin per character — it applies live and re-applies every match.</div>`; return; }
   myTeam.forEach((cid,idx)=>{
-    const a=activeSkins[cid]; const p16=pal16For(cid, a?.palette); const role= idx===0?'point':'assist';
-    const el=document.createElement('div'); el.className='card editable '+role;
+    const pend=pendingSkins[cid];                                  // rolled-but-unconfirmed preview
+    const a = pend ? {palette:pend.palette, author:pend.author, skinName:pend.file||pend.author} : activeSkins[cid];
+    const p16=pal16For(cid, a?.palette); const role= idx===0?'point':'assist';
+    const el=document.createElement('div'); el.className='card editable '+role+(pend?' pending':'');
     el.innerHTML=`<span class="role">${idx===0?'Point':'Assist'}</span>
-      <button class="dice" title="Random skin">🎲</button>
+      <button class="dice" title="${pend?'Re-roll (preview)':'Random skin (preview)'}">🎲</button>
+      ${pend?`<button class="confirm" title="Keep this skin — writes it live">✓</button><button class="cancelp" title="Cancel preview">✕</button>`:''}
       <div class="por-wrap" style="--tint:var(--p1)"><canvas></canvas></div>
       <div class="cn">${nameById[cid]||('char'+cid)}</div>
-      <div class="sk ${a?'':'stock'}">${a?skinLabel(a):'stock palette'}</div>
+      <div class="sk ${a?'':'stock'}">${pend?'preview · '+esc(pend.author||'skin')+' — ✓ to keep':(a?esc(skinLabel(a)):'stock palette')}</div>
       <div class="swatches">${p16?swatchesFromPal16(p16):''}</div>
       <span class="edit">✎ Reskin</span>`;
     const cv=el.querySelector('canvas'); cv._you=true; if(p16) regIdle(cv,cid,p16);
     el.querySelector('.dice').onclick=(e)=>{ e.stopPropagation(); randomSkin(cid); };
+    const cf=el.querySelector('.confirm'); if(cf) cf.onclick=(e)=>{ e.stopPropagation(); confirmSkin(cid); };
+    const cx=el.querySelector('.cancelp'); if(cx) cx.onclick=(e)=>{ e.stopPropagation(); cancelPreview(cid); };
     el.onclick=()=>openDrawer(cid); host.appendChild(el);
   });
 }
@@ -701,28 +799,41 @@ function renderOpp(){
   $('#teamOpp').classList.toggle('on', has);
   const emp=$('#oppEmpty'); if(emp) emp.style.display=has?'none':'';
   oppTeam.forEach((o,idx)=>{
-    const p16=pal16For(o.cid,o.palette); const el=document.createElement('div'); el.className='card '+(idx===0?'point':'assist')+(o.detected&&!o.palette?' detected':'');
-    const label = o.palette ? ((o.skinName&&o.skinName!=='Stock')?`${o.skinName} · ${o.author||''}`:(o.author||'their skin'))
-                            : (o.detected ? 'in match · stock' : 'stock');
-    el.innerHTML=`<span class="role">${idx===0?'Point':'Assist'}</span><button class="dice" title="Roll a random skin for this opponent character (your screen)">🎲</button>
+    const pend=pendingOppSkins[+o.cid];                              // rolled-but-unconfirmed opponent preview
+    const palette = pend ? pend.palette : o.palette;
+    const p16=pal16For(o.cid, palette);
+    const el=document.createElement('div'); el.className='card '+(idx===0?'point':'assist')+((o.detected&&!o.palette&&!pend)?' detected':'')+(pend?' pending':'');
+    const label = pend ? ('preview · '+(pend.author||'skin')+' — ✓ to keep')
+                       : (o.palette ? ((o.skinName&&o.skinName!=='Stock')?`${o.skinName} · ${o.author||''}`:(o.author||'their skin'))
+                                    : (o.detected ? 'in match · stock' : 'stock'));
+    el.innerHTML=`<span class="role">${idx===0?'Point':'Assist'}</span><button class="dice" title="${pend?'Re-roll (preview)':'Roll a random skin for this opponent (preview)'}">🎲</button>
+      ${pend?`<button class="confirm" title="Keep this opponent skin">✓</button><button class="cancelp" title="Cancel preview">✕</button>`:''}
       <div class="por-wrap" style="--tint:var(--p2)"><canvas></canvas><span class="live-dot"></span></div>
       <div class="cn">${nameById[o.cid]||('char'+o.cid)}</div>
-      <div class="sk ${o.palette?'':'stock'}">${label}</div>
+      <div class="sk ${palette?'':'stock'}">${esc(label)}</div>
       <div class="swatches">${p16?swatchesFromPal16(p16):''}</div>`;
     const cv=el.querySelector('canvas'); cv._opp=true; if(p16) regIdle(cv,o.cid,p16);
     el.querySelector('.dice').onclick=(e)=>{ e.stopPropagation(); rollOppSkin(o.cid); };
+    const cf=el.querySelector('.confirm'); if(cf) cf.onclick=(e)=>{ e.stopPropagation(); confirmOppSkin(o.cid); };
+    const cx=el.querySelector('.cancelp'); if(cx) cx.onclick=(e)=>{ e.stopPropagation(); cancelOppPreview(o.cid); };
     host.appendChild(el);
   });
 }
-// one-click random skin for an OPPONENT character (your screen): sets your manual override, repaints their side
+// roll a random skin for an OPPONENT character (your screen) — PREVIEW only; commit with ✓ (no repaint until then)
 async function rollOppSkin(cid){
   const dir=dirById[cid]; if(!dir){ toast('unknown character'); return; }
   const list=await fetchSkinList(dir); if(!list.length){ toast(`no skins for ${nameById[cid]||dir} yet`); return; }
-  const s=list[Math.floor(Math.random()*list.length)];
+  pendingOppSkins[+cid]=list[Math.floor(Math.random()*list.length)];   // preview on the card, no override/repaint yet
+  renderOpp();
+}
+// ✓ on an opponent card: commit the previewed roll — sets the manual override + repaints their side (once)
+function confirmOppSkin(cid){
+  const s=pendingOppSkins[+cid]; if(!s) return; delete pendingOppSkins[+cid];
   oppManual[+cid]={palette:s.palette, author:s.author, skinName:s.file||s.author};
   rebuildOpp(); if(livePaint) paintTick();
   toast(`<span class="k">Opponent</span> ${nameById[cid]}: ${s.author}`);
 }
+function cancelOppPreview(cid){ if(pendingOppSkins[+cid]){ delete pendingOppSkins[+cid]; renderOpp(); } }
 // compose the opponent board from the detected roster (base) overlaid with the effective skin (manual/synced/random)
 function rebuildOpp(){
   if(oppDetected.length){
@@ -744,18 +855,24 @@ async function fetchSkinList(dir){
   try{ const l=await(await fetch(`skins/${dir}/index.json`)).json(); _skinListCache[dir]=l||[]; return _skinListCache[dir]; }
   catch(e){ return []; }
 }
-let _rollBusy=false, _lastRoll=0;
+let _rollBusy=false, _lastRoll=0, pendingSkins={};   // pendingSkins: cid -> rolled-but-unconfirmed skin (PREVIEW only; no skins.dat write until you hit ✓)
 async function randomSkin(cid){
   const now=performance.now();
-  if(_rollBusy || now-_lastRoll<250) return;   // light debounce (rolls are cheap now: cached list + no per-roll publish)
+  if(_rollBusy || now-_lastRoll<200) return;   // light debounce; rolling is now free (no write until ✓)
   _lastRoll=now; _rollBusy=true;
   try{
     const dir=dirById[cid]; if(!dir){ toast('unknown character'); return; }
     const list=await fetchSkinList(dir);
     if(!list.length){ toast(`no skins for ${nameById[cid]||dir} yet`); return; }
-    await applySkin(cid, list[Math.floor(Math.random()*list.length)]);
+    // gs-76: PREVIEW the roll on the card only — no writeAll/skins.dat, no hook re-read. Commit with ✓.
+    pendingSkins[cid] = list[Math.floor(Math.random()*list.length)];
+    renderYou();
   } finally { _rollBusy=false; }
 }
+// ✓ on the card: COMMIT the previewed roll. The single skins.dat write (+ publish + live repaint) happens
+// here — not on every roll — so cycling the dice is free until you keep one.
+async function confirmSkin(cid){ const s=pendingSkins[cid]; if(!s) return; delete pendingSkins[cid]; await applySkin(cid, s); }
+function cancelPreview(cid){ if(pendingSkins[cid]){ delete pendingSkins[cid]; renderYou(); } }
 
 // ── skin drawer ──
 let drawerCid=null, drawerSkins=[];
@@ -778,7 +895,7 @@ function renderDrawerGrid(){
     const p16=bodyPalette(s.palette, idleData[drawerCid].bank0);
     const sel=a&&a.author===s.author&&a.skinName===(s.file||s.author);
     return `<div class="skin ${sel?'sel':''}" data-i="${drawerSkins.indexOf(s)}"><div class="bar">${swatchesFromPal16(p16)}</div>
-      <div class="au"><b>${s.author}</b><span class="by">${sel?'applied':'community'}</span></div></div>`;
+      <div class="au"><b>${esc(s.author)}</b><span class="by">${sel?'applied':'community'}</span></div></div>`;
   }).join('') : '<div class="empty">no skins for this character yet</div>';
   $$('#dGrid .skin').forEach(el=> el.onclick=()=>applySkin(drawerCid, drawerSkins[+el.dataset.i]));
 }
@@ -787,10 +904,12 @@ function closeDrawer(){ $('#drawer').classList.remove('show'); $('#scrim').class
 let _pubT=null;
 function publishMineSoon(){ if(!syncOn) return; clearTimeout(_pubT); _pubT=setTimeout(()=>publishMine(), 600); } // coalesce rapid rolls into one publish
 async function applySkin(cid, s){
+  delete pendingSkins[cid];   // committing (via ✓ or a direct pick) clears any preview for this character
   // prefer the real live palette lines (captured) so the hook matches the on-screen color; fall back to stock sig
   const sigs = liveSigs[cid]?.length ? liveSigs[cid] : (activeSkins[cid]?.sigs?.length ? activeSkins[cid].sigs : [sigFromBank0(cid)].filter(Boolean));
   activeSkins[cid]={ sigs, palette:s.palette, author:s.author, skinName:s.file||s.author };
-  if(!myTeam.includes(cid)) myTeam.push(cid);
+  // (saved skins live in activeSkins + localStorage; the "You" card reflects the LIVE team only, so we do NOT
+  //  add to myTeam here — that's what put idle characters on the card when out of a match.)
   try{ localStorage.setItem('mvcskin_'+cid, JSON.stringify({palette:s.palette, author:s.author, skinName:s.file||s.author})); }catch(e){}
   await writeAll(); publishMineSoon();
   // (Live Paint's 500ms loop applies the new skin within ~0.5s — no per-roll write burst, so cycling is smooth)
@@ -816,12 +935,36 @@ async function revertStock(cid){
 function skinsAllowed(){ return gameScreen===null ? true : gameScreen==='match'; }
 let lastAllow=null, lastMirrorKey='';
 // ── write skins.dat (mine + synced opponent) ──
+// BASE LAYER. The signature hook is now ALWAYS the base: it paints your skins + synced-opponent skins by
+// palette signature in the fixed render buffer — detection-INDEPENDENT (no fighter-array scan, no side), so
+// skins appear the instant a match's palettes load. Per-side Live Paint is a REFINEMENT on top: each tick it
+// hands us `perSideCids` (the characters it's confidently painting into guest memory), and we EXCLUDE exactly
+// those from the hook so the two never fight on a same-color mirror. When per-side covers everything
+// (detection healthy) the hook paints nothing — identical to before. When per-side covers nothing (detection
+// dark/flaky) the hook still paints your skins by signature — so skins no longer wait on the scan.
+// A same-character + same-VARIANT mirror is a byte-identical palette on both sides — the signature-matching
+// render hook literally cannot tell them apart, so it would paint your skin onto their fighter too. Detect
+// those cids via the per-fighter color/variant field (cl+0x6, exposed as detSlots[].color) so we can withhold
+// exactly those from the hook and let side-aware paint_live own them (each fighter has its own DatPal → true
+// per-side). Different variants have different signatures, so they keep round-start hook painting.
+function mirrorCollisions(){
+  const coll=new Set(), seen={};
+  for(const s of (detSlots||[])){ if(s.cid==null) continue; const k=(+s.cid)+':'+(s.color??0);
+    if(seen[k]) coll.add(+s.cid); else seen[k]=1; }
+  return coll;
+}
+let _collFp='';
+function maybeReemitForCollisions(){ const coll=[...mirrorCollisions()].sort((a,b)=>a-b); const c=coll.join(','); if(c!==_collFp){ _collFp=c; writeAll(); const t=$('#mirrorTag'); if(t) t.style.display=coll.length?'':'none'; } }
 async function writeAll(){
-  const mine=Object.values(activeSkins).filter(a=>a.sigs&&a.sigs.length).map(a=>({sigs:a.sigs, palette:paletteToHex(a.palette)}));
-  const theirs=[]; for(const pid in peerSkins){ for(const s of (peerSkins[pid]||[])){ if(s.sigs&&s.sigs.length) theirs.push({sigs:s.sigs, palette:paletteToHex(s.palette)}); } }
-  // Live Paint writes skins directly into guest palette memory (per-side), so the hook must NOT also paint
-  // (it would double-paint / bleed onto both sides). When Paint is on, hand the hook an empty set.
-  const entries = (skinsAllowed() && !livePaint) ? [...mine,...theirs] : [];
+  // EVERY saved skin ALWAYS goes into skins.dat — never withheld (EXCEPT same-variant mirror collisions below).
+  // (An earlier build excluded cids that per-side
+  // "claimed", but per-side rides the volatile fighter array; when that dropped, the skin fell through and
+  // painted NOWHERE. The base signature layer must always carry your full loadout; per-side is a pure additive
+  // refinement on top, and paintTick releases a cid back to the base the instant per-side fails to write it.)
+  const coll=mirrorCollisions();   // same-char+same-variant mirrors → withhold from the hook; paint_live owns them side-correctly
+  const mine=Object.entries(activeSkins).filter(([cid,a])=>a.sigs&&a.sigs.length && !coll.has(+cid)).map(([cid,a])=>({sigs:a.sigs, palette:paletteToHex(a.palette)}));
+  const theirs=[]; for(const pid in peerSkins){ for(const s of (peerSkins[pid]||[])){ if(s.sigs&&s.sigs.length && !coll.has(+s.cid)) theirs.push({sigs:s.sigs, palette:paletteToHex(s.palette)}); } }
+  const entries = skinsAllowed() ? [...mine,...theirs] : [];
   // SYNC ON = live palettes are authoritative → disable baked: revert any baked-but-unshared character to
   // stock so online shows only the shared/live palettes (a covered baked char is already overridden live).
   if(syncOn && skinsAllowed()){
@@ -833,28 +976,49 @@ async function writeAll(){
   // and client-side — we add hook entries that repaint the OPPONENT fighter's live palette (match sig) to
   // your fighter's look (your skin if set, else your fighter's own live colors). Because the game gives the
   // two sides distinct palettes, each entry targets only the opponent's copy; yours is untouched.
-  if(mirrorOn && skinsAllowed()) entries.push(...mirrorEntries());
+  if(mirrorOn && skinsAllowed() && !livePaint) entries.push(...mirrorEntries());   // Live Paint owns per-side; mirror-via-hook only when Paint is off
   try{ await invoke('apply_multi',{entries}); }catch(e){ toast('⚠ '+e); }
 }
 // apply_multi expects palette as the same shape apply_sigs used; pass the raw pal48 through (backend already handled it)
 function paletteToHex(p){ return p; }
+function setEq(a,b){ if(a.size!==b.size) return false; for(const x of a) if(!b.has(x)) return false; return true; }
+// Hand the hook a fresh set of per-side-owned cids and re-emit skins.dat so it stops/starts painting them.
+function setPerSide(cids){ if(!setEq(perSideCids,cids)){ perSideCids=cids; writeAll(); } }
 
 // ── Live Paint: write skins into the guest palette per-side (offline/opt-in) ──
 // For each on-screen fighter, resolve its skin by SIDE (your skins → your fighter; synced opponent skins →
 // their fighter) and send {datpal address, 16 RGB colours} to the backend, which writes it into every real
 // palette row of that fighter's block. True per-side — recolors the right side even in identical mirrors.
 function buildPaintTargets(){
-  if(!detSlots.length) return [];
-  const meNum = mySide==='p2'?2:1; const out=[];
-  for(const s of detSlots){
-    const dp=s.datpal; if(!dp || dp==='0') continue;
+  // FOLLOW THE POINTER, don't scan. Use the exact per-fighter render-palette pointers (paint_slots) — which
+  // are NOT liveness-gated, so they're present at match START. No confirmed side is required to paint YOUR
+  // OWN skins: a fighter with your saved char_id gets your skin regardless of side (correct for non-mirror; a
+  // same-char mirror shows your skin on both copies until the side locks, then per-side splits it). Opponent
+  // skins still need the side, so they layer on once it resolves. Falls back to detSlots if paint_slots is empty.
+  const slots = paintSlots.length ? paintSlots : detSlots;
+  if(!slots.length){ setPerSide(new Set()); return []; }
+  const meNum = sideConfirmed ? (mySide==='p2'?2:1) : 0;                                      // 0 = side not resolved yet
+  // MIRROR-SAFE: a character on BOTH sides can't be told apart by char-id. Once the side is locked, paint your
+  // skin onto YOUR copy only (each fighter has its own DatPal — RE-confirmed). Side comes from detSlots (always
+  // carries player) even when we paint via paintSlots.
+  const mref=(detSlots&&detSlots.length)?detSlots:slots, p1c=new Set(), p2c=new Set();
+  for(const s of mref){ if(s.cid==null) continue; if(s.player===1) p1c.add(+s.cid); else if(s.player===2) p2c.add(+s.cid); }
+  const mirrorCids=new Set([...p1c].filter(c=>p2c.has(c)));
+  const out=[]; const cids=new Set();
+  for(const s of slots){
+    const dp=s.datpal; if(!dp || dp==='0' || dp===0) continue;
+    const cid=+s.cid;
     let pal=null;
-    if(s.player===meNum){ const a=activeSkins[+s.cid]; if(a&&a.palette) pal=a.palette; }   // your side: your skin
-    else { const os=oppSkinFor(+s.cid); if(os&&os.palette) pal=os.palette; }               // opponent: manual > synced > random
+    const mine=activeSkins[cid];
+    // YOUR skin paints on any fighter of that char — EXCEPT a mirror char once the side is locked (then your side only)
+    if(mine&&mine.palette && (!mirrorCids.has(cid) || meNum===0 || s.player===meNum)){ pal=mine.palette; }
+    else if(meNum!==0 && s.player!==meNum){ const os=oppSkinFor(cid); if(os&&os.palette) pal=os.palette; }  // opponent-only skin, applied to their side once known
     if(!pal) continue;
-    const p16=pal16For(+s.cid, pal); if(!p16) continue;
-    out.push({ datpal:String(dp), colors: p16.map(c=>((c[0]<<16)|(c[1]<<8)|(c[2]))>>>0) });
+    const p16=pal16For(cid, pal); if(!p16) continue;
+    out.push({ cid, player:s.player, colors: p16.map(c=>((c[0]<<16)|(c[1]<<8)|(c[2]))>>>0) });  // gs-72: backend resolves the LIVE datpal off the anchor at write-time
+    cids.add(cid);                                                                            // this cid is now per-side-owned
   }
+  setPerSide(cids);                                                                           // base scan skips exactly these; covers the rest
   return out;
 }
 // When the opponent ISN'T running the app, give each of their characters a RANDOM custom skin from the
@@ -883,15 +1047,37 @@ let _painting=false;
 async function paintTick(){
   if(!livePaint || !invoke || _painting || !skinsAllowed()) return;
   _painting=true;
-  try{ await ensureOppRandom(); const targets=buildPaintTargets(); if(targets.length) await invoke('paint_palettes',{targets}); }
+  try{ await ensureOppRandom(); const targets=buildPaintTargets();
+    if(targets.length){ await invoke('paint_live',{targets}); }   // gs-73: real-time paint — backend resolves each slot's LIVE datpal off the anchor. r===0 = "already applied" (NOT a failure), so no base-layer fallback here — that redundant 66MB scan was the freeze.
+  }
   catch(e){} finally{ _painting=false; }
 }
 // Dedicated fast paint loop: cheap (backend skips fighters already skinned), so a 500ms cadence catches the
 // round-start palette reload quickly (skins show at match start, not after the first hit) and re-applies on
 // skin/side changes — without the per-roll write burst that caused lag.
 let paintTimer=null;
-function startPaintLoop(){ if(paintTimer) return; paintTimer=setInterval(paintTick, 500); }
+function startPaintLoop(){ if(paintTimer) return; paintTimer=setInterval(paintTick, 100); }  // gs-73: 100ms — paint_live is cheap (one 8KB read/slot, base scan off), so re-apply fast to win the round-intro palette reload → skins show at match START, not after the first hit
 function stopPaintLoop(){ if(paintTimer){ clearInterval(paintTimer); paintTimer=null; } }
+
+// BASE LAYER — the "hook", without injection. paint_signatures reads skins.dat (mine + synced, minus the
+// cids per-side owns — writeAll already excludes those) and WPMs every matching palette row in the FIXED
+// working-buffer window. No fighter-array find, no injected DLL: base skins paint whenever fighters are on
+// screen, even when the array/side never locks. Runs continuously in-match; paintTick still refines mirrors.
+let baseTimer=null, _basePainting=false;
+async function baseTick(){
+  if(!invoke || _basePainting) return;
+  // Only run the (heavier) full-window scan when it's actually needed:
+  //  • in a match/select — NEVER at menus or app-startup (that was the freeze), and
+  //  • only while per-side ISN'T already covering the fighters (no locked array + confirmed side).
+  // So the scan is confined to the ~1s match-start window (or whenever detection is dark); once the array
+  // locks, paintTick's cheap per-DatPal writes take over and this goes idle.
+  if(matchState!=='match' && matchState!=='select') return;
+  if(!readerRoster.length && !paintSlots.length) return;     // NO fighters actually detected (menu / between-games / loading) → nothing to paint, do NOT scan. This kills the between-match freeze.
+  if(livePaint) return;                                      // gs-73: paint_live covers ALL fighters reliably (real-time datpal resolve), so the base signature scan is redundant when Live Paint is on — skip it entirely (this scan was the freeze)
+  _basePainting=true;
+  try{ await invoke('paint_signatures'); }catch(e){} finally{ _basePainting=false; }
+}
+function startBasePaint(){ if(!baseTimer) baseTimer=setInterval(baseTick, 1200); }  // heavy scan → keep it infrequent; it's the fallback
 async function toggleLivePaint(){
   livePaint=!livePaint;
   const b=$('#paintToggle'); if(b){ b.classList.toggle('p2',livePaint); $('#paintTxt').textContent=livePaint?'on':'off'; }
@@ -941,7 +1127,7 @@ async function refreshLiveSigs(){
   if(!skinsAllowed()) return;                                 // only capture when we're actually painting (in a match)
   capturing=true;
   try{
-    const roster=new Set([...(detTeams.p1||[]),...(detTeams.p2||[])].map(x=>x.cid));
+    const roster=new Set(rosterCids());                       // array roster ∪ sig-scan roster (live at match start)
     const allow = roster.size? roster : null;                 // constrain matches to the loaded 6 → no false hits
     const pals=await invoke('capture_live'); const groups={};
     for(const hex of pals){ const {cid,dist}=idFromPalette(parseBank0(hex), allow); if(cid===null||dist>2400) continue; (groups[cid]=groups[cid]||[]).push(hex); }
@@ -1014,13 +1200,43 @@ async function updateRecord(){
   try{ const r=await invoke('get_record',{steamid:id}); const w=r.wins||0, l=r.losses||0;
     el.textContent=(w||l)?`vs you: ${w}W – ${l}L`:''; _recFor=id; }catch(e){}
 }
-function refreshMe(){ if(mySteam.name){ $('#meName').textContent=mySteam.name; $('#p1name').textContent=mySteam.name; $('#youHdName').textContent=mySteam.name+' · You'; } if(mySteam.steamid){ $('#p1sid').textContent=mySteam.steamid; $('#youHdSid').textContent=mySteam.steamid; $('#p1por').textContent=(mySteam.name?.[0]||'P').toUpperCase(); } }
+function refreshMe(){ if(mySteam.name){ $('#meName').textContent=mySteam.name; $('#p1name').textContent=mySteam.name; $('#youHdName').textContent=mySteam.name+' · You'; } if(mySteam.steamid){ $('#p1sid').textContent=mySteam.steamid; $('#youHdSid').textContent=mySteam.steamid; $('#p1por').textContent=(mySteam.name?.[0]||'P').toUpperCase(); refreshMyRank(); } }
+// ── ELO / rank + matchup intel (blended win chance, your best team vs them, the comp they lose to most) ──
+function teamNames(str){ const s=String(str||'').split(',').filter(x=>x!==''); return s.length? s.map(c=>nameById[+c]||('#'+c)).join(' / ') : '—'; }
+async function refreshMyRank(){
+  if(!invoke || !mySteam.steamid) return;
+  try{ const p=await invoke('profile',{steamid:String(mySteam.steamid)}); const el=$('#youRank');
+    if(el) el.textContent = (p&&p.found)? `${p.rank||'Warrior'} · ${p.rating||1000} ELO` : ''; }catch(e){}
+}
+let _muFor='';
+async function fetchMatchup(){
+  const strip=$('#matchupStrip'); if(!invoke||!strip) return;
+  const me=mySteam&&mySteam.steamid, opp=oppIdentity&&oppIdentity.steamid;
+  if(!me||!opp){ strip.style.display='none'; _muFor=''; const o=$('#oppRank'); if(o) o.textContent=''; return; }
+  if(String(opp)===_muFor && strip.style.display!=='none') return;      // already showing this opponent
+  try{
+    const m=await invoke('matchup',{me:String(me), opp:String(opp)});
+    if(!m||m.error){ strip.style.display='none'; return; }
+    _muFor=String(opp);
+    const pct=Math.max(0,Math.min(100,Math.round((m.win_chance||0)*100)));
+    $('#muPct').textContent=pct+'%'; $('#muFill').style.width=pct+'%';
+    const w=(m.h2h&&m.h2h.wins)||0, l=(m.h2h&&m.h2h.losses)||0;
+    $('#muH2h').innerHTML = (w||l)? `head-to-head <b>${w}–${l}</b>` : 'first meeting';
+    $('#muBest').innerHTML = m.best_team_vs_them ? `${esc(teamNames(m.best_team_vs_them.team))} <small>${m.best_team_vs_them.wins}W</small>` : '<small>no wins vs them yet</small>';
+    $('#muKryp').innerHTML = m.their_kryptonite ? `${esc(teamNames(m.their_kryptonite.team))} <small>${m.their_kryptonite.losses}L</small>` : '<small>not enough data</small>';
+    const orank=$('#oppRank'); if(orank) orank.textContent = `${m.opp_rank||'Warrior'} · ${m.opp_elo||1000} ELO`;
+    strip.style.display='';
+  }catch(e){ strip.style.display='none'; }
+}
 
 // ── live match-state detection (menu / character-select / match) — runs continuously, freeze-safe ──
-const MODE_LABEL={ game_off:['game not detected',''], menu:['In menus','st-menu'], select:['Character select','st-select'], match:['● In match','st-match'] };
+// honest session state machine (mirrors the backend): game off → looking for a match → char-select → in match
+const MODE_LABEL={ game_off:['Game not running','st-off'], menu:['Looking for a match…','st-menu'], select:['Character select','st-select'], match:['In match','st-match'] };
 function setMode(state){
   matchState=state; const [txt,cls]=MODE_LABEL[state]||MODE_LABEL.game_off;
-  $('#modeTxt').textContent=txt; $('#modePill').className='mode-pill'+(cls?' '+cls:'');
+  // in a live match, append your resolved side ("In match · P2"); never assert a side we don't know
+  const suffix = (state==='match' && sideConfirmed && (mySide==='p1'||mySide==='p2')) ? ' · '+mySide.toUpperCase() : '';
+  $('#modeTxt').textContent=txt+suffix; $('#modePill').className='mode-pill'+(cls?' '+cls:'');
   const ys=$('#youState'); if(ys){ const on=(state==='match'||state==='select'); ys.textContent = state==='match'?'● Live': state==='select'?'Detecting':'Auto'; ys.className='state '+(on?'on':'wait'); }
 }
 // which detected side is "me": manual override wins, else the side my applied skins live on, else last
@@ -1029,6 +1245,7 @@ function pickMySide(p1,p2){
   // so you are P1 by definition. A real opponent SteamID only exists in an online match, so with no opponent
   // we return P1 and DON'T auto-detect (this is what was wrongly swapping in Training).
   if(!oppIdentity || !oppIdentity.steamid) return 'p1';
+  if(sideManual) return sideManual;                          // ★ manual override (You:P1/P2 toggle) — always wins
   // Online only: input-correlation detector (mirror-proof) → then saved-skin characters → else hold.
   if(detLocalSide===1) return 'p1';                          // ★ input-correlation detector (mirror-proof)
   if(detLocalSide===2) return 'p2';
@@ -1040,9 +1257,19 @@ let inMatch=null, gameScreen=null, matchStateRaw=null;   // null = hook not feed
 async function stateTick(){
   if(!invoke) return;
   let st; try{ st=await invoke('detect_state'); }catch(e){ return; }
+  // reader sig-scan roster — present at match START before the fighter array locks; drives array-free capture
+  readerRoster = [...(st.p1||[]),...(st.p2||[])].map(x=>x.cid).filter(c=>c!=null);
+  paintSlots = st.paint_slots||[];                           // exact render-palette pointers (non-liveness-gated) for the paint path
   // Ground truth from the hook (real SH4 structs) wins over the RPM sig heuristic when present.
   detSlots = st.has_game ? (st.slots||[]) : [];
+  maybeReemitForCollisions();                                // re-emit skins.dat if the mirror-collision set changed (hook stops/starts on the right chars)
   detLocalSide = st.local_side||0;                           // 0=unknown, 1=P1, 2=P2 (input-correlation detector)
+  // ★ fast match signal: the live netplay pairing (present at loading/select, before fighters load). On the
+  // rising edge (just entered a session) fetch the opponent immediately instead of waiting out the backoff.
+  { const was=inSessionNow; inSessionNow=!!st.in_session; if(inSessionNow && !was){ oppBackoff=0; } }
+  sideConfirmed = !!st.side_confirmed;
+  if((st.manual_side===1||st.manual_side===2) && !sideManual){ sideManual = st.manual_side===2?'p2':'p1'; }   // reconcile w/ backend
+  if(st.manual_side===0 && sideManual){ sideManual=null; }                                                    // backend cleared it (new set)
   let p1, p2;
   if(st.has_game){
     // Real player array located → authoritative teams (true P1/P2 side by slot parity, from RPM).
@@ -1062,6 +1289,10 @@ async function stateTick(){
     setMode(st.state);
     const gs=$('#gsChip'); if(gs) gs.style.display='none';
     if(st.state==='game_off'){ lastTeams={p1:[],p2:[]}; teamHold=0; }
+    else if(inSessionNow || (oppIdentity && oppIdentity.steamid)){ /* SAME session (between games / char-select /
+                              loading) → HOLD the last teams so the cards don't blink empty between games of a set.
+                              Session id = the locked opponent (sticky) OR the live netplay pairing; either present
+                              means we're still in the set, so we keep showing last match's teams until it ends. */ }
     else if(teamHold>0){ teamHold--; }
     else { lastTeams={p1:[],p2:[]}; }
     p1=lastTeams.p1; p2=lastTeams.p2;
@@ -1070,18 +1301,28 @@ async function stateTick(){
   const cnt=p1.length+p2.length, curScreen=(st.has_game?st.screen:st.state);
   if(cnt>0){
     const side=pickMySide(p1,p2); mySide=side;
-    $('#sideTxt').textContent=side.toUpperCase(); $('#sideSwap').classList.toggle('p2',side==='p2');
-    { const sa=$('#sideAuto'); if(sa){ sa.textContent = detLocalSide? '· auto ✓' : '· detecting…'; sa.style.opacity = detLocalSide? '.8':'.5'; } }
+    // Side shows only once actually resolved (localPlayerNum); never assert P1 by default.
+    $('#sideTxt').textContent = sideConfirmed ? side.toUpperCase() : '—';
+    $('#sideSwap').classList.toggle('p2', sideConfirmed && side==='p2');
+    { const sa=$('#sideAuto'), sw=$('#sideSwap'); if(sw) sw.classList.remove('unconfirmed'); if(sa){
+        sa.textContent = sideConfirmed ? '· auto ✓' : '· detecting…';
+        sa.style.opacity = sideConfirmed ? '.9' : '.5';
+      } }
     applySideLayout();
-    const mine = side==='p1'?p1:p2, opp = side==='p1'?p2:p1;
-    // your roster ← detected side (skins persist by cid via activeSkins); re-render + re-publish on change
-    if(mine.map(x=>x.cid).join(',')!==myTeam.join(',')){ myTeam=mine.map(x=>x.cid); renderYou(); if(syncOn) publishMine(); }
-    // opponent roster shows immediately from memory; their skins merge in from syncTick if they run the app
-    const newOpp=opp.map(x=>({cid:x.cid,name:x.name}));
-    if(JSON.stringify(newOpp)!==JSON.stringify(oppDetected)){ oppDetected=newOpp; if(!oppMeta) setOpp(null); else rebuildOpp(); }
-  } else if(curScreen==='menu' && oppDetected.length){
-    // dropped out of a match to menus — clear the detected opponent roster (keep synced skins if any)
-    oppDetected=[]; if(!oppMeta) setOpp(null); else rebuildOpp();
+    // Only assign teams once the side is RESOLVED — otherwise we'd guess (default P1) and flash the wrong team's
+    // characters in your card, then swap. With deterministic localPlayerNum this resolves in ~1s, so we just hold
+    // "detecting" briefly and then paint the correct teams once, no swap.
+    if(sideConfirmed){
+      const mine = side==='p1'?p1:p2, opp = side==='p1'?p2:p1;
+      if(mine.map(x=>x.cid).join(',')!==myTeam.join(',')){ myTeam=mine.map(x=>x.cid); renderYou(); if(syncOn) publishMine(); }
+      const newOpp=opp.map(x=>({cid:x.cid,name:x.name}));
+      if(JSON.stringify(newOpp)!==JSON.stringify(oppDetected)){ oppDetected=newOpp; if(!oppMeta) setOpp(null); else rebuildOpp(); }
+    }
+  } else {
+    // NO live team (menus / between sessions) → BOTH cards empty. Match cards reflect the LIVE match only; your
+    // saved skins live in activeSkins (persisted) and auto-apply whenever those characters actually appear.
+    if(myTeam.length){ myTeam=[]; renderYou(); if(syncOn) publishMine(); }
+    if(oppDetected.length){ oppDetected=[]; if(!oppMeta) setOpp(null); else rebuildOpp(); }
   }
   // entered/left a match → push overrides (or clear them so the hook reverts to stock at select/menu)
   const allow=skinsAllowed(); if(allow!==lastAllow){ lastAllow=allow; writeAll(); }
@@ -1093,14 +1334,131 @@ async function stateTick(){
   if(scEl){ if(sc.p1||sc.p2){ const me=mySide==='p2'?sc.p2:sc.p1, them=mySide==='p2'?sc.p1:sc.p2;
       scEl.style.display=''; scEl.innerHTML=`set <b>${me}</b> – ${them}`; } else scEl.style.display='none'; }
 }
-// (manual side swap removed — side is fully automatic via the input-correlation detector; see pickMySide)
+// Manual side override — the escape hatch when auto-detect picks the wrong side (your team shows the opponent's
+// characters). Flips your side, sticks for the set (cleared when the opponent changes), pushes the corrected side
+// to the backend so STATS attribute correctly, and re-labels both teams + repaints skins immediately.
+function swapSide(){
+  const cur = sideManual || mySide;
+  sideManual = (cur==='p2') ? 'p1' : 'p2';
+  mySide = sideManual;
+  try{ invoke('set_manual_side',{side: sideManual==='p2'?2:1}); }catch(e){}
+  const p1=detTeams.p1||[], p2=detTeams.p2||[];
+  myTeam = (mySide==='p1'?p1:p2).map(x=>x.cid);
+  $('#sideTxt').textContent=mySide.toUpperCase(); $('#sideSwap').classList.toggle('p2',mySide==='p2');
+  const sa=$('#sideAuto'); if(sa){ sa.textContent='· manual'; sa.style.opacity='.85'; }
+  applySideLayout(); renderYou();
+  oppDetected=(mySide==='p1'?p2:p1).map(x=>({cid:x.cid,name:x.name}));
+  if(!oppMeta) setOpp(null); else rebuildOpp();
+  writeAll(); if(syncOn) publishMine();
+  toast('side set to '+mySide.toUpperCase()+' (manual)');
+}
+$('#sideSwap').onclick=swapSide;
+$('#meProfile').onclick=()=>{ const id=mySteam&&mySteam.steamid; if(id) openProfile(id, mySteam.name||'You'); else toast('your Steam id isn\'t detected yet — launch the game first'); };
+// ── auto-update: check nobd.net on launch; PROMPT (never silent) so the user chooses when to install ──
+// unified banner renderer: 'update' (gold accent, Install + Later) | 'ok' (neutral, auto-dismiss) | 'busy' (checking…)
+let _updHideT=null;
+// ── changelog / "What's New" popup + live version-status pill ─────────────────────────────────────
+const CHANGELOG = [
+  { v:'0.1.9', t:'Match recorder', items:[
+    'New Record button (bottom-right): captures a match session locally for training/analysis — click to start/stop; saves to your mvc2-sessions folder. Nothing is uploaded.',
+  ]},
+  { v:'0.1.8', t:"What's New + version status", items:[
+    'Click the version in the header anytime to see the full changelog.',
+    "A live pill next to it shows whether you're up to date or an update is waiting.",
+    'This popup shows what changed right after you update.',
+  ]},
+  { v:'0.1.7', t:'Renamed to MetaSync', items:[
+    'Renamed the app to MetaSync.',
+    'Fixed the library palette swatches not showing their colors.',
+    'Same-character mirror fix — your skin no longer bleeds onto the opponent, plus a "🪞 mirror · your side" tag.',
+    'Auto-updates now delivered via GitHub Releases (nobd.net fallback).',
+  ]},
+  { v:'0.1.6', t:'Real version in the header', items:['The header shows the actual release version; click it to check for updates.'] },
+  { v:'0.1.5', t:'Mirror tag', items:['Added the "mirror · your side" indicator.'] },
+  { v:'0.1.4', t:'Mirror fix', items:['Same-character mirror: your skin now paints only your side.'] },
+  { v:'0.1.3', t:'ELO + Matchup intel', items:['ELO ranks (Rookie→Legend), your win chance vs the opponent, the team you beat them with most, and the comp they lose to most. New Ranked leaderboard tab.'] },
+  { v:'0.1.2', t:'Security + update UI', items:['Security hardening and a redesigned update flow.'] },
+];
+function renderChangelog(highlight){
+  const cur=($('#buildTag').textContent||'').replace(/^v/,'');
+  return CHANGELOG.map(e=>{
+    const isCur=e.v===cur;
+    return `<div class="cl-entry${e.v===highlight?' hi':''}"><div class="cl-v">v${esc(e.v)}${isCur?' <span class="cl-here">you’re on this</span>':''}${e.t?` · <b>${esc(e.t)}</b>`:''}</div>
+      <ul>${(e.items||[]).map(i=>`<li>${esc(i)}</li>`).join('')}</ul></div>`;
+  }).join('');
+}
+function openChangelog(whatsNewV){
+  const b=$('#clBody'); if(!b) return;
+  b.innerHTML=`<h3 class="cl-title">${whatsNewV?("What’s new in v"+esc(whatsNewV)):'Changelog'}</h3>${renderChangelog(whatsNewV)}`;
+  $('#clModal').classList.add('show');
+}
+$('#clX')?.addEventListener('click',()=>$('#clModal').classList.remove('show'));
+$('#clModal')?.addEventListener('click',e=>{ if(e.target.id==='clModal') e.currentTarget.classList.remove('show'); });
+// live version-status pill: up-to-date vs update-available (click → full check / install prompt)
+function setUpdStatus(mode, ver){
+  const el=$('#updStatus'); if(!el) return;
+  el.className='upd-status '+(mode==='avail'?'avail':mode==='ok'?'ok':mode==='err'?'err':'chk');
+  el.textContent = mode==='avail'?('⬆ v'+ver):(mode==='ok'?'✓ latest':mode==='err'?'–':'…');
+  el.title = mode==='avail'?('Update available: v'+ver+' — click to install'):(mode==='ok'?"You're on the latest version — click to re-check":mode==='err'?"Couldn't reach the update server — click to retry":'Checking for updates…');
+}
+$('#updStatus')?.addEventListener('click',()=>checkForUpdate(true));
+function showUpdBanner(mode, html){
+  const b=$('#updBanner'); b.className='upd-banner'+(mode==='update'?'':' ok');
+  $('#updMsg').innerHTML=html;
+  $('#updGo').style.display = mode==='update' ? '' : 'none';
+  $('#updLater').style.display = mode==='busy' ? 'none' : '';
+  $('#updLater').textContent = mode==='update' ? 'Later' : 'Dismiss';
+  $('#updGo').disabled=false; $('#updLater').disabled=false;
+  b.style.display=''; clearTimeout(_updHideT);
+  if(mode==='ok') _updHideT=setTimeout(()=>{ b.style.display='none'; }, 5000);   // positive/neutral states clear themselves
+}
+// manual=true when the user asks (click the build tag): give clear feedback either way, never a scary "failed".
+// manual=false is the quiet launch check: show the banner ONLY if an update is actually waiting.
+async function checkForUpdate(manual){
+  if(!invoke) return;
+  if(manual) showUpdBanner('busy','Checking for updates…');
+  setUpdStatus('chk');
+  try{
+    const u=await invoke('check_update');   // null when up to date; {version,notes} when an update is waiting
+    if(u && u.version){
+      setUpdStatus('avail', u.version);
+      showUpdBanner('update', `<b>v${esc(u.version)}</b> is ready to install`+(u.notes?` — ${esc(String(u.notes).slice(0,90))}`:''));
+    } else {
+      setUpdStatus('ok');
+      if(manual) showUpdBanner('ok', `You're on the latest version — <b>${esc($('#buildTag').textContent)}</b>`);
+      else $('#updBanner').style.display='none';
+    }
+  }catch(e){ setUpdStatus('err'); if(manual) showUpdBanner('ok', 'Couldn’t reach the update server — try again later.'); }
+}
+$('#updGo').onclick=async()=>{ $('#updMsg').textContent='Downloading update…'; $('#updGo').disabled=true; $('#updLater').disabled=true;
+  try{ await invoke('install_update'); }catch(e){ showUpdBanner('ok', 'Update failed — '+esc(String(e).slice(0,100))); } };
+$('#updLater').onclick=()=>{ clearTimeout(_updHideT); $('#updBanner').style.display='none'; };
+// click the version (header) to view the changelog; the pill next to it shows live update status. On launch,
+// if the running version differs from the last one we saw, pop the "What's new" changelog for this version.
+(()=>{ const t=$('#buildTag'); if(t){ t.style.cursor='pointer'; t.title='View changelog';
+  t.onclick=()=>openChangelog();
+  if(invoke){ setUpdStatus('chk');
+    invoke('app_version').then(v=>{ if(!v) return; t.textContent='v'+v;
+      try{ const seen=localStorage.getItem('metasync_seen_ver');
+        if(seen && seen!==v) openChangelog(v);              // just updated → show what's new
+        localStorage.setItem('metasync_seen_ver', v);
+      }catch(e){}
+    }).catch(()=>{});
+  }
+} })();
 // Reflect your actual side in the layout: your name card + team panel sit on YOUR side (P1 left / P2 right),
 // opponent on the other. .link/.board are CSS grid, whose items honor `order`, so we just reorder them.
 function applySideLayout(){
-  const meP2 = mySide==='p2', o=(sel,v)=>{ const el=$(sel); if(el) el.style.order=v; };
-  o('#link .node.p1', meP2?'3':'1'); o('#link .center','2'); o('#link .node.p2', meP2?'1':'3');
-  o('#teamYou', meP2?'3':'1'); o('.board .seam','2'); o('#teamOpp', meP2?'1':'3');
-  const ys=$('#teamYou .side'), os=$('#teamOpp .side'); if(ys) ys.textContent=meP2?'P2':'P1'; if(os) os.textContent=meP2?'P1':'P2';
+  // ★ FIXED layout: YOU always on the LEFT, OPPONENT always on the RIGHT — cards/characters never swap. The side
+  // is just a BADGE, shown only once it's actually resolved (via localPlayerNum). We never assert P1 by default.
+  const set=(sel,v)=>{ const el=$(sel); if(el) el.style.order=v; };
+  set('#link .node.p1','1'); set('#link .center','2'); set('#link .node.p2','3');
+  set('#teamYou','1'); set('.board .seam','2'); set('#teamOpp','3');
+  const known = sideConfirmed && (mySide==='p1'||mySide==='p2');
+  const you  = known ? (mySide==='p2'?'P2':'P1') : '—';
+  const opp  = known ? (mySide==='p2'?'P1':'P2') : '—';
+  const t=(sel,v)=>{ const el=$(sel); if(el) el.textContent=v; };
+  t('#teamYou .side', you); t('#teamOpp .side', opp);   // side badges live only on the team-card headers
 }
 
 // ── one serialized poll loop (never overlaps → no IPC pile-up, no hangs) ──
@@ -1108,23 +1466,28 @@ function applySideLayout(){
 // (~1.3s), so we run it ONLY when a skinned character in the current match still lacks its live
 // palette. Once every skinned fighter is captured, capture goes idle until the team changes.
 let pollTimer=null, captureBackoff=0, lastRosterKey='';
-function rosterCids(){ return [...(detTeams.p1||[]),...(detTeams.p2||[])].map(x=>x.cid); }
+function rosterCids(){ return [...new Set([...[...(detTeams.p1||[]),...(detTeams.p2||[])].map(x=>x.cid), ...readerRoster])]; }  // array roster ∪ sig-scan roster (latter is live at match start)
 function skinnedNeedsCapture(){ const r=new Set(rosterCids()); return Object.keys(activeSkins).some(cid=> r.has(+cid) && !(liveSigs[+cid]?.length)); }
 async function pollTick(){
   try{
     await stateTick();                                   // roster + mode (freeze-safe)
     // entering a new match session → tell the hook to drop its stale palette-region cache (crash-safety)
-    if((matchState==='select'||matchState==='match') && (prevMode===''||prevMode==='menu'||prevMode==='game_off'||prevMode==='detecting')){ try{ invoke('reset_hook_regions'); }catch(e){} }
+    if((matchState==='select'||matchState==='match') && (prevMode===''||prevMode==='menu'||prevMode==='game_off'||prevMode==='detecting')){
+      try{ invoke('reset_hook_regions'); }catch(e){}
+      perSideCids=new Set(); writeAll().then(baseTick);   // prime at match START: write skins.dat, then paint the base layer right away (per-side refines within a tick)
+    }
     prevMode=matchState;
     const rk=rosterCids().slice().sort((a,b)=>a-b).join(',');
     if(rk!==lastRosterKey){ lastRosterKey=rk; captureBackoff=0; liveSigs={}; } // new team → re-capture live
     // palettes so each character's LAST SELECTED skin re-applies to this match's actual colors
-    // capture_live is a HEAVY (~1.3s) memory scan that only feeds the HOOK path. Live Paint doesn't use it
-    // (it writes by DatPal), so skip it entirely when Paint is on — a big in-game responsiveness win.
+    // capture_live is now O(1) (it just returns the reader's snapshot of the hook's live palette dump — no
+    // memory scan), so we run it even with Live Paint on: it upgrades the hook's match signatures to the REAL
+    // on-screen palette bytes, which is what makes the always-on signature base layer land on non-stock colour
+    // variants too. Per-side still overrides where it's confident; this keeps the fallback accurate.
     const inSession = (matchState==='match'||matchState==='select');
-    if(!livePaint && inSession && captureBackoff<=0 && skinnedNeedsCapture()){
-      await refreshLiveSigs();                            // grab real live palettes → auto-apply skins (hook mode)
-      if(skinnedNeedsCapture()) captureBackoff=3;         // a fighter isn't on screen yet → retry in ~4s
+    if(inSession && captureBackoff<=0 && skinnedNeedsCapture()){
+      await refreshLiveSigs();                            // grab real live palettes → auto-apply skins (feeds the signature base layer)
+      if(skinnedNeedsCapture()) captureBackoff=1;         // not captured yet (base-scan may not have run) → retry next poll so skins land ~1s into the match, not after a hit
     }
     if(captureBackoff>0) captureBackoff--;
     // opponent identity — the reader thread now holds the opponent STICKILY across the ranked in-between
@@ -1139,18 +1502,19 @@ async function pollTick(){
         const meId=(mySteam.steamid||'').trim(), meNm=(mySteam.name||'').trim().toLowerCase();
         c=c.filter(x=> String(x.steamid||'').trim()!==meId && (meNm==='' || String(x.name||'').trim().toLowerCase()!==meNm));
         if(c.length){ const top=c[0]; oppEmpty=0;
-          if(!oppIdentity || oppIdentity.steamid!==top.steamid){ oppIdentity={steamid:top.steamid, name:top.name}; oppCandidates=c.map(x=>x.steamid); setOpp(oppMeta); if(syncOn) syncTick(); }
-          oppBackoff=3;
+          if(!oppIdentity || oppIdentity.steamid!==top.steamid){ oppIdentity={steamid:top.steamid, name:top.name}; oppCandidates=c.map(x=>x.steamid); sideManual=null; setOpp(oppMeta); if(syncOn) syncTick(); }  // new opponent → clear manual side (re-detect)
         } else {
-          if(oppIdentity && ++oppEmpty>=8){ oppIdentity=null; oppCandidates=[]; oppEmpty=0; if(!oppMeta) setOpp(null); } // cleared ~10s → game closed
-          oppBackoff=3;
+          // backend now clears the opponent DEFINITIVELY at set-over (~2s), so an empty result is trustworthy →
+          // mirror it fast (a few polls) instead of the old ~10s hold that made a dead opponent linger.
+          if(oppIdentity && ++oppEmpty>=3){ oppIdentity=null; oppCandidates=[]; oppEmpty=0; if(!oppMeta) setOpp(null); }
         }
-      }catch(e){ oppBackoff=4; }
+      }catch(e){}
     }
-    if(oppBackoff>0) oppBackoff--;
-    updateRecord();                                            // refresh the head-to-head W/L vs this opponent
+    // detect_opponent is an O(1) snapshot read (no scan) → fetch it EVERY poll so the UI mirrors the backend with
+    // no artificial lag; the old oppBackoff=3 gate added ~3s of delay for nothing.
+    updateRecord(); fetchMatchup();                            // head-to-head W/L + matchup intel vs this opponent
   }catch(e){}
-  pollTimer=setTimeout(pollTick, 1200);                   // schedule NEXT only after this finishes
+  pollTimer=setTimeout(pollTick, inSessionNow?400:600);  // schedule NEXT only after this finishes (fast while in a session)
 }
 
 // ── presence: heartbeat + live "online" count of connected apps ──
@@ -1166,7 +1530,7 @@ async function presenceTick(){
   try{ const p=await invoke('sync_presence'); const n=p.online||0;
     $('#onlineN').textContent=n; $('#cOnline').classList.toggle('on',n>0);
     const list=(p.players||[]).filter(Boolean);
-    $('#cOnline').title = list.length? ('Online now: '+list.join(', ')) : 'MvC Live Skins users online now';
+    $('#cOnline').title = list.length? ('Online now: '+list.join(', ')) : 'MetaSync users online now';
   }catch(e){ $('#onlineN').textContent='–'; }
 }
 
@@ -1175,8 +1539,14 @@ let fxMode=0;
 function setEffect(mode){ fxMode=mode; $$('.fx').forEach(b=>b.classList.toggle('on',+b.dataset.m===mode)); invoke('set_effect',{mode,speed:+$('#fxSpeed').value}).then(()=>toast(mode?'effect on':'effects off')).catch(e=>toast('⚠ '+e)); }
 
 // ── status / inject ──
+// gs-76: the render-layer hook (d3dhook.dll) is the PRIMARY painter — it repaints at the D3D palette upload so
+// skins show at ROUND START. The BACKEND reader auto-injects it ONCE per game session the moment it detects the
+// game pid (embedded via include_bytes! → staged to temp → CreateRemoteThread+LoadLibraryW; see sync.rs). The
+// RPM paint_live loop stays on as the FALLBACK. So the frontend just reflects game status here.
 async function pollStatus(){ try{ const s=await invoke('detect_state'); const on=!!(s&&s.state&&s.state!=='game_off'); $('#cGame').classList.toggle('on',on);
-  const b=$('#banner'); if(!on){ b.textContent='Launch the Marvel vs Capcom Fighting Collection — skins apply automatically (no hook to inject).'; b.classList.add('show'); } else b.classList.remove('show'); }catch(e){} }
+  const b=$('#banner');
+  if(!on){ b.textContent='Launch the Marvel vs Capcom Fighting Collection — skins apply automatically.'; b.classList.add('show'); }
+  else b.classList.remove('show'); }catch(e){} }
 
 // ══ suite: tabs / library / loadouts / studio ══
 let studioLoaded=false, libApplyMode='live';
@@ -1240,7 +1610,7 @@ async function loadLoadout(i){
   const lo=getLoadouts()[i]; if(!lo) return;
   activeSkins={}; myTeam=[];
   for(let k=localStorage.length-1;k>=0;k--){ const key=localStorage.key(k); if(key&&key.startsWith('mvcskin_')) localStorage.removeItem(key); }
-  for(const cid in lo.skins){ const s=lo.skins[cid]; activeSkins[+cid]={sigs:[sigFromBank0(+cid)].filter(Boolean), palette:s.palette, author:s.author, skinName:s.skinName}; if(!myTeam.includes(+cid)) myTeam.push(+cid); try{ localStorage.setItem('mvcskin_'+cid, JSON.stringify(s)); }catch(e){} }
+  for(const cid in lo.skins){ const s=lo.skins[cid]; activeSkins[+cid]={sigs:[sigFromBank0(+cid)].filter(Boolean), palette:s.palette, author:s.author, skinName:s.skinName}; try{ localStorage.setItem('mvcskin_'+cid, JSON.stringify(s)); }catch(e){} }  // loadout → activeSkins (applies live); card stays match-driven
   await writeAll(); renderYou(); renderLibrary(); if(syncOn) publishMine();
   toast(`Loaded “${lo.name}” — ${Object.keys(lo.skins).length} skins`);
 }
@@ -1511,7 +1881,7 @@ function stExportSheet(){ const d=idleData[stCid]; if(!d||!stPal) return; const 
   const cv=document.createElement('canvas'); cv.width=d.w*s*n; cv.height=d.h*s; const ctx=cv.getContext('2d'); ctx.imageSmoothingEnabled=false;
   for(let f=0;f<n;f++){ ctx.drawImage(stFrameCanvas(f,s), f*d.w*s, 0); }
   stDl(cv.toDataURL('image/png'), `${stNm()}_sheet.png`); toast(`sheet PNG (${n} frames) exported`); }
-function stExportJson(){ const skin={ char_id:stCid, name:nameById[stCid], palette_hex:(stPal||[]).map(c=>'#'+hex2(c[0])+hex2(c[1])+hex2(c[2])), source:'MvC Skin Suite · Studio' };
+function stExportJson(){ const skin={ char_id:stCid, name:nameById[stCid], palette_hex:(stPal||[]).map(c=>'#'+hex2(c[0])+hex2(c[1])+hex2(c[2])), source:'MetaSync · Studio'};
   stDl('data:application/json;charset=utf-8,'+encodeURIComponent(JSON.stringify(skin,null,2)), `${stNm()}_skin.json`); toast('skin.json exported'); }
 // ── reference overlay ──
 function stLoadRef(file){ if(!file) return; const url=URL.createObjectURL(file); const img=new Image();
@@ -1526,24 +1896,27 @@ function stApply(){ if(stCid==null||!stPal) return null;
   const pal=stPal.map(c=>(c[0]<<16)|(c[1]<<8)|c[2]);
   activeSkins[stCid]={sigs:(liveSigs[stCid]?.length?liveSigs[stCid]:[sigFromBank0(stCid)].filter(Boolean)), palette:pal, author:'Studio', skinName:'Custom'};
   try{ localStorage.setItem('mvcskin_'+stCid, JSON.stringify({palette:pal,author:'Studio',skinName:'Custom'})); }catch(e){}
-  if(!myTeam.includes(stCid)) myTeam.push(stCid); return pal;
+  return pal;   // Studio skin → activeSkins (persists + auto-applies); card stays match-driven
 }
 
 // ── boot ──
 async function boot(){
-  console.log('%c MvC Skin Suite — build gs-46 (rich logging: per-game TEAMS + biggest COMBO + METERS used pushed to the server; team-comp win-rate profiles [click a name on Ranks]; 🎯 Combo leaderboard tab. Combat offsets confirmed on the Steam NAOMI build via render-buffer + relative offsets.) ','background:#ffb020;color:#241700;font-weight:800;padding:3px 8px;border-radius:4px');
+  console.log('%c MetaSync v0.1.9 · gs-78 (beta: auto-records per-frame match state and shares it to improve the game AI - toggle in the header disclosure bar. click the version in the header to see the changelog; a live pill shows up-to-date vs update-available; "What\'s New" pops after you update. Earlier: renamed to MetaSync. Fixed the library palette swatches (the strict CSP was blocking inline colors - now allowed via dangerousDisableAssetCspModification style-src). Updates now ship via GitHub Releases with nobd.net as fallback. Includes the same-character mirror fix + the "🪞 mirror · your side" tag when a mirror is detected and split. MIRROR FIX - in a same-character mirror your skin no longer bleeds onto the opponent. paint_live now side-gates mirror characters (each fighter has its own DatPal), and same-variant collisions (byte-identical palette, detected via the cl+0x6 color field / the 6 select-button variants) are withheld from the signature hook. Different variants keep round-start hook painting. See docs/MVC2-STEAM-EXPERT.md.) ','background:#00c853;color:#00160a;font-weight:800;padding:3px 8px;border-radius:4px');
   loadBaked();
   try{ const d=await(await fetch('idle_frames.json')).json(); idleData=d; }catch(e){}
   try{ const chars=await(await fetch('skins/characters.json')).json(); for(const c of chars){ dirById[c.char_id]=c.dir; nameById[c.char_id]=c.name; charByDir[c.dir]=c.char_id; } }catch(e){}
-  // restore saved skins
-  for(let i=0;i<localStorage.length;i++){ const k=localStorage.key(i); if(k&&k.startsWith('mvcskin_')){ const cid=+k.slice(8); try{ const v=JSON.parse(localStorage.getItem(k)); activeSkins[cid]={sigs:[sigFromBank0(cid)].filter(Boolean), palette:v.palette, author:v.author, skinName:v.skinName}; if(!myTeam.includes(cid)) myTeam.push(cid); }catch(e){} } }
+  // restore saved skins → activeSkins only (persisted palettes auto-apply in-match); the "You" card stays empty
+  // until a live match, so idle characters no longer show up on it.
+  for(let i=0;i<localStorage.length;i++){ const k=localStorage.key(i); if(k&&k.startsWith('mvcskin_')){ const cid=+k.slice(8); try{ const v=JSON.parse(localStorage.getItem(k)); activeSkins[cid]={sigs:[sigFromBank0(cid)].filter(Boolean), palette:v.palette, author:v.author, skinName:v.skinName}; }catch(e){} } }
   invoke('sync_self').then(s=>{ mySteam=s||{}; refreshMe(); }).catch(()=>{ $('#meName').textContent='(inject hook)'; });
   invoke('get_rom_path').then(p=>{ if(p){ $('#romPath').textContent=p; } refreshRomChip(p); }).catch(()=>refreshRomChip(''));
   renderYou(); renderOpp(); pollStatus(); setInterval(pollStatus,3000);
   pollTick();                                            // single serialized loop (state + on-demand capture)
   presenceTick(); setInterval(presenceTick, 20000);      // heartbeat + live online count
+  setTimeout(()=>checkForUpdate(false), 3000);           // quiet launch check: banner only if an update is waiting
   if((localStorage.getItem('suite_sync')||'on')==='on' && !syncOn) toggleSync();  // Live sync defaults ON
-  if((localStorage.getItem('suite_paint')||'on')==='on' && !livePaint) toggleLivePaint();  // Live Paint default ON
+  if((localStorage.getItem('suite_paint')||'on')==='on' && !livePaint) toggleLivePaint();  // Live Paint (per-side refine) default ON
+  startBasePaint();                                       // signature base layer — always on, no injection, no array
   if(!reduce) requestAnimationFrame(animLoop);
   if(Object.values(activeSkins).some(a=>a.sigs.length)) writeAll();
 }
@@ -1562,7 +1935,7 @@ $('#btnReset').onclick=async()=>{ activeSkins={}; myTeam=[]; for(let i=localStor
 
 // ── Leaderboard (Ranks tab) — global Hall of Fame from the skinsync server ──
 let lbTab='streak', lbLoading=false;
-const LB_STAT_LABEL={streak:'streak',wins:'wins',ocv:'OCVs',perfect:'perfects',comeback:'comebacks',combo:'max combo'};
+const LB_STAT_LABEL={streak:'streak',wins:'wins',ocv:'OCVs',perfect:'perfects',comeback:'comebacks',combo:'max combo',rating:'ELO'};
 const esc=s=>String(s==null?'':s).replace(/[<>&"]/g,c=>({'<':'&lt;','>':'&gt;','&':'&amp;','"':'&quot;'}[c]));
 async function renderLeaderboard(tab){
   lbTab=tab||lbTab;
@@ -1608,7 +1981,7 @@ async function openProfile(sid,nm){
       <td>${m.won?'W':'L'}</td><td>${esc(m.opp||'?')}</td><td>${esc(teamStr(m.my_team))}</td><td>${esc(teamStr(m.opp_team))}</td>
       <td>${m.combo?('🎯'+m.combo):''}${m.ocv?' 💥':''}${m.perfect?' ✨':''}${m.comeback?' 🔄':''}</td></tr>`).join('');
     body.innerHTML=`<h3>${esc(p.name||nm||'Player')}</h3>
-      <div class="pf-stats"><span><b>${p.wins||0}</b>W · <b>${p.losses||0}</b>L</span><span><b>${wr}%</b> win</span>
+      <div class="pf-stats"><span>⚔️ <b>${esc(p.rank||'Warrior')}</b> · ${p.rating||1000} ELO</span><span><b>${p.wins||0}</b>W · <b>${p.losses||0}</b>L</span><span><b>${wr}%</b> win</span>
         <span>🔥 <b>${p.best_streak||0}</b></span><span>🎯 <b>${p.best_combo||0}</b></span>
         <span>💥 ${p.ocvs||0} · ✨ ${p.perfects||0} · 🔄 ${p.comebacks||0}</span></div>
       <h4>Team compositions</h4>
@@ -1702,6 +2075,14 @@ $('#stAnimHint').onclick=()=>$('#romModal').classList.add('show');
 $('#stKeys').onclick=()=>$('#stKeysModal').classList.add('show');
 $('#stKeysX').onclick=()=>$('#stKeysModal').classList.remove('show');
 $('#stKeysModal').onclick=e=>{ if(e.target.id==='stKeysModal') e.currentTarget.classList.remove('show'); };
+
+// gs-78: gameplay-data sharing consent — reflect the persisted backend setting + let the user toggle it.
+(async()=>{ const cb=$('#shareGameplay'); if(!cb||!invoke) return;
+  try{ const on=await invoke('get_share_gameplay'); cb.checked=!!on; }catch(e){}
+  cb.onchange=()=>{ invoke('set_share_gameplay',{on:cb.checked})
+    .then(()=>toast(cb.checked?'Sharing gameplay data — thanks for helping train the AI':'Gameplay-data sharing off'))
+    .catch(()=>{}); };
+})();
 
 boot();
 </script>

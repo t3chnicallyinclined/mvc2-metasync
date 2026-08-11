@@ -378,13 +378,39 @@ fn walk_for_arc(dir: &std::path::Path) -> Option<std::path::PathBuf> {
 #[tauri::command]
 fn get_rom_path() -> String { fs::read_to_string("C:\\g\\rom_path.txt").unwrap_or_default().trim().to_string() }
 
+// ── Auto-update (tauri-plugin-updater) — driven from Rust so it works under withGlobalTauri (no JS bundler).
+//    The frontend just prompts: check_update returns the pending version/notes (or null), install_update
+//    downloads the SIGNED package, installs it, and relaunches.
+#[tauri::command]
+async fn check_update(app: tauri::AppHandle) -> Result<Option<serde_json::Value>, String> {
+    use tauri_plugin_updater::UpdaterExt;
+    match app.updater().map_err(|e| e.to_string())?.check().await {
+        Ok(Some(u)) => Ok(Some(serde_json::json!({ "version": u.version, "notes": u.body }))),
+        Ok(None) => Ok(None),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
+#[tauri::command]
+async fn install_update(app: tauri::AppHandle) -> Result<(), String> {
+    use tauri_plugin_updater::UpdaterExt;
+    let update = app.updater().map_err(|e| e.to_string())?
+        .check().await.map_err(|e| e.to_string())?
+        .ok_or_else(|| "no update available".to_string())?;
+    update.download_and_install(|_downloaded, _total| {}, || {}).await.map_err(|e| e.to_string())?;
+    app.restart();   // diverges (-> !): relaunch into the freshly installed version
+}
+
 pub fn run() {
     sync::start_reader(); // single background thread owns all game-memory reads (keeps the UI unblockable)
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init()) // ROM file picker for the Studio tab
+        .plugin(tauri_plugin_updater::Builder::new().build()) // signed auto-update from nobd.net
         .invoke_handler(tauri::generate_handler![apply_skin, clear_skin, learn_character, capture_live, apply_sigs, apply_multi, reset_all, reset_hook_regions, set_effect, set_effect_target, detect_rom, set_rom_path, get_rom_path,
+            check_update, install_update,
             sync::sync_self, sync::detect_opponent, sync::sync_publish, sync::sync_unpublish, sync::sync_fetch_peers,
-            sync::detect_state, sync::sync_heartbeat, sync::sync_presence, sync::paint_palettes, sync::get_record, sync::leaderboard, sync::profile,
+            sync::detect_state, sync::sync_heartbeat, sync::sync_presence, sync::paint_palettes, sync::paint_live, sync::paint_signatures, sync::inject_hook, sync::get_record, sync::leaderboard, sync::profile, sync::matchup, sync::app_version, sync::set_manual_side, sync::capture_start, sync::capture_stop, sync::capture_status,
+            sync::get_share_gameplay, sync::set_share_gameplay,
             rom::rom_size, rom::rom_read, rom::rom_write, rom::rom_backup, rom::rom_prepare, rom::bake_palette, rom::extract_char_dat])
         .run(tauri::generate_context!())
         .expect("error while running MvC Collection Live Skins");
