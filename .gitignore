@@ -36,3 +36,8 @@ credentials.json
 # ── OS ──
 Thumbs.db
 .DS_Store
+
+# build artifacts
+target/
+skinsync/target/
+src-tauri/target/
