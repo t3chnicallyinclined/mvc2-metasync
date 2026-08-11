@@ -41,3 +41,16 @@ Thumbs.db
 target/
 skinsync/target/
 src-tauri/target/
+
+# ── Internal / private — never ship to the public client repo ──
+CLAUDE.md
+.claude/
+docs/MVC2-STEAM-EXPERT.md
+docs/STEAM-FIGHTER-STRUCT-MAP.md
+docs/TRAINING-DATA-WISHLIST.md
+docs/COLLECTION-BOOT-RE-HANDOVER.md
+docs/KOM-SURREALDB-UNIFICATION.md
+docs/BETA-READINESS.md
+docs/*-EXPERT*.md
+docs/*-HANDOVER*.md
+docs/*-CONTEXT*.md
