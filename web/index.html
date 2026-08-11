@@ -684,7 +684,7 @@
 
 <script>
 const invoke = window.__TAURI__?.core?.invoke;
-// ── AI training-session recorder (floating Record button) — HIDDEN for beta ──
+// ── session recorder (floating Record button) — HIDDEN for beta ──
 // The capture_start/capture_status/capture_stop Tauri commands stay in the backend
 // (used by our own tooling); the tester-facing Record button is removed for go-live.
 const $ = s=>document.querySelector(s), $$ = s=>[...document.querySelectorAll(s)];
@@ -1352,7 +1352,7 @@ let _updHideT=null;
 // ── changelog / "What's New" popup + live version-status pill ─────────────────────────────────────
 const CHANGELOG = [
   { v:'0.1.9', t:'Match recorder', items:[
-    'New Record button (bottom-right): captures a match session locally for training/analysis — click to start/stop; saves to your mvc2-sessions folder. Nothing is uploaded.',
+    'Record button (bottom-right): captures a match session locally — click to start/stop. Nothing is uploaded.',
   ]},
   { v:'0.1.8', t:"What's New + version status", items:[
     'Click the version in the header anytime to see the full changelog.',

@@ -562,18 +562,18 @@ const OFF_DATPAL: usize = 0x4c;
 const OFF_COLOR:  usize = 0x6;
 const OFF_CHARID: usize = 0x554;
 const OFF_HEALTH: usize = 0xb44;
-const OFF_COMBO:  usize = 0x1ca;    // combo this fighter is DEALING (confirmed via training); +0x902 = RECEIVED
+const OFF_COMBO:  usize = 0x1ca;    // combo this fighter is dealing; +0x902 = received
 const OFF_COMBO_RECV: usize = 0x902; // combo this fighter is RECEIVING (the +0x902 pair to OFF_COMBO)
 const OFF_POS_X:  usize = 0x61c;    // fighter world X (f32) — per ranked_capture schema
 const OFF_POS_Y:  usize = 0x620;    // fighter world Y (f32)
 const OFF_ASSIST: usize = 0x4e9;    // assist type per fighter: alpha=0 beta=1 gamma=2 (confirmed live 2026-08-11 vs ground truth on 2 array bases; DC +0x4C9 does NOT map)
-// ── RE'd 2026-08-11 (docs/STEAM-FIGHTER-STRUCT-MAP.md), behavior-confirmed in training ──
-const OFF_XVEL:   usize = 0x644;    // x velocity (f32) — sign-flips walk fwd/back, spikes on dash
-const OFF_YVEL:   usize = 0x648;    // y velocity (f32) — jump arc +/-
-const OFF_REDHP:  usize = 0xb48;    // red/recoverable health (u16) = health+4
-const OFF_FACING: usize = 0x720;    // facing (u8) 0/1 — flips at crossover
-const OFF_HITSTUN:usize = 0x909;    // hitstun_flag (u8) 0xFF while being combo'd, 0 on block
-const OFF_ACTION: usize = 0x76c;    // action-state (u8) — move phase/type (idle/crouch/walk/special phases)
+// ── additional per-fighter match-state fields ──
+const OFF_XVEL:   usize = 0x644;    // x velocity (f32)
+const OFF_YVEL:   usize = 0x648;    // y velocity (f32)
+const OFF_REDHP:  usize = 0xb48;    // recoverable health (u16) = health+4
+const OFF_FACING: usize = 0x720;    // facing (u8) 0/1
+const OFF_HITSTUN:usize = 0x909;    // hitstun flag (u8) 0xFF while in hitstun, 0 otherwise
+const OFF_ACTION: usize = 0x76c;    // action/move-phase state (u8)
 const MET_BARS:   usize = 0x2e636;  // P1 meter bars 0-5 (relative to the array base `ram`); P2 = +1 (adjacent, per DC layout)
 const MET_FILL:   usize = 0x2e658;  // P1 meter fine fill (u16) — confirmed +1 per Magneto LP
 const HP_FULL: u16 = 144;
@@ -584,11 +584,10 @@ unsafe fn rpm_u8(h: HANDLE, a: usize) -> Option<u8> { read_at(h, a, 1).filter(|b
 unsafe fn rpm_u16(h: HANDLE, a: usize) -> Option<u16> { read_at(h, a, 2).filter(|b| b.len() >= 2).map(|b| b[0] as u16 | ((b[1] as u16) << 8)) }
 unsafe fn rpm_u32(h: HANDLE, a: usize) -> Option<u32> { read_at(h, a, 4).filter(|b| b.len() >= 4).map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]])) }
 
-// ── SESSION CAPTURE — input+context recorder for the AI training pipeline ──────────────
+// ── MATCH DATA — per-frame match-state recorder (synced to the service when sharing is on) ──
 // Records, per GAME FRAME, both players' input (+0x4FC on slots 0 & 1) keyed by the guest
-// frame_counter, plus the match context (teams, local side) that LABELS the data. Reuses the
-// same anchor the reader already uses; strictly read-only. Frame-accurate: we poll fast and
-// commit exactly ONE row per new frame_counter, so combos/infinites reproduce on replay.
+// frame_counter, plus the match context (teams, local side). Reuses the same anchor the reader
+// already uses; strictly read-only. One row per new frame_counter.
 static CAPTURING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 const LOCALPLAYER_HOST_OFF: usize = 0xac7230; // exe+off: 0=P1, 1=P2 (localPlayerNum)
 
@@ -685,10 +684,7 @@ fn capture_loop() {
         if frame != last {
             let p1 = unsafe { rpm_u16(h, array + OFF_INPUT) }.unwrap_or(0);
             let p2 = unsafe { rpm_u16(h, array + STRIDE + OFF_INPUT) }.unwrap_or(0);
-            // health WITNESS: all 6 fighters (Steam health u32 @+0xb44, low16 = 0..144).
-            // Ground truth for the reconstruction-divergence overlay — health is readable
-            // on BOTH the Steam (+0xb44) and NAOMI (+0x420) struct, so it compares like-for-
-            // like. Clean here because capture runs in training mode (no rollback copies).
+            // health: all 6 fighters (Steam health u32 @+0xb44, low16 = 0..144).
             let mut hp = [0u16; 6];
             // clamp to real MvC2 max (144): a never-played (benched) char's slot can read
             // uninitialized garbage (e.g. 999) — an un-played char is at full health = 144.
@@ -760,7 +756,7 @@ fn load_share_setting() {
     }
 }
 
-/// Whether MetaSync auto-shares per-frame gameplay data (the training pipeline). Beta default: true.
+/// Whether MetaSync auto-shares per-frame match data with the service. Beta default: true.
 #[tauri::command]
 pub fn get_share_gameplay() -> bool { SHARE_GAMEPLAY.load(std::sync::atomic::Ordering::SeqCst) }
 
@@ -779,7 +775,7 @@ struct GsRow {
     frame: u32, p1_in: u16, p2_in: u16,
     hp: [u16; 6], px: [f32; 6], py: [f32; 6],
     m1: u8, m2: u8, mfill: u16, cd: [u16; 6], cr: [u16; 6],
-    // RE'd rich state (per slot) — the fields that make a "reading" policy + segment combos/hit-confirms
+    // additional per-slot match state
     vx: [f32; 6], vy: [f32; 6], rhp: [u16; 6], face: [u8; 6], hitstun: [u8; 6], act: [u8; 6],
 }
 struct GsCapture {
