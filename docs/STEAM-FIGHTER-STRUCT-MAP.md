@@ -17,13 +17,18 @@ Branch: `re/steam-struct-fields`. Findings method + expert protocol: `scratchpad
   and treat everything by ABSOLUTE offset from the array base: field X of slot i = `array + i*0x738 + X`.
 - All offsets below are **slot-relative** (add `i*0x738`).
 
-## ⚠ Finding the live array (do NOT hardcode)
+## ⚠ Finding the live array (do NOT hardcode) — use INPUT-DRIVEN liveness
 
-The fixed anchor (`flycast_base + 0x10b33fc8`) can point at a **FROZEN savestate copy** (post-match, or a
-training reset copy) — reading it gives stale/static data (0 changing bytes). **Always pick the ANIMATING
-array**: enumerate candidates (signature scan + anchor), sample each ~1s, choose the one with the most
-changing bytes and a sane slot0 char_id. Tool: `scratchpad/find_live_array.py` / `pick_live_array()` in
-`struct_recorder.py`. Netplay adds ~14 rollback copies (pick the confirmed one); offline has the frozen copy.
+The fixed anchor (`flycast_base + 0x10b33fc8`) can point at a **FROZEN/stale copy** (post-match, or a training
+reset copy). ⚠ **"most changing bytes" is NOT enough** — a stale copy still runs its idle breathing animation
+(30+ changing bytes) while its position is dead. Training RESETS re-allocate the controlled array and can move
+it OUT of the signature-scan window entirely, leaving only stale copies findable.
+**Robust method: the live array is the one whose VELOCITY/POSITION responds while the player moves.** Have the
+player walk+jump, sample all candidates, pick the one with real posX/posY/velocity variance (idle animation
+alone → rejected). Tool: `scratchpad/find_live_array.py` (velocity-based). Then record from that explicit
+address (`struct_recorder.py <out> <secs> 0x<addr>`). ✅ This is a TRAINING artifact — in a real match the
+anchor is correct (proven by working captures); the app's match-load gate + frame-counter dedup already reject
+stale copies (a frozen copy never shows a match starting / never advances its counter).
 
 ## Mode invariance
 
@@ -59,6 +64,7 @@ in netplay) and a spot-check of 2-3 fields.
 | **combo_recv** | +0x902 | u16 | counted combo hits on the victim (0→7) |
 | **hitstun_flag** | +0x909 | u8 | **0xFF SUSTAINED whole combo (health dropping); 0 on BLOCK** — the disambiguator |
 | **hit_flash** | +0x856 | u8 | brief 0xFF pulse on contact (attacker/victim flash) — the pal-effect, NOT hitstun |
+| **facing** | +0x720 | u8 | {0,1}; flips at crossover (which side you face). Copies at +0x740, +0x84e (like DC's 3 copies) |
 
 ## STRONG CANDIDATES (movement pass; confirm via oracle / more isolation)
 | field | offset | type | signature |
