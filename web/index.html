@@ -397,14 +397,6 @@
     </div>
   </header>
 
-  <!-- gs-78: visible data-sharing disclosure + consent toggle (per-frame recording upload; default ON for beta) -->
-  <div id="dataNotice" style="display:flex; align-items:center; gap:10px; flex-wrap:wrap; font-size:11px; color:var(--dim); background:var(--panel-2); border:1px solid var(--line); border-radius:8px; padding:6px 12px; margin:8px 0;">
-    <span>🛈 MetaSync auto-records anonymized per-frame match state and shares it to help train the game AI.</span>
-    <label style="display:inline-flex; align-items:center; gap:6px; cursor:pointer; color:var(--ink,inherit); font-weight:600; margin-left:auto;">
-      <input type="checkbox" id="shareGameplay" checked> Share gameplay data
-    </label>
-  </div>
-
   <div class="tabbar">
     <div class="tabs" id="tabs">
       <button data-t="match" class="on">🎮 Match</button>
@@ -1901,7 +1893,7 @@ function stApply(){ if(stCid==null||!stPal) return null;
 
 // ── boot ──
 async function boot(){
-  console.log('%c MetaSync v0.1.9 · gs-78 (beta: auto-records per-frame match state and shares it to improve the game AI - toggle in the header disclosure bar. click the version in the header to see the changelog; a live pill shows up-to-date vs update-available; "What\'s New" pops after you update. Earlier: renamed to MetaSync. Fixed the library palette swatches (the strict CSP was blocking inline colors - now allowed via dangerousDisableAssetCspModification style-src). Updates now ship via GitHub Releases with nobd.net as fallback. Includes the same-character mirror fix + the "🪞 mirror · your side" tag when a mirror is detected and split. MIRROR FIX - in a same-character mirror your skin no longer bleeds onto the opponent. paint_live now side-gates mirror characters (each fighter has its own DatPal), and same-variant collisions (byte-identical palette, detected via the cl+0x6 color field / the 6 select-button variants) are withheld from the signature hook. Different variants keep round-start hook painting. See docs/MVC2-STEAM-EXPERT.md.) ','background:#00c853;color:#00160a;font-weight:800;padding:3px 8px;border-radius:4px');
+  console.log('%c MetaSync v0.1.11 · gs-79 (beta: auto-records anonymized match state to improve the app - toggle in the header disclosure bar. click the version in the header to see the changelog; a live pill shows up-to-date vs update-available; "What\'s New" pops after you update. Earlier: renamed to MetaSync. Fixed the library palette swatches (the strict CSP was blocking inline colors - now allowed via dangerousDisableAssetCspModification style-src). Updates now ship via GitHub Releases with nobd.net as fallback. Includes the same-character mirror fix + the "🪞 mirror · your side" tag when a mirror is detected and split. MIRROR FIX - in a same-character mirror your skin no longer bleeds onto the opponent. paint_live now side-gates mirror characters (each fighter has its own DatPal), and same-variant collisions (byte-identical palette, detected via the cl+0x6 color field / the 6 select-button variants) are withheld from the signature hook. Different variants keep round-start hook painting. See docs/MVC2-STEAM-EXPERT.md.) ','background:#00c853;color:#00160a;font-weight:800;padding:3px 8px;border-radius:4px');
   loadBaked();
   try{ const d=await(await fetch('idle_frames.json')).json(); idleData=d; }catch(e){}
   try{ const chars=await(await fetch('skins/characters.json')).json(); for(const c of chars){ dirById[c.char_id]=c.dir; nameById[c.char_id]=c.name; charByDir[c.dir]=c.char_id; } }catch(e){}
@@ -2076,13 +2068,7 @@ $('#stKeys').onclick=()=>$('#stKeysModal').classList.add('show');
 $('#stKeysX').onclick=()=>$('#stKeysModal').classList.remove('show');
 $('#stKeysModal').onclick=e=>{ if(e.target.id==='stKeysModal') e.currentTarget.classList.remove('show'); };
 
-// gs-78: gameplay-data sharing consent — reflect the persisted backend setting + let the user toggle it.
-(async()=>{ const cb=$('#shareGameplay'); if(!cb||!invoke) return;
-  try{ const on=await invoke('get_share_gameplay'); cb.checked=!!on; }catch(e){}
-  cb.onchange=()=>{ invoke('set_share_gameplay',{on:cb.checked})
-    .then(()=>toast(cb.checked?'Sharing gameplay data — thanks for helping train the AI':'Gameplay-data sharing off'))
-    .catch(()=>{}); };
-})();
+// gameplay-data sharing is inherent to the service (powers the leaderboards/stats) — always on, no UI toggle.
 
 boot();
 </script>
