@@ -567,6 +567,13 @@ const OFF_COMBO_RECV: usize = 0x902; // combo this fighter is RECEIVING (the +0x
 const OFF_POS_X:  usize = 0x61c;    // fighter world X (f32) — per ranked_capture schema
 const OFF_POS_Y:  usize = 0x620;    // fighter world Y (f32)
 const OFF_ASSIST: usize = 0x4e9;    // assist type per fighter: alpha=0 beta=1 gamma=2 (confirmed live 2026-08-11 vs ground truth on 2 array bases; DC +0x4C9 does NOT map)
+// ── RE'd 2026-08-11 (docs/STEAM-FIGHTER-STRUCT-MAP.md), behavior-confirmed in training ──
+const OFF_XVEL:   usize = 0x644;    // x velocity (f32) — sign-flips walk fwd/back, spikes on dash
+const OFF_YVEL:   usize = 0x648;    // y velocity (f32) — jump arc +/-
+const OFF_REDHP:  usize = 0xb48;    // red/recoverable health (u16) = health+4
+const OFF_FACING: usize = 0x720;    // facing (u8) 0/1 — flips at crossover
+const OFF_HITSTUN:usize = 0x909;    // hitstun_flag (u8) 0xFF while being combo'd, 0 on block
+const OFF_ACTION: usize = 0x76c;    // action-state (u8) — move phase/type (idle/crouch/walk/special phases)
 const MET_BARS:   usize = 0x2e636;  // P1 meter bars 0-5 (relative to the array base `ram`); P2 = +1 (adjacent, per DC layout)
 const MET_FILL:   usize = 0x2e658;  // P1 meter fine fill (u16) — confirmed +1 per Magneto LP
 const HP_FULL: u16 = 144;
@@ -740,7 +747,7 @@ static SHARE_GAMEPLAY: std::sync::atomic::AtomicBool = std::sync::atomic::Atomic
 const SHARE_FILE: &str = "C:\\g\\share_gameplay.txt";
 const GS_CAP: usize = 20_000;                       // max unique frames buffered per game (~5.5 min @60fps)
 const SKINSYNC_GAMESTATE: &str = "https://nobd.net/skinsync/gamestate";
-const GS_SCHEMA: &str = "[frame,p1_in,p2_in,hp[6],px[6],py[6],p1_meter,p2_meter,meter_fill,combo_dealt[6],combo_recv[6]]";
+const GS_SCHEMA: &str = "[frame,p1_in,p2_in,hp[6],px[6],py[6],p1_meter,p2_meter,meter_fill,combo_dealt[6],combo_recv[6],vx[6],vy[6],red_hp[6],facing[6],hitstun[6],action[6]]";
 
 fn gs_now_ms() -> u64 { std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0) }
 
@@ -772,6 +779,8 @@ struct GsRow {
     frame: u32, p1_in: u16, p2_in: u16,
     hp: [u16; 6], px: [f32; 6], py: [f32; 6],
     m1: u8, m2: u8, mfill: u16, cd: [u16; 6], cr: [u16; 6],
+    // RE'd rich state (per slot) — the fields that make a "reading" policy + segment combos/hit-confirms
+    vx: [f32; 6], vy: [f32; 6], rhp: [u16; 6], face: [u8; 6], hitstun: [u8; 6], act: [u8; 6],
 }
 struct GsCapture {
     frames: std::collections::BTreeMap<u32, GsRow>, // frame_counter -> row (last-write-wins, sorted)
@@ -821,11 +830,12 @@ fn gs_match_load(r: &GsRow) -> bool {
 unsafe fn read_gs_row(h: HANDLE, base: usize, frame: u32) -> Option<GsRow> {
     let mut s: Vec<Vec<u8>> = Vec::with_capacity(6);
     for i in 0..6 {
-        let buf = read_at(h, base + i * STRIDE, 0xB48)?;
-        if buf.len() < 0xB48 { return None; }
+        let buf = read_at(h, base + i * STRIDE, 0xB50)?;   // 0xB50 (was 0xB48) to include red_health @ +0xb48
+        if buf.len() < 0xB50 { return None; }
         s.push(buf);
     }
     let hp = |i: usize| -> u16 { let v = le32(&s[i], OFF_HEALTH) & 0xffff; if v > 999 { 999 } else { v as u16 } };
+    let rhp = |i: usize| -> u16 { let v = u16le(&s[i], OFF_REDHP); if v > 999 { 999 } else { v } };
     Some(GsRow {
         frame,
         p1_in: u16le(&s[0], OFF_INPUT), p2_in: u16le(&s[1], OFF_INPUT),
@@ -837,6 +847,12 @@ unsafe fn read_gs_row(h: HANDLE, base: usize, frame: u32) -> Option<GsRow> {
         mfill: rpm_u16(h, base + MET_FILL).unwrap_or(0),
         cd: [u16le(&s[0], OFF_COMBO), u16le(&s[1], OFF_COMBO), u16le(&s[2], OFF_COMBO), u16le(&s[3], OFF_COMBO), u16le(&s[4], OFF_COMBO), u16le(&s[5], OFF_COMBO)],
         cr: [u16le(&s[0], OFF_COMBO_RECV), u16le(&s[1], OFF_COMBO_RECV), u16le(&s[2], OFF_COMBO_RECV), u16le(&s[3], OFF_COMBO_RECV), u16le(&s[4], OFF_COMBO_RECV), u16le(&s[5], OFF_COMBO_RECV)],
+        vx: [lef32(&s[0], OFF_XVEL), lef32(&s[1], OFF_XVEL), lef32(&s[2], OFF_XVEL), lef32(&s[3], OFF_XVEL), lef32(&s[4], OFF_XVEL), lef32(&s[5], OFF_XVEL)],
+        vy: [lef32(&s[0], OFF_YVEL), lef32(&s[1], OFF_YVEL), lef32(&s[2], OFF_YVEL), lef32(&s[3], OFF_YVEL), lef32(&s[4], OFF_YVEL), lef32(&s[5], OFF_YVEL)],
+        rhp: [rhp(0), rhp(1), rhp(2), rhp(3), rhp(4), rhp(5)],
+        face: [s[0][OFF_FACING], s[1][OFF_FACING], s[2][OFF_FACING], s[3][OFF_FACING], s[4][OFF_FACING], s[5][OFF_FACING]],
+        hitstun: [s[0][OFF_HITSTUN], s[1][OFF_HITSTUN], s[2][OFF_HITSTUN], s[3][OFF_HITSTUN], s[4][OFF_HITSTUN], s[5][OFF_HITSTUN]],
+        act: [s[0][OFF_ACTION], s[1][OFF_ACTION], s[2][OFF_ACTION], s[3][OFF_ACTION], s[4][OFF_ACTION], s[5][OFF_ACTION]],
     })
 }
 
@@ -952,7 +968,8 @@ fn upload_gamestate(match_key: &str, reporter: &str, side: u8, p1_team: &[u8], p
     let ts = gs_now_ms();
     let id = format!("{}_{}", match_key, reporter);
     let frames: Vec<serde_json::Value> = gs.frames.iter().map(|r| serde_json::json!([
-        r.frame, r.p1_in, r.p2_in, r.hp, r.px, r.py, r.m1, r.m2, r.mfill, r.cd, r.cr
+        r.frame, r.p1_in, r.p2_in, r.hp, r.px, r.py, r.m1, r.m2, r.mfill, r.cd, r.cr,
+        r.vx, r.vy, r.rhp, r.face, r.hitstun, r.act
     ])).collect();
     // the complete artifact that lands on disk (server writes the gunzip-able bytes verbatim)
     let assist_p1 = [gs.assist[0], gs.assist[2], gs.assist[4]];
