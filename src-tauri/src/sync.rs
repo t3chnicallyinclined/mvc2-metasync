@@ -566,6 +566,7 @@ const OFF_COMBO:  usize = 0x1ca;    // combo this fighter is DEALING (confirmed 
 const OFF_COMBO_RECV: usize = 0x902; // combo this fighter is RECEIVING (the +0x902 pair to OFF_COMBO)
 const OFF_POS_X:  usize = 0x61c;    // fighter world X (f32) — per ranked_capture schema
 const OFF_POS_Y:  usize = 0x620;    // fighter world Y (f32)
+const OFF_ASSIST: usize = 0x4e9;    // assist type per fighter: alpha=0 beta=1 gamma=2 (confirmed live 2026-08-11 vs ground truth on 2 array bases; DC +0x4C9 does NOT map)
 const MET_BARS:   usize = 0x2e636;  // P1 meter bars 0-5 (relative to the array base `ram`); P2 = +1 (adjacent, per DC layout)
 const MET_FILL:   usize = 0x2e658;  // P1 meter fine fill (u16) — confirmed +1 per Magneto LP
 const HP_FULL: u16 = 144;
@@ -591,8 +592,13 @@ fn cap_state() -> &'static Mutex<CapState> {
     S.get_or_init(|| Mutex::new(CapState::default()))
 }
 
-// One-time locate of the guest frame_counter: the u32 in the array's committed region that
-// climbs by a steady ~(60*0.18 ≈ 11) each 180ms sample. Returns its host address.
+// One-time locate of a FINE (per-render-frame) guest frame_counter: a u32 near the array that ticks up by
+// ~1 EVERY render frame, SMOOTHLY. The critical distinction (root cause of the v0.1.10 6Hz decimation): the
+// game also has a COARSE counter that jumps by ~10 every ~10 frames (flat, then +10). At the old 180ms
+// sampling both look like "~11 per sample", so the old hunt could pick the coarse one → dedup-by-counter
+// stored only every 10th frame → 6Hz. We now sample FAST (~22ms): the fine counter ticks every sample by a
+// small amount; the coarse one reads flat between its jumps → rejected. If nothing qualifies we return None,
+// and the caller's synthetic per-poll index is ALSO dense (~60Hz) — so the capture is never decimated.
 unsafe fn hunt_frame_counter(h: HANDLE, array: usize) -> Option<usize> {
     let mut mbi = MEMORY_BASIC_INFORMATION::default();
     if VirtualQueryEx(h, Some(array as *const c_void), &mut mbi, std::mem::size_of::<MEMORY_BASIC_INFORMATION>()) == 0 { return None; }
@@ -601,27 +607,32 @@ unsafe fn hunt_frame_counter(h: HANDLE, array: usize) -> Option<usize> {
     let hi = (array + 0x80_0000).min(rend);
     if hi <= lo + 0x1000 { return None; }
     let size = (hi - lo) & !3usize;
-    let mut snaps: Vec<Vec<u32>> = Vec::with_capacity(5);
-    for _ in 0..5 {
+    const NS: usize = 12;                                   // ~12 samples @ 22ms ≈ 264ms, fast enough to see per-frame ticks
+    let mut snaps: Vec<Vec<u32>> = Vec::with_capacity(NS);
+    for _ in 0..NS {
         let buf = read_at(h, lo, size)?;
         if buf.len() < size { return None; }
         let words: Vec<u32> = (0..size / 4).map(|i| { let o = i * 4; u32::from_le_bytes([buf[o], buf[o + 1], buf[o + 2], buf[o + 3]]) }).collect();
         snaps.push(words);
-        std::thread::sleep(std::time::Duration::from_millis(180));
+        std::thread::sleep(std::time::Duration::from_millis(22));
     }
     let n = snaps.iter().map(|v| v.len()).min().unwrap_or(0);
+    let ns = snaps.len();
     let mut best: Option<(usize, i64)> = None;
     'off: for i in 0..n {
-        let mut d = [0i64; 4];
-        for s in 0..4 {
+        let mut ticks = 0usize;                             // samples where it advanced (a live per-frame counter ticks most samples)
+        let mut deltas: Vec<i64> = Vec::with_capacity(ns - 1);
+        for s in 0..ns - 1 {
             let delta = snaps[s + 1][i] as i64 - snaps[s][i] as i64;
-            if delta < 3 || delta > 80 { continue 'off; }
-            d[s] = delta;
+            if delta < 0 || delta > 6 { continue 'off; }    // monotonic + NO coarse jumps (kills the +10-every-10-frames counter)
+            if delta >= 1 { ticks += 1; }
+            deltas.push(delta);
         }
-        let mut sorted = d; sorted.sort();
-        let med = (sorted[1] + sorted[2]) / 2;
-        for &delta in &d { if (delta - med).abs() > 2i64.max(med * 2 / 5) { continue 'off; } }
-        let score = (med - 11).abs();
+        if ticks < (ns - 1) * 3 / 4 { continue 'off; }      // must tick nearly every 22ms sample (fine, not flat-then-jump)
+        deltas.sort();
+        let med = deltas[deltas.len() / 2];
+        if med < 1 || med > 3 { continue 'off; }            // ~1-2 per sample at 22ms (≈1.3 render frames/sample)
+        let score = (med - 1).abs();                        // prefer the finest (closest to 1 tick/sample)
         if best.map_or(true, |(_, b)| score < b) { best = Some((lo + i * 4, score)); }
     }
     best.map(|(a, _)| a)
@@ -766,10 +777,11 @@ struct GsCapture {
     frames: std::collections::BTreeMap<u32, GsRow>, // frame_counter -> row (last-write-wins, sorted)
     frame_addr: usize,                              // located guest frame counter (0 = synthetic index)
     synthetic: bool,                                // true when no counter found → monotonic per-frame index
+    assist: [u8; 6],                                // assist type per slot (alpha=0/beta=1/gamma=2) — fixed per match
     last_update: Option<std::time::Instant>,        // for the recency guard in the snapshot
 }
 impl Default for GsCapture {
-    fn default() -> Self { GsCapture { frames: std::collections::BTreeMap::new(), frame_addr: 0, synthetic: false, last_update: None } }
+    fn default() -> Self { GsCapture { frames: std::collections::BTreeMap::new(), frame_addr: 0, synthetic: false, assist: [0; 6], last_update: None } }
 }
 fn gs_capture() -> &'static Mutex<GsCapture> {
     static S: OnceLock<Mutex<GsCapture>> = OnceLock::new();
@@ -777,21 +789,32 @@ fn gs_capture() -> &'static Mutex<GsCapture> {
 }
 
 // A snapshot of the current/just-ended game's frames, taken by on_game_win at KO time.
-struct GsSnapshot { frames: Vec<GsRow>, frame_addr: usize, synthetic: bool }
+struct GsSnapshot { frames: Vec<GsRow>, frame_addr: usize, synthetic: bool, assist: [u8; 6] }
 // Return the buffered game IFF it was actively updating within the last few seconds (i.e. it IS the game
 // that just ended). This guards against attaching a stale/other game's buffer to a late (pending-flush) win.
 fn gamestate_snapshot() -> Option<GsSnapshot> {
     let c = gs_capture().lock().unwrap();
     if c.frames.is_empty() { return None; }
     if c.last_update.map_or(true, |t| t.elapsed().as_secs() > 6) { return None; }
-    Some(GsSnapshot { frames: c.frames.values().cloned().collect(), frame_addr: c.frame_addr, synthetic: c.synthetic })
+    Some(GsSnapshot { frames: c.frames.values().cloned().collect(), frame_addr: c.frame_addr, synthetic: c.synthetic, assist: c.assist })
 }
 
 fn le32(b: &[u8], o: usize) -> u32 { u32::from_le_bytes([b[o], b[o + 1], b[o + 2], b[o + 3]]) }
 fn lef32(b: &[u8], o: usize) -> f32 { f32::from_le_bytes([b[o], b[o + 1], b[o + 2], b[o + 3]]) }
 
 fn gs_team_wiped(hp: &[u16; 6]) -> bool { (hp[0] == 0 && hp[2] == 0 && hp[4] == 0) || (hp[1] == 0 && hp[3] == 0 && hp[5] == 0) }
+#[allow(dead_code)] // superseded by gs_match_load; kept as a documented helper
 fn gs_both_alive(hp: &[u16; 6]) -> bool { (hp[0] > 0 || hp[2] > 0 || hp[4] > 0) && (hp[1] > 0 || hp[3] > 0 || hp[5] > 0) }
+// TRUE match-load = frame 0 of the FIGHT: all real chars (slots 0..4; slot5 = un-loaded 3rd char reads a
+// sentinel) at full 144 AND the two point chars at the symmetric spawn spacing (|x|>190, opposite sides).
+// This does NOT fire on a mid-match fresh-character swap (only 1-2 slots refresh) — the fix for the v1
+// `gs_both_alive` gate that started 4/10 captures mid-fight. Caught during the intro (points still at ~+-213,
+// pre-movement) so the tape's frame-0 == the twin's, and positions self-align on replay.
+fn gs_match_load(r: &GsRow) -> bool {
+    let full = (0..5).all(|i| r.hp[i] >= 144);
+    let pts = r.px[0].abs() > 190.0 && r.px[1].abs() > 190.0 && (r.px[0] > 0.0) != (r.px[1] > 0.0);
+    full && pts
+}
 
 // Read one full per-frame row off the located array. 6 slot reads (0xB48 each, covers every field) + the
 // 3 global-meter reads. Read-only RPM; runs on the dedicated capture thread only.
@@ -824,6 +847,7 @@ unsafe fn read_gs_row(h: HANDLE, base: usize, frame: u32) -> Option<GsRow> {
 fn start_gamestate_capture() {
     std::thread::spawn(|| {
         use std::sync::atomic::Ordering::SeqCst;
+        let mut full_since: Option<std::time::Instant> = None; // how long all real chars have been full (match-load fallback timer)
         loop {
             if !SHARE_GAMEPLAY.load(SeqCst) { std::thread::sleep(std::time::Duration::from_millis(500)); continue; }
             let pid = match find_game_pid() { Some(p) => p, None => { std::thread::sleep(std::time::Duration::from_millis(600)); continue; } };
@@ -831,15 +855,28 @@ fn start_gamestate_capture() {
             // wait for a live match with BOTH teams alive (a fresh game start, not a mid-KO/loading copy)
             let base = match unsafe { anchor_array(h) } { Some(b) => b, None => { unsafe { let _ = CloseHandle(h); } std::thread::sleep(std::time::Duration::from_millis(300)); continue; } };
             let start_row = match unsafe { read_gs_row(h, base, 0) } { Some(r) => r, None => { unsafe { let _ = CloseHandle(h); } std::thread::sleep(std::time::Duration::from_millis(200)); continue; } };
-            if !gs_both_alive(&start_row.hp) { unsafe { let _ = CloseHandle(h); } std::thread::sleep(std::time::Duration::from_millis(200)); continue; }
+            // TRUE match-load gate. Ideal: catch the +-213 spawn during the intro (gs_match_load) so the tape
+            // starts at frame 0 of the FIGHT. Fallback: if all real chars have been full for ~1.5s but we never
+            // caught the spawn (attached mid-intro), start anyway so a match is never entirely missed. The 50ms
+            // poll (vs v1's 200ms) is what lets us land inside the ~1-2s intro window.
+            let full = (0..5).all(|i| start_row.hp[i] >= 144);
+            if full { full_since.get_or_insert_with(std::time::Instant::now); } else { full_since = None; }
+            let ready = gs_match_load(&start_row)
+                || (full && full_since.map_or(false, |t| t.elapsed().as_millis() > 1500));
+            if !ready { unsafe { let _ = CloseHandle(h); } std::thread::sleep(std::time::Duration::from_millis(50)); continue; }
+            full_since = None; // consumed → re-arm the fallback timer for the next match
 
-            // ── a game is starting → reset the buffer, locate the guest frame counter (one-time, ~1s) ──
+            // ── a game is starting → reset the buffer, locate the guest frame counter (one-time, ~1s), and
+            //    snapshot the assist type per slot (chosen at char-select, fixed for the whole match) ──
             let fc = unsafe { hunt_frame_counter(h, base) };
+            let mut assist = [0u8; 6];
+            for i in 0..6 { assist[i] = unsafe { rpm_u8(h, base + i * STRIDE + OFF_ASSIST) }.unwrap_or(0); }
             {
                 let mut c = gs_capture().lock().unwrap();
                 c.frames.clear();
                 c.frame_addr = fc.unwrap_or(0);
                 c.synthetic = fc.is_none();
+                c.assist = assist;
                 c.last_update = None;
             }
             trace(&format!("[gamestate] recording START base=0x{base:x} fc={} (share={})",
@@ -918,9 +955,12 @@ fn upload_gamestate(match_key: &str, reporter: &str, side: u8, p1_team: &[u8], p
         r.frame, r.p1_in, r.p2_in, r.hp, r.px, r.py, r.m1, r.m2, r.mfill, r.cd, r.cr
     ])).collect();
     // the complete artifact that lands on disk (server writes the gunzip-able bytes verbatim)
+    let assist_p1 = [gs.assist[0], gs.assist[2], gs.assist[4]];
+    let assist_p2 = [gs.assist[1], gs.assist[3], gs.assist[5]];
     let record = serde_json::json!({
         "id": id, "match_key": match_key, "reporter": reporter, "side": side,
         "p1_team": p1_team, "p2_team": p2_team, "winner": winner, "loser": loser,
+        "assist": gs.assist, "assist_p1": assist_p1, "assist_p2": assist_p2,
         "ts": ts, "schema": GS_SCHEMA,
         "frame_counter_addr": gs.frame_addr as u64, "synthetic_frames": gs.synthetic,
         "frame_count": frames.len(), "frames": frames,
@@ -931,6 +971,7 @@ fn upload_gamestate(match_key: &str, reporter: &str, side: u8, p1_team: &[u8], p
     let body = serde_json::json!({
         "match_key": match_key, "reporter": reporter, "side": side,
         "p1_team": p1_team, "p2_team": p2_team, "winner": winner, "loser": loser,
+        "assist_p1": assist_p1, "assist_p2": assist_p2,
         "ts": ts, "schema": GS_SCHEMA, "frames_gz": frames_gz,
     });
     let _ = ureq::post(SKINSYNC_GAMESTATE).timeout(std::time::Duration::from_secs(20)).send_json(body);
