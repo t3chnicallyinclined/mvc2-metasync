@@ -1230,7 +1230,14 @@ unsafe fn anchor_array(h: HANDLE) -> Option<usize> {
     // (any health > 144) so we fall back to find_array's strong locator instead of trusting a garbage copy.
     if (0..6).any(|i| (rpm_u32(h, cand + i * STRIDE + OFF_HEALTH).unwrap_or(0) & 0xffff) > HP_FULL as u32) { return None; }
     let live = (0..6).any(|i| { let hp = rpm_u32(h, cand + i * STRIDE + OFF_HEALTH).unwrap_or(0) & 0xffff; (1..=144).contains(&hp) });
-    if live { Some(cand) } else { None }
+    if !live { return None; }
+    // MOTION GATE (capture-confirmed): the fixed anchor 0x10b33fc8 lands on a FROZEN savestate COPY (stuck at a
+    // past frame — the whole bug). Only the live array's positions move frame-to-frame, so if the anchor is
+    // identical across a short gap it's a frozen copy → reject it and let find_array's liveness locate take over.
+    let pos = |c: usize| -> Vec<u8> { let mut v = Vec::new(); for i in 0..6 { if let Some(b) = read_at(h, c + i * STRIDE + OFF_POS_X, 0x40) { v.extend_from_slice(&b); } } v };
+    let p1 = pos(cand); std::thread::sleep(std::time::Duration::from_millis(40)); let p2 = pos(cand);
+    if !p1.is_empty() && p1 == p2 { return None; } // frozen → fall through to find_array
+    Some(cand)
 }
 // The roster straight off the anchored array — NO scan. Ordered P1(slots 0,2,4) then P2(slots 1,3,5) so
 // [0..3]=P1 and [3..6]=P2, matching the signature-scan roster it replaces. Returns the six real slots (so a
@@ -1312,17 +1319,21 @@ unsafe fn find_array(h: HANDLE) -> Option<usize> {
     // LIVENESS: a live match animates the fighter structs every frame; a frozen/stale copy (a leftover
     // post-match savestate — the trace's endless phantom wins) does not. Sample each candidate's animating
     // region, wait, re-sample, and PREFER whichever actually changed, so we never lock a frozen buffer.
+    // LIVENESS (capture-confirmed): only the LIVE array's per-frame fields (position/velocity @ +0x61c..0x64c)
+    // move every frame; the rollback savestate COPIES are frozen snapshots — the app's fixed anchor lands on
+    // one, which is the whole bug. Probe that region across ~180ms (~11 frames) and lock ONLY a candidate that
+    // actually MOVED. If none moved this instant, return None and retry — never lock a static copy.
     let anim = |c: usize| -> Vec<u8> {
-        let mut v = Vec::with_capacity(6 * 0xC0);
-        for i in 0..6 { if let Some(b) = read_at(h, c + i * STRIDE + 0x100, 0xC0) { v.extend_from_slice(&b); } }
+        let mut v = Vec::with_capacity(6 * 0x40);
+        for i in 0..6 { if let Some(b) = read_at(h, c + i * STRIDE + OFF_POS_X, 0x40) { v.extend_from_slice(&b); } }
         v
     };
     let before: Vec<Vec<u8>> = cands.iter().map(|&(c, _)| anim(c)).collect();
-    std::thread::sleep(std::time::Duration::from_millis(150));
+    std::thread::sleep(std::time::Duration::from_millis(180));
     for (i, &(c, _)) in cands.iter().enumerate() {
-        if !before[i].is_empty() && anim(c) != before[i] { return Some(c); }  // this candidate is LIVE
+        if !before[i].is_empty() && anim(c) != before[i] { return Some(c); }  // this candidate is LIVE (moving)
     }
-    Some(cands[0].0)   // none demonstrably live → best static (reader's saw_both gate still guards scoring)
+    None   // nothing demonstrably live right now → don't lock a frozen copy; the caller retries next cycle
 }
 
 // Cheap (~6 small reads/slot) — read the six fighters from a located base. side = slot parity (VALIDATED:
