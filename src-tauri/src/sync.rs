@@ -910,10 +910,13 @@ struct GsCapture {
     frame_addr: usize,                              // located guest frame counter (0 = synthetic index)
     synthetic: bool,                                // true when no counter found → monotonic per-frame index
     assist: [u8; 6],                                // assist type per slot (alpha=0/beta=1/gamma=2) — fixed per match
+    local_pn: u8,                                   // ★ raw localPlayerNum (exe+LOCALPLAYER_OFF) at match start — the
+                                                    //   game's own local netplay index (0/1), UN-overridden by any app
+                                                    //   layer. Candidate side signal; validated offline vs the frame KO.
     last_update: Option<std::time::Instant>,        // for the recency guard in the snapshot
 }
 impl Default for GsCapture {
-    fn default() -> Self { GsCapture { frames: std::collections::BTreeMap::new(), frame_addr: 0, synthetic: false, assist: [0; 6], last_update: None } }
+    fn default() -> Self { GsCapture { frames: std::collections::BTreeMap::new(), frame_addr: 0, synthetic: false, assist: [0; 6], local_pn: 255, last_update: None } }
 }
 fn gs_capture() -> &'static Mutex<GsCapture> {
     static S: OnceLock<Mutex<GsCapture>> = OnceLock::new();
@@ -921,14 +924,14 @@ fn gs_capture() -> &'static Mutex<GsCapture> {
 }
 
 // A snapshot of the current/just-ended game's frames, taken by on_game_win at KO time.
-struct GsSnapshot { frames: Vec<GsRow>, frame_addr: usize, synthetic: bool, assist: [u8; 6] }
+struct GsSnapshot { frames: Vec<GsRow>, frame_addr: usize, synthetic: bool, assist: [u8; 6], local_pn: u8 }
 // Return the buffered game IFF it was actively updating within the last few seconds (i.e. it IS the game
 // that just ended). This guards against attaching a stale/other game's buffer to a late (pending-flush) win.
 fn gamestate_snapshot() -> Option<GsSnapshot> {
     let c = gs_capture().lock().unwrap();
     if c.frames.is_empty() { return None; }
     if c.last_update.map_or(true, |t| t.elapsed().as_secs() > 6) { return None; }
-    Some(GsSnapshot { frames: c.frames.values().cloned().collect(), frame_addr: c.frame_addr, synthetic: c.synthetic, assist: c.assist })
+    Some(GsSnapshot { frames: c.frames.values().cloned().collect(), frame_addr: c.frame_addr, synthetic: c.synthetic, assist: c.assist, local_pn: c.local_pn })
 }
 
 fn le32(b: &[u8], o: usize) -> u32 { u32::from_le_bytes([b[o], b[o + 1], b[o + 2], b[o + 3]]) }
@@ -1032,6 +1035,7 @@ fn start_gamestate_capture() {
                 c.frame_addr = fc.unwrap_or(0);
                 c.synthetic = fc.is_none();
                 c.assist = assist;
+                c.local_pn = if exe_base != 0 { unsafe { rpm_u32(h, exe_base + LOCALPLAYER_OFF) }.unwrap_or(255) as u8 } else { 255 };
                 c.last_update = None;
             }
             GS_IN_MATCH.store(true, SeqCst);   // pause the uploader for the duration of the fight
@@ -1133,6 +1137,7 @@ fn spool_gamestate(match_key: &str, reporter: &str, side: u8, p1_team: &[u8], p2
     let assist_p2 = [gs.assist[1], gs.assist[3], gs.assist[5]];
     let record = serde_json::json!({
         "id": id, "match_key": match_key, "reporter": reporter, "side": side,
+        "local_pn": gs.local_pn,   // raw localPlayerNum (0/1/255=unknown) — candidate side signal for offline validation
         "p1_team": p1_team, "p2_team": p2_team, "winner": winner, "loser": loser,
         "assist": gs.assist, "assist_p1": assist_p1, "assist_p2": assist_p2,
         "ts": ts, "schema": GS_SCHEMA,
