@@ -1690,6 +1690,16 @@ pub fn matchup(me: String, opp: String) -> Result<serde_json::Value, String> {
 #[tauri::command]
 pub fn app_version() -> String { env!("CARGO_PKG_VERSION").to_string() }
 
+/// Central changelog (nobd.net/skinsync/update/changelog.json) — fetched by the "What's New" modal so it can
+/// be updated without shipping a new build. The frontend keeps a bundled fallback if this is unreachable.
+#[tauri::command]
+pub fn fetch_changelog() -> Result<serde_json::Value, String> {
+    ureq::get("https://nobd.net/skinsync/update/changelog.json")
+        .timeout(std::time::Duration::from_secs(6))
+        .call().map_err(|e| e.to_string())?
+        .into_json::<serde_json::Value>().map_err(|e| e.to_string())
+}
+
 // ── real-time trace: append the app's view of (game state + its own decisions) to a log I can read ──
 // One line per CHANGE (so it's readable, not a flood), size-capped. Correlate with the game to see
 // exactly what the app saw and did at each moment — no guessing about the ranked flow.
