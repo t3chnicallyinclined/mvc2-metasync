@@ -443,7 +443,6 @@
     </div>
     <div class="hspace"></div>
     <button class="target" id="romChip" title="Your Steam install / game_50.arc — required for Bake"><span class="tdot" id="romDot"></span>ROM: <b id="romChipTxt">not set</b></button>
-    <button class="target" id="targetSel" title="Where skins apply"><span class="tdot"></span>Target: <b>Steam Collection</b><span class="tcar">▾</span></button>
   </div>
 
   <section class="panel on" id="p-match">
@@ -2170,7 +2169,6 @@ $('#themeBtn').onclick=()=>{ const r=document.documentElement; const now=r.getAt
 // suite tabs / library / target
 $('#tabs').addEventListener('click',e=>{ const b=e.target.closest('button'); if(b) switchTab(b.dataset.t); });
 $('#libSearch').oninput=renderLibrary;
-$('#targetSel').onclick=function(){ const b=this.querySelector('b'); const opts=['Steam Collection','Dreamcast ROM']; b.textContent=opts[(opts.indexOf(b.textContent)+1)%opts.length]; };
 $$('.applybar .radio').forEach(r=>r.onclick=()=>{ $$('.applybar .radio').forEach(x=>x.classList.remove('on')); r.classList.add('on'); libApplyMode=r.dataset.m; });
 $('#btnLibApply').onclick=async()=>{ await writeAll(); if(syncOn) publishMine(); toast(libApplyMode==='live'?'Applied — live (auto-paints on launch / in match)':'Bake pipeline lands in the next build — using Live for now'); };
 $('#btnLibRevert').onclick=()=>$('#btnReset').click();
