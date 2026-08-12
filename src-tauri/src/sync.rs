@@ -2566,7 +2566,7 @@ pub fn paint_live(targets: Vec<LiveTarget>) -> Result<String, String> {
     Ok(rows.to_string())
 }
 
-// ── ONE-SHOT HOOK INJECTION (the maplecast-style in-render palette hook) ──────────────────────────
+// ── ONE-SHOT HOOK INJECTION (an in-render palette hook) ───────────────────────────────────────────
 // Loads d3dhook.dll into the game (CreateRemoteThread + LoadLibraryW). The hook intercepts D3D11 palette
 // COPY/COPYSUB and repaints skins.dat AT THE RENDER LAYER, so skins show at ROUND START (RPM paint_live is
 // the fallback for when the hook isn't injected). The hook self-guards double-injection ("install skipped
