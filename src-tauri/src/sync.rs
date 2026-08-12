@@ -1000,8 +1000,10 @@ fn start_gamestate_capture() {
             // on rejected savestate copies).
             let base = {
                 let rb = { snapshot().lock().unwrap().ram_base };
+                // rely SOLELY on the main reader's located (most-animating) base — never the fixed anchor, which on
+                // this relocating build points at stale savestate copies (the between-match "random Ryu" source).
                 if rb != 0 && unsafe { array_valid(h, rb) } { rb }
-                else { match unsafe { anchor_array(h) } { Some(b) => b, None => { unsafe { let _ = CloseHandle(h); } std::thread::sleep(std::time::Duration::from_millis(300)); continue; } } }
+                else { unsafe { let _ = CloseHandle(h); } std::thread::sleep(std::time::Duration::from_millis(300)); continue; }
             };
             let start_row = match unsafe { read_gs_row(h, base, 0) } { Some(r) => r, None => { unsafe { let _ = CloseHandle(h); } std::thread::sleep(std::time::Duration::from_millis(200)); continue; } };
             // TRUE match-load gate. Ideal: catch the +-213 spawn during the intro (gs_match_load) so the tape
@@ -1407,14 +1409,21 @@ unsafe fn find_array(h: HANDLE) -> Option<usize> {
     };
     let before: Vec<Vec<u8>> = cands.iter().map(|&(c, _)| anim(c)).collect();
     std::thread::sleep(std::time::Duration::from_millis(180));
+    // Pick the MOST-animating candidate (largest byte-delta), not just the first that moved. During netplay the
+    // rollback keeps ~14 savestate COPIES and several twitch; the TRUE live fight changes the MOST. Return None if
+    // NOTHING moved this instant (a lull) and let the caller retry — do NOT lock a frozen/stale copy. (Returning a
+    // best-effort stale copy here was the 0.1.25 regression: the reader latched a PREVIOUS round's savestate → a
+    // phantom Ryu on the cards and an INVERTED win/loss when that copy had the other team dead. find_array is
+    // primary + runs every ~1.2s, so a genuine live fight is re-acquired within a cycle without the stale fallback.)
+    let mut best: Option<(usize, usize)> = None;   // (change_count, base)
     for (i, &(c, _)) in cands.iter().enumerate() {
-        if !before[i].is_empty() && anim(c) != before[i] { return Some(c); }  // this candidate is LIVE (animating)
+        if before[i].is_empty() { continue; }
+        let after = anim(c);
+        if after.is_empty() { continue; }
+        let changed = before[i].iter().zip(after.iter()).filter(|(a, b)| a != b).count();
+        if changed > 0 && best.map_or(true, |(bc, _)| changed > bc) { best = Some((changed, c)); }
     }
-    // BEST-EFFORT (the reliability fix): nothing demonstrably moved THIS instant (a lull, or we sampled between
-    // frames) — return the highest-SCORED candidate (cands is score-sorted) instead of None, so the reader never
-    // goes blind mid-match ("no gamestate for 20 min"). If this pick is actually a frozen copy, the reader's
-    // animation-region frozen-guard drops it within ~1s and re-finds → we keep tracking rather than losing the match.
-    cands.first().map(|&(c, _)| c)
+    best.map(|(_, c)| c)
 }
 
 // Cheap (~6 small reads/slot) — read the six fighters from a located base. side = slot parity (VALIDATED:
@@ -1484,10 +1493,13 @@ fn read_gamestate_rpm(pid: u32, ram_base: &mut usize, last_find: &mut std::time:
             // the scan doesn't thrash, but retry fast so teams lock within ~1-2s of a round starting.
             if *ram_base == 0 { *last_find += std::time::Duration::from_millis(300); }
         }
-        // FALLBACK O(1): the fixed anchor, ONLY if the scan hasn't located one yet (throttle gap, or the scan hit
-        // a motion-less instant). Its own liveness gate rejects a frozen copy. Reuse-last-base (hint) after that.
-        if *ram_base == 0 { if let Some(a) = anchor_array(h) { *ram_base = a; } }
-        if *ram_base == 0 && hint != 0 && array_valid(h, hint) { *ram_base = hint; }
+        // The fixed-anchor + last-base(hint) fallbacks are REMOVED. On this build the array RELOCATES every match
+        // (traces show a different, sometimes HIGH, base per game — 0x7ff9..), so the fixed anchor points at
+        // nothing or at a STALE savestate copy. BETWEEN matches (no live fight) that stale copy is exactly the
+        // "scan brings in a random Ryu" bug + inverted W/L (the copy holds a previous round's dead team). So
+        // find_array (most-animating, None when nothing moves) is the SOLE locator: during a fight it returns the
+        // live copy; between fights it returns None → the reader shows no gamestate (correct) instead of stale data.
+        let _ = hint;
         // read_fighters returns None on a garbage/empty base (health>144 or no valid fighter slots). Drop the base
         // in that case so the NEXT cycle re-acquires (anchor → find_array) instead of pinning a dead base forever —
         // the second half of the "no gamestate" deadlock (a base array_valid accepts but read_fighters rejects).
