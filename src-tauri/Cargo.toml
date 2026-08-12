@@ -1,0 +1,40 @@
+[package]
+name = "mvc-live-skins"
+version = "0.1.0"
+description = "MvC Collection Live Skins — live palette skin changer for the Steam Marvel vs Capcom Fighting Collection"
+authors = ["tristech"]
+edition = "2021"
+rust-version = "1.77"
+
+[lib]
+name = "mvc_live_skins_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-dialog = "2"
+tauri-plugin-updater = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+ureq = { version = "2", features = ["json", "tls"] }
+zip = { version = "2", default-features = false, features = ["deflate"] }
+flate2 = "1"
+windows = { version = "0.58", features = [
+  "Win32_Foundation",
+  "Win32_System_Threading",
+  "Win32_System_Memory",
+  "Win32_System_Diagnostics_Debug",
+  "Win32_System_Diagnostics_ToolHelp",
+  "Win32_System_Registry",
+  "Win32_UI_Input_XboxController",
+] }
+
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = "s"
+panic = "abort"
+strip = true

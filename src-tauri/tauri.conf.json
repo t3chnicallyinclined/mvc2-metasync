@@ -1,0 +1,53 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "MetaSync",
+  "version": "0.1.0",
+  "identifier": "com.tristech.metasync",
+  "build": {
+    "frontendDist": "frontend",
+    "beforeDevCommand": "node src-tauri/stage-frontend.mjs",
+    "beforeBuildCommand": "node src-tauri/stage-frontend.mjs"
+  },
+  "app": {
+    "withGlobalTauri": true,
+    "windows": [
+      {
+        "label": "main",
+        "title": "MetaSync",
+        "url": "index.html",
+        "width": 1180,
+        "height": 900,
+        "minWidth": 900,
+        "minHeight": 620,
+        "center": true,
+        "resizable": true
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self' ipc: http://ipc.localhost; object-src 'none'; base-uri 'none'; frame-src 'none'; frame-ancestors 'none'",
+      "dangerousDisableAssetCspModification": ["style-src"]
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["msi", "nsis"],
+    "createUpdaterArtifacts": true,
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "windows": {
+      "webviewInstallMode": { "type": "downloadBootstrapper" }
+    }
+  },
+  "plugins": {
+    "updater": {
+      "endpoints": ["https://github.com/t3chnicallyinclined/mvc2-metasync/releases/latest/download/latest.json", "https://nobd.net/skinsync/update/latest.json"],
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEU5OEVFNTlGRDQzMEU2NjgKUldSbzVqRFVuK1dPNlpUdkpva2FsbHRnd3pkQlNRK1ZkWDdNUk5aQjdpSTlyclFoUFhINDhGTDEK",
+      "windows": { "installMode": "passive" }
+    }
+  }
+}
