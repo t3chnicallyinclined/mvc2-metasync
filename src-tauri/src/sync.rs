@@ -2542,18 +2542,33 @@ pub fn start_reader() {
             // unreliable default); a 0 that matches a still-unclaimed roster Ryu is kept as a real Ryu; any slot
             // left unclaimed (a mis-read) takes a remaining pool char. Guarantees no character shows more times than
             // the roster actually contains → no phantom dupes. (Exact per-slot identity still needs char-select.)
+            // gs-95: the point/active fighter's +0x554 char-id reads 0 (=Ryu) even on the LIVE copy → a phantom
+            // "Ryu" on that character's card. The old multiset fix couldn't correct it: its pool (roster via
+            // anchor_roster) reads the SAME +0x554, so slot AND pool agreed on the phantom. Real fix (RE-confirmed):
+            // when a slot reads 0, identify EVERY fighter by its DAT FINGERPRINT (the char_sigs structural signature,
+            // which is +0x554-INDEPENDENT and skin/color-invariant), located per slot via the DatPal→DAT-bank rank.
+            // The 6 DAT banks load at a fixed 0x150000 stride and each slot's DatPal points into its own bank, so
+            // sorting slots by DatPal ↔ banks by address pairs each slot to its true character. Only applied when all
+            // 6 slots have a valid DatPal AND exactly 6 banks are found; otherwise the +0x554 reads stand (safe).
             if let Some(g) = game.as_mut() {
-                let mut pool: Vec<u8> = roster.iter().map(|f| f.cid as u8).collect();   // 6-char multiset
-                if pool.len() >= 4 {
-                    let mut claimed = vec![false; g.slots.len()];
-                    for (i, s) in g.slots.iter().enumerate() {                            // pass 1: trustworthy non-zero reads
-                        if s.char_id != 0 { if let Some(p) = pool.iter().position(|&c| c == s.char_id) { pool.remove(p); claimed[i] = true; } }
-                    }
-                    for (i, s) in g.slots.iter().enumerate() {                            // pass 2: a 0 that IS a real remaining Ryu
-                        if !claimed[i] && s.char_id == 0 { if let Some(p) = pool.iter().position(|&c| c == 0) { pool.remove(p); claimed[i] = true; } }
-                    }
-                    for (i, s) in g.slots.iter_mut().enumerate() {                        // pass 3: mis-reads take the leftovers
-                        if !claimed[i] { if let Some(c) = pool.pop() { s.char_id = c; } }
+                if g.slots.iter().any(|s| s.char_id == 0) {
+                    let dps: Vec<u32> = g.slots.iter().map(|s| s.datpal).filter(|&d| is_wb(d)).collect();
+                    if dps.len() == 6 {
+                        let lo = (*dps.iter().min().unwrap() as usize).saturating_sub(0x160000);
+                        let hi = (*dps.iter().max().unwrap() as usize) + 0x160000;
+                        let mut occ = unsafe { rpm_occurrences(h, lo, hi) };   // (addr, cid, name), unsorted, no dedup
+                        occ.sort_by_key(|o| o.0);
+                        // one hit per DAT bank: keep the first of each cluster separated by >= 0x100000 (banks are
+                        // 0x150000 apart). A mirror (same char, two banks) correctly yields two same-cid entries.
+                        let mut banks: Vec<u8> = Vec::new(); let mut last_a = 0usize;
+                        for (a, cid, _) in &occ {
+                            if banks.is_empty() || *a >= last_a + 0x100000 { banks.push(*cid as u8); last_a = *a; }
+                        }
+                        if banks.len() == 6 {
+                            let mut order: Vec<usize> = (0..6).collect();
+                            order.sort_by_key(|&i| g.slots[i].datpal);   // slots in DatPal (= bank address) order
+                            for (rank, &si) in order.iter().enumerate() { g.slots[si].char_id = banks[rank]; }
+                        }
                     }
                 }
             }
