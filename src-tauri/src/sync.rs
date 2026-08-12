@@ -2234,6 +2234,7 @@ pub fn start_reader() {
         let mut prev_live_hash = 0u64; let mut frozen_cycles = 0u32; // liveness gate (drop frozen/stale match data)
         let mut prev_log = String::new();            // last trace line (log only on change)
         let mut last_find = std::time::Instant::now() - std::time::Duration::from_secs(10); // find_array throttle
+        let mut live_seen: Option<std::time::Instant> = None; // last cycle we had a LIVE array read → keeps find_array re-acquiring through rollback flicker, and gates the deterministic side lock
         let mut ram_base: usize = 0;                 // located player-array base (0 = not yet found; volatile per match)
         // ★ persisted anchors (keyed to the game pid): an app restart while the SAME game is running restores them
         // in the pid-change block below → skips ALL cold scans. Every restored value is validated downstream, so a
@@ -2359,34 +2360,23 @@ pub fn start_reader() {
             }
             if opp_backoff > 0 { opp_backoff -= 1; }
 
-            // ★ DETERMINISTIC SIDE — flycast's localPlayerNum global (0 = P1, 1 = P2), one read, no scan. Only while
-            // in a live netplay SESSION, and never over a manual override. AUTO-CONFIRMS the side so stats record
-            // correctly with zero user action (retires the manual "set your side" gate).
-            if exe_base == 0 && cur_pid != 0 { exe_base = game_exe_base(cur_pid); }   // retry if the first resolve missed
-            // gs-77 — TIE THE SIDE TO THE SESSION, not the early n>0 sig-scan: that fired at select/loading before the
-            // game refreshed localPlayerNum for THIS match, so it read the PREVIOUS match's stale value → the P1→P2
-            // first-match flash. Require in_session AND the value STABLE for 2 reads before confirming, so a single
-            // transient/stale read can never lock the wrong side.
-            if in_session && exe_base != 0 {
-                if let Some(pn) = unsafe { rpm_u32(h, exe_base + LOCALPLAYER_OFF) } {
-                    let side = match pn { 0 => 1u8, 1 => 2u8, _ => 0u8 };
-                    if side != 0 && side == side_seen { side_stable = side_stable.saturating_add(1); }
-                    else { side_seen = side; side_stable = if side != 0 { 1 } else { 0 }; }
-                    if side_stable >= 2 {
-                        let mut s = snapshot().lock().unwrap();
-                        if s.manual_side == 0 && !(s.side_confirmed && s.local_side == side) {
-                            s.local_side = side; s.side_confirmed = true;
-                            drop(s);
-                            trace(&format!("[side] AUTO = P{} (localPlayerNum={}, stable)", side, pn));
-                        }
-                    }
-                }
-            } else if !in_session { side_seen = 0; side_stable = 0; }   // between sessions → fresh debounce for the next match
+            // ★ DETERMINISTIC SIDE is resolved AFTER the liveness gate below — it needs a LIVE fighter read
+            // (game.is_some()), which is the only signal that's both fresh (mid-fight → localPlayerNum is THIS
+            // match's) and independent of the laggy pairing scan + flickering roster. Just resolve the module base
+            // here so it's ready.
+            if exe_base == 0 && cur_pid != 0 { exe_base = game_exe_base(cur_pid); }   // module base for localPlayerNum
 
             // Game state: auto-find + read the reversed player array via read-only RPM. The heavy find is
             // attempted only when fighters are loaded (n>0) and throttled; once found, the volatile base is
             // re-validated & read cheaply.
-            let raw_game = read_gamestate_rpm(cur_pid, &mut ram_base, &mut last_find, n > 0, last_good_base);
+            // allow_find is broadened PAST the flickering sig-scan roster: the fixed anchor lands on frozen/garbage
+            // savestate copies mid-rollback → anchor_roster empties (n=0) → the old `n>0` gate starved find_array
+            // EXACTLY when it was needed (the "reads flash on/off, no wins recorded" bug). Once we've seen a live
+            // array recently (live_seen) OR pairing is up, keep letting find_array re-acquire the real live copy.
+            // The latch expires ~20s after the last live read so idle menus never thrash the ~1GB scan.
+            let allow_find = n > 0 || in_session
+                || live_seen.map_or(false, |t| t.elapsed().as_secs() < 20);
+            let raw_game = read_gamestate_rpm(cur_pid, &mut ram_base, &mut last_find, allow_find, last_good_base);
             if ram_base != 0 { last_good_base = ram_base; }   // remember the located base → reuse it, never re-scan
             // ── PAINT SLOTS ── the EXACT per-fighter render-palette pointers (cl+0x4c) + char_id, straight from
             // the located array. This is the "follow the pointer, don't scan" path: it is NOT subject to the
@@ -2413,6 +2403,35 @@ pub fn start_reader() {
                 }
                 None => { frozen_cycles = 0; None }
             };
+            // live_seen latch: set on every LIVE array read → keeps find_array re-acquiring through rollback flicker
+            // (allow_find above) and gates the deterministic side lock below.
+            if game.is_some() { live_seen = Some(std::time::Instant::now()); }
+
+            // ★ DETERMINISTIC SIDE — flycast's localPlayerNum global (0 = P1, 1 = P2). Confirmed on a LIVE fighter
+            // read: game.is_some() means the array passed the liveness gate, so we're mid-fight and localPlayerNum is
+            // FRESH for THIS match. Independent of BOTH the netplay-pairing scan (which stranded a correct side for
+            // ~3 matches) and the flickering roster. Debounced (STABLE for 2 reads); AUTO-CONFIRMS so stats record
+            // with zero user action; never overrides a manual pick. No live array ⇒ no confirm ⇒ the gs-77 stale
+            // read (previous match's value lingering at char-select) can never lock the wrong side.
+            if game.is_some() && exe_base != 0 {
+                if let Some(pn) = unsafe { rpm_u32(h, exe_base + LOCALPLAYER_OFF) } {
+                    let side = match pn { 0 => 1u8, 1 => 2u8, _ => 0u8 };
+                    if side != 0 && side == side_seen { side_stable = side_stable.saturating_add(1); }
+                    else { side_seen = side; side_stable = if side != 0 { 1 } else { 0 }; }
+                    if side_stable >= 2 {
+                        let mut s = snapshot().lock().unwrap();
+                        if s.manual_side == 0 && !(s.side_confirmed && s.local_side == side) {
+                            s.local_side = side; s.side_confirmed = true;
+                            drop(s);
+                            trace(&format!("[side] AUTO = P{} (localPlayerNum={}, stable)", side, pn));
+                        }
+                    }
+                }
+            }
+            // NOTE: we do NOT reset the debounce when game is None (a flash gap between live reads) — localPlayerNum
+            // is read ONLY on a live fighter read, so a wrong char-select value never enters the debounce, and the
+            // value-change branch above already resets on any genuine side flip. Accumulating across sparse live
+            // reads is what lets the side lock inside the first match despite the read flashing on and off.
             // Hold the opponent while EITHER the game reads live OR fighters are present (sig-scan roster n) —
             // robust to a flaky reversed-struct read so we never drop + re-hunt the opponent mid-set. Drop
             // only after a sustained gone stretch (set over / menus).

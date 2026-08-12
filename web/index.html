@@ -1502,6 +1502,11 @@ let _updHideT=null;
 // so it can be updated without shipping a new build. This bundled copy is the offline FALLBACK — keep it
 // roughly current, but the remote is authoritative.
 let CHANGELOG = [
+  { v:'0.1.15', t:'Correct side + wins record from match one', items:[
+    'Your P1/P2 side now locks on the first live round instead of taking a few matches — it reads the game’s own side value the moment fighters are in play, no longer waiting on the slower opponent match-up.',
+    'Wins/losses record reliably again: the app re-finds the live match state through rollback instead of losing it, so results stop slipping through.',
+    'Recolor card shows a much bigger character; removed the Save button (skins are Apply-live or Bake), and the drawer now explains what Bake does.',
+  ]},
   { v:'0.1.14', t:'Bigger skin preview', items:['The recolor drawer now shows a full-size character preview instead of a tiny icon.'] },
   { v:'0.1.13', t:'Reliability fix + dark mode', items:[
     'Fixed win/loss recording and skins painting the wrong side — the app now reads the LIVE match state instead of a stale rollback copy.',
