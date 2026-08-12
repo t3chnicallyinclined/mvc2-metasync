@@ -1502,6 +1502,9 @@ let _updHideT=null;
 // so it can be updated without shipping a new build. This bundled copy is the offline FALLBACK — keep it
 // roughly current, but the remote is authoritative.
 let CHANGELOG = [
+  { v:'0.1.16', t:'Live match detection fixed', items:[
+    'The app now reliably finds the live match in memory during a fight — fixing the opponent, your side, and win/loss recording all failing to register on some sessions. The old locator used the wrong fingerprint and could miss the live match entirely; it now matches the fighter layout directly.',
+  ]},
   { v:'0.1.15', t:'Correct side + wins record from match one', items:[
     'Your P1/P2 side now locks on the first live round instead of taking a few matches — it reads the game’s own side value the moment fighters are in play, no longer waiting on the slower opponent match-up.',
     'Wins/losses record reliably again: the app re-finds the live match state through rollback instead of losing it, so results stop slipping through.',
@@ -2044,7 +2047,7 @@ function stApply(){ if(stCid==null||!stPal) return null;
 
 // ── boot ──
 async function boot(){
-  console.log('%c MetaSync v0.1.15 (beta) (beta: auto-records anonymized match state to improve the app. click the version in the header to see the changelog; a live pill shows up-to-date vs update-available; "What\'s New" pops after you update. Earlier: renamed to MetaSync. Fixed the library palette swatches (the strict CSP was blocking inline colors - now allowed via dangerousDisableAssetCspModification style-src). Updates now ship via GitHub Releases with nobd.net as fallback. Includes the same-character mirror fix + the "🪞 mirror · your side" tag when a mirror is detected and split. MIRROR FIX - in a same-character mirror your skin no longer bleeds onto the opponent. paint_live now side-gates mirror characters (each fighter has its own DatPal), and same-variant collisions (byte-identical palette, detected via the cl+0x6 color field / the 6 select-button variants) are withheld from the signature hook. Different variants keep round-start hook painting.) ','background:#00c853;color:#00160a;font-weight:800;padding:3px 8px;border-radius:4px');
+  console.log('%c MetaSync v0.1.16 (beta) (beta: auto-records anonymized match state to improve the app. click the version in the header to see the changelog; a live pill shows up-to-date vs update-available; "What\'s New" pops after you update. Earlier: renamed to MetaSync. Fixed the library palette swatches (the strict CSP was blocking inline colors - now allowed via dangerousDisableAssetCspModification style-src). Updates now ship via GitHub Releases with nobd.net as fallback. Includes the same-character mirror fix + the "🪞 mirror · your side" tag when a mirror is detected and split. MIRROR FIX - in a same-character mirror your skin no longer bleeds onto the opponent. paint_live now side-gates mirror characters (each fighter has its own DatPal), and same-variant collisions (byte-identical palette, detected via the cl+0x6 color field / the 6 select-button variants) are withheld from the signature hook. Different variants keep round-start hook painting.) ','background:#00c853;color:#00160a;font-weight:800;padding:3px 8px;border-radius:4px');
   loadBaked();
   try{ const d=await(await fetch('idle_frames.json')).json(); idleData=d; }catch(e){}
   try{ const chars=await(await fetch('skins/characters.json')).json(); for(const c of chars){ dirById[c.char_id]=c.dir; nameById[c.char_id]=c.name; charByDir[c.dir]=c.char_id; } }catch(e){}

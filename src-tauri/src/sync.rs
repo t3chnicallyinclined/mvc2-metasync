@@ -1188,7 +1188,12 @@ fn is_wb(v: u32) -> bool { v >= WB_LO && v < WB_HI }
 // clusters exist, but only the real 6-run keeps a WB pointer at exactly +0x4c across every slot).
 unsafe fn array_valid(h: HANDLE, base: usize) -> bool {
     if base == 0 { return false; }
+    // >=5 WB DatPals AND no garbage health (>144). The health clause is essential: without it a STALE savestate
+    // copy that still holds WB DatPals but reads garbage health passes validation, PINS ram_base, and
+    // read_fighters then rejects it every cycle (health>144) → permanent "no gamestate" while find_array never
+    // re-runs (ram_base != 0). Frozen copies with sane-but-stale health are handled separately by the liveness gate.
     (0..6).filter(|&i| is_wb(rpm_u32(h, base + i * STRIDE + OFF_DATPAL).unwrap_or(0))).count() >= 5
+        && !(0..6).any(|i| (rpm_u32(h, base + i * STRIDE + OFF_HEALTH).unwrap_or(0) & 0xffff) > HP_FULL as u32)
 }
 
 // ── ANCHOR: compute the live fighter array from flycast's guest-RAM reservation base ──────────────────
@@ -1257,13 +1262,19 @@ unsafe fn anchor_roster(h: HANDLE) -> Vec<Found> {
 }
 
 // Heavy (~1.25GB scan) — run only when the cached base is stale/missing AND fighters are loaded, throttled.
-// 1) find every candidate cluster (a 40-word window with >=14 working-buffer pointers), 2) find bases where
-// >=5 of base+i*0x738 (i=0..6) is also a cluster, 3) pick the base whose slots best satisfy the per-fighter
-// invariant (WB DatPal + sane health). Returns the array base (volatile — never cache across matches blindly).
+// Locates the array by the fighter-STRUCT LAYOUT (gs-89): for each 4-byte-aligned base, require >=5 of the 6
+// slots (base + i*0x738) to hold a WB DatPal @+0x4c AND a valid char_id @+0x554, with BOTH sides (even/odd
+// slots) carrying a living fighter (health 1..=144 @+0xb44). This is the invariant the external capture tool
+// uses — it finds the live array every time; the OLD pointer-density heuristic (>=14 WB pointers clustered per
+// slot) matched 0 real candidates in a live fight (find_array_replica confirmed). Returns the array base
+// (volatile — never cache across matches blindly).
 unsafe fn find_array(h: HANDLE) -> Option<usize> {
-    const WIN: usize = 40;   // ~0xA0-byte window
-    const MINP: usize = 14;  // the real cluster holds ~16 working-buffer pointers
-    let mut clusters: Vec<usize> = Vec::new();
+    const STRIDE_W: usize = STRIDE / 4;      // 0x738 in words
+    const DP_W: usize  = OFF_DATPAL / 4;     // DatPal  @ +0x4c
+    const CID_W: usize = OFF_CHARID / 4;     // char_id @ +0x554
+    const HP_W: usize  = OFF_HEALTH / 4;     // health  @ +0xb44
+    let need = HP_W + 5 * STRIDE_W + 2;      // furthest word indexed from a base (+2 margin)
+    let mut raw: Vec<usize> = Vec::new();
     let mut addr = 0usize;
     loop {
         let mut mbi = MEMORY_BASIC_INFORMATION::default();
@@ -1277,41 +1288,49 @@ unsafe fn find_array(h: HANDLE) -> Option<usize> {
         if !(readable && size >= 0x10000 && size <= 0x5000_0000) { continue; }
         let buf = match read_at(h, base, size) { Some(v) if v.len() == size => v, _ => continue };
         let words = buf.len() / 4;
-        if words < WIN { continue; }
-        let flag: Vec<u8> = (0..words).map(|i| { let o = i*4; if is_wb(u32::from_le_bytes([buf[o],buf[o+1],buf[o+2],buf[o+3]])) {1} else {0} }).collect();
-        let mut sum: usize = flag[..WIN].iter().map(|&x| x as usize).sum();
-        let mut i = 0usize; let mut last: isize = -(STRIDE as isize);
-        while i + WIN <= words {
-            if sum >= MINP {
-                let a = base + i * 4;
-                if (a as isize - last) > 0x200 { clusters.push(a); last = a as isize; }
+        if words <= need { continue; }
+        let word = |i: usize| -> u32 { u32::from_le_bytes([buf[i*4], buf[i*4+1], buf[i*4+2], buf[i*4+3]]) };
+        // one pass → a per-word predicate byte (bit0=DatPal-WB, bit1=char_id-valid, bit2=health-alive)
+        let pred: Vec<u8> = (0..words).map(|i| {
+            let v = word(i); let mut p = 0u8;
+            if is_wb(v) { p |= 1; }
+            if (v & 0xff) <= MAX_CID as u32 { p |= 2; }
+            let hp = v & 0xffff; if hp >= 1 && hp <= HP_FULL as u32 { p |= 4; }
+            p
+        }).collect();
+        let lim = words - need;
+        let slot_present = |b: usize| (pred[b + DP_W] & 1) != 0 && (pred[b + CID_W] & 2) != 0;
+        for b in 0..lim {
+            // cheap early-reject: if BOTH slot 0 and slot 1 are absent, >=2 slots are missing → can't reach 5/6.
+            // Skips almost every random position with two byte tests before the full 6-slot check.
+            if !slot_present(b) && !slot_present(b + STRIDE_W) { continue; }
+            let mut present = 0u32; let (mut ev, mut od) = (false, false);
+            for i in 0..6 {
+                let so = b + i * STRIDE_W;
+                if slot_present(so) {
+                    present += 1;
+                    if (pred[so + HP_W] & 4) != 0 { if i % 2 == 0 { ev = true; } else { od = true; } }
+                }
             }
-            sum -= flag[i] as usize;
-            if i + WIN < words { sum += flag[i + WIN] as usize; }
-            i += 1;
+            if present >= 5 && ev && od { raw.push(base + b * 4); }
         }
     }
-    clusters.sort(); clusters.dedup();
-    let has_cluster = |t: usize| clusters.iter().any(|&x| (x as isize - t as isize).abs() <= 0x40);
-    // candidate bases: a cluster whose 6-run at 0x738 stride is >=5/6 present, then scored by the real
-    // per-fighter invariant (WB DatPal at cl+0x4c AND a sane health at cl+0xb44).
-    let mut cands: Vec<(usize, usize)> = Vec::new();
+    if raw.is_empty() { return None; }
+    raw.sort(); raw.dedup();
+    // score + both-sides-alive (re-read live; the structured scan can match at a couple of neighbouring offsets).
     // even slot = P1, odd = P2; a side is "alive" if any of its fighters has real health (1..=144).
     let side_alive = |c: usize, par: usize| (0..6).filter(|&i| i % 2 == par)
-        .any(|i| { let hp = rpm_u32(h, c + i * STRIDE + OFF_HEALTH).unwrap_or(0); (1..=144).contains(&hp) });
-    for &c in clusters.iter() {
-        if (0..6).filter(|&i| has_cluster(c + i * STRIDE)).count() < 5 { continue; }
+        .any(|i| { let hp = rpm_u32(h, c + i * STRIDE + OFF_HEALTH).unwrap_or(0) & 0xffff; (1..=144).contains(&hp) });
+    let mut cands: Vec<(usize, usize)> = Vec::new();
+    for &c in raw.iter() {
         // ★ NEGATIVE GATE (live-capture-confirmed): reject any candidate with an impossible health (>144) —
-        // that's a stale/half-written savestate COPY. The live capture showed copies reading hp=11200/62807
-        // while the live mem_b array is all <=144; the old `<=0x200` check let hp=235 garbage through.
+        // that's a stale/half-written savestate COPY (the live capture showed copies reading hp=11200/62807).
         if (0..6).any(|i| (rpm_u32(h, c + i * STRIDE + OFF_HEALTH).unwrap_or(0) & 0xffff) > HP_FULL as u32) { continue; }
         let score = (0..6).filter(|&i| {
             let cl = c + i * STRIDE;
             is_wb(rpm_u32(h, cl + OFF_DATPAL).unwrap_or(0)) && (rpm_u32(h, cl + OFF_HEALTH).unwrap_or(0xffff) & 0xffff) <= HP_FULL as u32
         }).count();
-        // ★ require BOTH teams to have a LIVING fighter — a frozen post-KO copy reads one whole side at 0
-        // (the "P2 reads dead → phantom wins / broken side" bug). Rejecting one-sided buffers at the source is
-        // the real fix. (A genuine KO frame is transient; the base is already cached from when both were alive.)
+        // ★ require BOTH teams to have a LIVING fighter — a frozen post-KO copy reads one whole side at 0.
         if score >= 5 && side_alive(c, 0) && side_alive(c, 1) { cands.push((c, score)); }
     }
     if cands.is_empty() { return None; }
@@ -1399,7 +1418,12 @@ fn read_gamestate_rpm(pid: u32, ram_base: &mut usize, last_find: &mut std::time:
             // "didn't detect the match right away" lag). Once found, array_valid is cheap → no re-scan.
             if *ram_base == 0 { *last_find += std::time::Duration::from_millis(500); }
         }
-        if *ram_base != 0 { read_fighters(h, *ram_base) } else { None }
+        // read_fighters returns None on a garbage/empty base (health>144 or no valid fighter slots). Drop the base
+        // in that case so the NEXT cycle re-acquires (anchor → find_array) instead of pinning a dead base forever —
+        // the second half of the "no gamestate" deadlock (a base array_valid accepts but read_fighters rejects).
+        if *ram_base != 0 {
+            match read_fighters(h, *ram_base) { Some(g) => Some(g), None => { *ram_base = 0; None } }
+        } else { None }
     };
     unsafe { let _ = CloseHandle(h); }
     out
