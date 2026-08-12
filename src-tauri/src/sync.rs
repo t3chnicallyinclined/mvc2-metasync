@@ -27,6 +27,54 @@ use windows::Win32::System::Diagnostics::ToolHelp::{
 const SKINSYNC: &str = "https://nobd.net/skinsync";
 const STEAMID_HI: u32 = 0x0110_0001; // universe=public, type=individual, instance=desktop
 
+// ── client registration (B): a per-install token the server mints, bound to the local SteamID. Stored in
+//    %LOCALAPPDATA%\MetaSync\auth.json and attached (Bearer) to every write request. The SteamID is read
+//    locally (self_ident → Steam registry) and can't be edited in the UI, so writes can't spoof another id. ──
+static AUTH: std::sync::Mutex<Option<(String, String)>> = std::sync::Mutex::new(None); // (token, steamid)
+
+fn metasync_dir() -> std::path::PathBuf {
+    let base = std::env::var("LOCALAPPDATA").ok().map(std::path::PathBuf::from).unwrap_or_else(std::env::temp_dir);
+    let dir = base.join("MetaSync");
+    let _ = std::fs::create_dir_all(&dir);
+    dir
+}
+fn auth_path() -> std::path::PathBuf { metasync_dir().join("auth.json") }
+
+fn load_auth() {
+    if let Some(v) = std::fs::read_to_string(auth_path()).ok().and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok()) {
+        let tok = v.get("token").and_then(|x| x.as_str()).unwrap_or("").to_string();
+        let sid = v.get("steamid").and_then(|x| x.as_str()).unwrap_or("").to_string();
+        if !tok.is_empty() && sid.len() == 17 { *AUTH.lock().unwrap() = Some((tok, sid)); }
+    }
+}
+fn auth_token() -> Option<String> { AUTH.lock().unwrap().as_ref().map(|(t, _)| t.clone()) }
+fn auth_steamid_stored() -> Option<String> { AUTH.lock().unwrap().as_ref().map(|(_, s)| s.clone()) }
+
+/// A ureq POST carrying the Bearer token when we have one (write routes require it server-side).
+fn auth_post(url: &str) -> ureq::Request {
+    let r = ureq::post(url);
+    match auth_token() { Some(t) => r.set("Authorization", &format!("Bearer {}", t)), None => r }
+}
+
+/// Register this install with the server (once per SteamID) and cache the returned token. Idempotent — a
+/// no-op when we already hold a token for this SteamID. Safe to call often; called as soon as the local
+/// SteamID is known (startup, from the Steam registry — no game needed).
+#[tauri::command]
+pub fn ensure_registered(steamid: String) -> Result<(), String> {
+    if steamid.len() != 17 { return Ok(()); } // no valid local id yet → caller retries later
+    if auth_token().is_some() && auth_steamid_stored().as_deref() == Some(steamid.as_str()) { return Ok(()); }
+    let resp = ureq::post(&format!("{}/register", SKINSYNC))
+        .timeout(std::time::Duration::from_secs(8))
+        .send_json(serde_json::json!({ "steamid": steamid }))
+        .map_err(|e| e.to_string())?
+        .into_json::<serde_json::Value>().map_err(|e| e.to_string())?;
+    let token = resp.get("token").and_then(|x| x.as_str()).unwrap_or("").to_string();
+    if token.is_empty() { return Err("no token".into()); }
+    *AUTH.lock().unwrap() = Some((token.clone(), steamid.clone()));
+    let _ = std::fs::write(auth_path(), serde_json::json!({ "token": token, "steamid": steamid }).to_string());
+    Ok(())
+}
+
 // ---- team detection via per-character DAT signatures (see detect_state below) ----
 // Each fighter's decompressed DAT carries a unique 64-byte gfx1 chunk. When a character is
 // loaded for a match the game copies its DAT into a "working buffer" in the 0x10000000-0x14000000
@@ -424,15 +472,16 @@ pub fn set_manual_side(side: u8) -> Result<(), String> {
 #[tauri::command]
 pub fn sync_publish(steamid: String, name: String, skins: serde_json::Value, effect: Option<String>) -> Result<serde_json::Value, String> {
     let body = serde_json::json!({ "steamid": steamid, "name": name, "skins": skins, "effect": effect });
-    ureq::post(&format!("{}/publish", SKINSYNC)).send_json(body)
+    auth_post(&format!("{}/publish", SKINSYNC)).send_json(body)
         .map_err(|e| e.to_string())?
         .into_json::<serde_json::Value>().map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 pub fn sync_unpublish(steamid: String) -> Result<(), String> {
-    ureq::delete(&format!("{}/publish?id={}", SKINSYNC, steamid)).call()
-        .map_err(|e| e.to_string())?;
+    let mut r = ureq::delete(&format!("{}/publish?id={}", SKINSYNC, steamid));
+    if let Some(t) = auth_token() { r = r.set("Authorization", &format!("Bearer {}", t)); }
+    r.call().map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -446,7 +495,7 @@ pub fn sync_fetch_peers(ids: Vec<String>) -> Result<serde_json::Value, String> {
 // presence: heartbeat that we're online (any open app), returns the current online count
 #[tauri::command]
 pub fn sync_heartbeat(id: String, name: String) -> Result<serde_json::Value, String> {
-    ureq::post(&format!("{}/heartbeat", SKINSYNC)).send_json(serde_json::json!({ "id": id, "name": name }))
+    auth_post(&format!("{}/heartbeat", SKINSYNC)).send_json(serde_json::json!({ "id": id, "name": name }))
         .map_err(|e| e.to_string())?
         .into_json::<serde_json::Value>().map_err(|e| e.to_string())
 }
@@ -794,7 +843,7 @@ pub fn set_share_gameplay(on: bool) -> Result<(), String> {
 #[tauri::command]
 pub fn record_consent(steamid: String, version: String) {
     std::thread::spawn(move || {
-        let _ = ureq::post(&format!("{}/consent", SKINSYNC))
+        let _ = auth_post(&format!("{}/consent", SKINSYNC))
             .timeout(std::time::Duration::from_secs(8))
             .send_json(serde_json::json!({ "steamid": steamid, "version": version }));
     });
@@ -805,7 +854,7 @@ pub fn record_consent(steamid: String, version: String) {
 #[tauri::command]
 pub fn suggest_stat(steamid: String, name: String, text: String) -> Result<(), String> {
     let text = text.chars().take(600).collect::<String>();
-    ureq::post(&format!("{}/suggest", SKINSYNC))
+    auth_post(&format!("{}/suggest", SKINSYNC))
         .timeout(std::time::Duration::from_secs(10))
         .send_json(serde_json::json!({ "steamid": steamid, "name": name, "text": text }))
         .map(|_| ())
@@ -1100,7 +1149,7 @@ fn drain_gs_cache() {
         let gz = match std::fs::read(&gz_path) { Ok(b) => b, Err(_) => { cleanup(); continue; } };
         let mut body = meta.clone();
         if let Some(o) = body.as_object_mut() { o.remove("designated"); o.remove("spool_ts"); o.insert("frames_gz".into(), serde_json::Value::from(b64_encode(&gz))); }
-        match ureq::post(SKINSYNC_GAMESTATE).timeout(std::time::Duration::from_secs(30)).send_json(body) {
+        match auth_post(SKINSYNC_GAMESTATE).timeout(std::time::Duration::from_secs(30)).send_json(body) {
             Ok(_) => { trace(&format!("[gamestate] uploaded {base} ({} bytes gz)", gz.len())); cleanup(); }
             Err(e) => { trace(&format!("[gamestate] upload {base} failed ({e}) — retry next cycle")); }
         }
@@ -1465,7 +1514,7 @@ fn report_result_server(reporter: String, winner: String, winner_name: String, l
         });
         // capture the server-derived match_key from the /result response (single source of truth → both
         // players consense on ONE key, and each tags its own recording with it).
-        let key: Option<String> = match ureq::post(&format!("{}/result", SKINSYNC))
+        let key: Option<String> = match auth_post(&format!("{}/result", SKINSYNC))
             .timeout(std::time::Duration::from_secs(5)).send_json(body) {
             Ok(resp) => resp.into_json::<serde_json::Value>().ok()
                 .and_then(|v| v.get("key").and_then(|k| k.as_str()).map(|s| s.to_string())),
@@ -2105,6 +2154,16 @@ pub fn start_reader() {
     // start_side_detector();
     // start_inputdec_detector();
     load_share_setting();            // restore the gameplay-data sharing consent (beta default = on)
+    load_auth();                     // restore the registration token (attached to every write request)
+    // silent auto-registration: the moment the local SteamID is readable (Steam registry, no game needed),
+    // register + cache the token so writes are authed from the first launch — zero user interaction.
+    std::thread::spawn(|| {
+        for _ in 0..40 {
+            let (id, _) = self_ident();
+            if id != 0 { let _ = ensure_registered(id.to_string()); if auth_token().is_some() { break; } }
+            std::thread::sleep(std::time::Duration::from_secs(3));
+        }
+    });
     start_gamestate_capture();       // dedicated fast thread: auto-records full per-frame state during matches
     start_gamestate_uploader();      // drains the recording spool between matches (dedup'd, never during a fight)
     std::thread::spawn(|| {

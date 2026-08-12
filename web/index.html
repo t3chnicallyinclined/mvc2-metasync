@@ -396,7 +396,6 @@
     </div>
     <div class="right">
       <span class="chip" id="cGame"><span class="led"></span>Game</span>
-      <span class="chip" id="cOnline" title="MetaSync users online now"><span class="led"></span><b id="onlineN">–</b>&nbsp;online</span>
       <span class="me" id="meProfile" style="cursor:pointer" title="View your own stats — record, team win-rates, recent matches"><span class="av"></span><span>You: <b id="meName">…</b></span></span>
       <button class="icon-btn" id="themeBtn" title="Toggle theme">◑</button>
     </div>
@@ -526,7 +525,7 @@
     <div class="lb-wrap">
       <div class="lb-head">
         <h2>🏆 <span>Hall of Fame</span></h2>
-        <span class="lb-sub">MetaSync players · tracked live from your matches</span>
+        <span class="lb-sub">MetaSync players · tracked live from your matches · <b style="color:var(--gold)" title="During beta, identity is read from your Steam client and can't be edited in-app, but isn't cryptographically verified yet. Steam-verified badges are coming — until then, treat ranks as provisional.">provisional — ✓ verified badges coming</b></span>
         <div style="flex:1"></div>
         <button class="btn ghost sm" id="lbRefresh" title="Refresh">↻</button>
       </div>
@@ -1321,7 +1320,7 @@ async function updateRecord(){
   try{ const r=await invoke('get_record',{steamid:id}); const w=r.wins||0, l=r.losses||0;
     el.textContent=(w||l)?`vs you: ${w}W – ${l}L`:''; _recFor=id; }catch(e){}
 }
-function refreshMe(){ if(mySteam.name){ $('#meName').textContent=mySteam.name; $('#p1name').textContent=mySteam.name; $('#youHdName').textContent=mySteam.name+' · You'; } if(mySteam.steamid){ $('#p1sid').textContent=mySteam.steamid; $('#youHdSid').textContent=mySteam.steamid; $('#p1por').textContent=(mySteam.name?.[0]||'P').toUpperCase(); refreshMyRank(); } }
+function refreshMe(){ if(mySteam.name){ $('#meName').textContent=mySteam.name; $('#p1name').textContent=mySteam.name; $('#youHdName').textContent=mySteam.name+' · You'; } if(mySteam.steamid){ $('#p1sid').textContent=mySteam.steamid; $('#youHdSid').textContent=mySteam.steamid; $('#p1por').textContent=(mySteam.name?.[0]||'P').toUpperCase(); refreshMyRank(); invoke&&invoke('ensure_registered',{steamid:String(mySteam.steamid)}).catch(()=>{}); } }
 // ── ELO / rank + matchup intel (blended win chance, your best team vs them, the comp they lose to most) ──
 function teamNames(str){ const s=String(str||'').split(',').filter(x=>x!==''); return s.length? s.map(c=>nameById[+c]||('#'+c)).join(' / ') : '—'; }
 async function refreshMyRank(){
@@ -1647,12 +1646,8 @@ function clientId(){
 }
 async function presenceTick(){
   if(!invoke) return;
+  // Heartbeat keeps SERVER-SIDE presence (monitored via /health) alive; the online count is no longer shown in-app.
   try{ await invoke('sync_heartbeat',{id:clientId(), name:mySteam.name||'Player'}); }catch(e){}
-  try{ const p=await invoke('sync_presence'); const n=p.online||0;
-    $('#onlineN').textContent=n; $('#cOnline').classList.toggle('on',n>0);
-    const list=(p.players||[]).filter(Boolean);
-    $('#cOnline').title = list.length? ('Online now: '+list.join(', ')) : 'MetaSync users online now';
-  }catch(e){ $('#onlineN').textContent='–'; }
 }
 
 // ── effects ──
