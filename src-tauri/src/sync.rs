@@ -1286,33 +1286,44 @@ unsafe fn find_array(h: HANDLE) -> Option<usize> {
         addr = base + size; if addr <= base { break; }
         // include the ~512MB guest-RAM virtmem blocks (earlier scans wrongly capped at 256MB and missed them)
         if !(readable && size >= 0x10000 && size <= 0x5000_0000) { continue; }
-        let buf = match read_at(h, base, size) { Some(v) if v.len() == size => v, _ => continue };
-        let words = buf.len() / 4;
-        if words <= need { continue; }
-        let word = |i: usize| -> u32 { u32::from_le_bytes([buf[i*4], buf[i*4+1], buf[i*4+2], buf[i*4+3]]) };
-        // one pass → a per-word predicate byte (bit0=DatPal-WB, bit1=char_id-valid, bit2=health-alive)
-        let pred: Vec<u8> = (0..words).map(|i| {
-            let v = word(i); let mut p = 0u8;
-            if is_wb(v) { p |= 1; }
-            if (v & 0xff) <= MAX_CID as u32 { p |= 2; }
-            let hp = v & 0xffff; if hp >= 1 && hp <= HP_FULL as u32 { p |= 4; }
-            p
-        }).collect();
-        let lim = words - need;
-        let slot_present = |b: usize| (pred[b + DP_W] & 1) != 0 && (pred[b + CID_W] & 2) != 0;
-        for b in 0..lim {
-            // cheap early-reject: if BOTH slot 0 and slot 1 are absent, >=2 slots are missing → can't reach 5/6.
-            // Skips almost every random position with two byte tests before the full 6-slot check.
-            if !slot_present(b) && !slot_present(b + STRIDE_W) { continue; }
-            let mut present = 0u32; let (mut ev, mut od) = (false, false);
-            for i in 0..6 {
-                let so = b + i * STRIDE_W;
-                if slot_present(so) {
-                    present += 1;
-                    if (pred[so + HP_W] & 4) != 0 { if i % 2 == 0 { ev = true; } else { od = true; } }
+        // Read in bounded CHUNKS: a whole-region read of a ~512MB..1.25GB block allocates that entire size at once
+        // (read_at does vec![0u8; len]); find_array now runs frequently, so repeated giant allocations are an
+        // OOM/abort hazard. 64MB base windows + a `tail` overlap (so a base near the window end can still index all
+        // 6 slots) bound the allocation to ~80MB regardless of region size.
+        const CHUNK: usize = 0x0400_0000;               // 64MB of base positions per read
+        let tail = (need + 2) * 4;                       // bytes past a base to reach slot 5's health (+margin)
+        let mut off = 0usize;
+        while off + need * 4 < size {
+            let rd = (CHUNK + tail).min(size - off);
+            let buf = match read_at(h, base + off, rd) { Some(v) if v.len() == rd => v, _ => { off += CHUNK; continue; } };
+            let words = buf.len() / 4;
+            if words <= need { off += CHUNK; continue; }
+            let word = |i: usize| -> u32 { u32::from_le_bytes([buf[i*4], buf[i*4+1], buf[i*4+2], buf[i*4+3]]) };
+            // one pass → a per-word predicate byte (bit0=DatPal-WB, bit1=char_id-valid, bit2=health-alive)
+            let pred: Vec<u8> = (0..words).map(|i| {
+                let v = word(i); let mut p = 0u8;
+                if is_wb(v) { p |= 1; }
+                if (v & 0xff) <= MAX_CID as u32 { p |= 2; }
+                let hp = v & 0xffff; if hp >= 1 && hp <= HP_FULL as u32 { p |= 4; }
+                p
+            }).collect();
+            // process only CHUNK-worth of bases; the tail overlap supplied their slots. Last chunk: all that fit.
+            let lim = (words - need).min(CHUNK / 4);
+            let slot_present = |b: usize| (pred[b + DP_W] & 1) != 0 && (pred[b + CID_W] & 2) != 0;
+            for b in 0..lim {
+                // cheap early-reject: if BOTH slot 0 and slot 1 are absent, >=2 slots are missing → can't reach 5/6.
+                if !slot_present(b) && !slot_present(b + STRIDE_W) { continue; }
+                let mut present = 0u32; let (mut ev, mut od) = (false, false);
+                for i in 0..6 {
+                    let so = b + i * STRIDE_W;
+                    if slot_present(so) {
+                        present += 1;
+                        if (pred[so + HP_W] & 4) != 0 { if i % 2 == 0 { ev = true; } else { od = true; } }
+                    }
                 }
+                if present >= 5 && ev && od { raw.push(base + off + b * 4); }
             }
-            if present >= 5 && ev && od { raw.push(base + b * 4); }
+            off += CHUNK;
         }
     }
     if raw.is_empty() { return None; }
