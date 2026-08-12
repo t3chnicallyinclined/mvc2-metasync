@@ -1616,6 +1616,7 @@ fn report_result_server(reporter: String, winner: String, winner_name: String, l
             "winner_name": winner_name, "loser_name": loser_name,
             "ocv": ocv, "perfect": perfect, "comeback": comeback,
             "winner_team": winner_team, "loser_team": loser_team, "biggest_combo": biggest_combo, "meters_used": meters_used,
+            "side": side,   // gs-92: which side the reporter was (1=P1,2=P2) — makes every game auditable server-side
         });
         // capture the server-derived match_key from the /result response (single source of truth → both
         // players consense on ONE key, and each tags its own recording with it).
@@ -2501,29 +2502,20 @@ pub fn start_reader() {
             // (allow_find above) and gates the deterministic side lock below.
             if game.is_some() { live_seen = Some(std::time::Instant::now()); }
 
-            // ★ DETERMINISTIC SIDE — flycast's localPlayerNum global (0 = P1, 1 = P2). Confirmed on a LIVE fighter
-            // read: game.is_some() means the array passed the liveness gate, so we're mid-fight and localPlayerNum is
-            // FRESH for THIS match. Independent of BOTH the netplay-pairing scan (which stranded a correct side for
-            // ~3 matches) and the flickering roster. Debounced (STABLE for 2 reads); AUTO-CONFIRMS so stats record
-            // with zero user action; never overrides a manual pick. No live array ⇒ no confirm ⇒ the gs-77 stale
-            // read (previous match's value lingering at char-select) can never lock the wrong side.
+            // ── SIDE HINT — NON-authoritative (gs-92) ── localPlayerNum @ exe+0xac7230 is flycast's netplay
+            // CONNECTION index (player 0/1 by who connected), NOT the physical P1/P2 side. It leans one way and so
+            // records the OTHER side's games backwards (verified: the user's P2 wins logged as losses; P1 games were
+            // correct only because the app happened to guess P1). So it is a WEAK DISPLAY HINT and does NOT confirm
+            // the side for stats. The AUTHORITATIVE side is the UI's CHARACTER-BASED detection — which team holds
+            // YOUR characters, reliable for P1 AND P2 — or the manual toggle; both arrive as manual_side and set
+            // side_confirmed. on_game_win gates on side_confirmed, so a game NEVER records off this guess.
+            let _ = (&mut side_seen, &mut side_stable);   // retained for signature; debounce retired with the auto-confirm
             if game.is_some() && exe_base != 0 {
                 if let Some(pn) = unsafe { rpm_u32(h, exe_base + LOCALPLAYER_OFF) } {
-                    // gs-90 EMPIRICAL CORRECTION: localPlayerNum=0 → the local player is P2, =1 → P1 (the
-                    // OPPOSITE of the old assumption). Confirmed across 3 live sessions cross-checked by team
-                    // (Mag/Storm/Col) parity AND spawn position (P1 spawns left): lpn=1 landed on the even/left/P1
-                    // team, lpn=0 on the odd/right/P2 team, every time. The old 0→P1 mapping put the overlay on the
-                    // wrong side (records stayed right only because the winner read was ALSO inverted — both fixed together).
-                    let side = match pn { 0 => 2u8, 1 => 1u8, _ => 0u8 };
-                    if side != 0 && side == side_seen { side_stable = side_stable.saturating_add(1); }
-                    else { side_seen = side; side_stable = if side != 0 { 1 } else { 0 }; }
-                    if side_stable >= 2 {
+                    let side = match pn { 0 => 2u8, 1 => 1u8, _ => 0u8 };   // best-guess hint only, unconfirmed
+                    if side != 0 {
                         let mut s = snapshot().lock().unwrap();
-                        if s.manual_side == 0 && !(s.side_confirmed && s.local_side == side) {
-                            s.local_side = side; s.side_confirmed = true;
-                            drop(s);
-                            trace(&format!("[side] AUTO = P{} (localPlayerNum={}, stable)", side, pn));
-                        }
+                        if s.manual_side == 0 && !s.side_confirmed { s.local_side = side; }
                     }
                 }
             }
