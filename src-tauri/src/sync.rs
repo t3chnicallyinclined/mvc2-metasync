@@ -993,8 +993,16 @@ fn start_gamestate_capture() {
             if !SHARE_GAMEPLAY.load(SeqCst) { std::thread::sleep(std::time::Duration::from_millis(500)); continue; }
             let pid = match find_game_pid() { Some(p) => p, None => { std::thread::sleep(std::time::Duration::from_millis(600)); continue; } };
             let h = match unsafe { OpenProcess(PROCESS_VM_READ | PROCESS_QUERY_INFORMATION, FALSE, pid) } { Ok(h) => h, Err(_) => { std::thread::sleep(std::time::Duration::from_millis(600)); continue; } };
-            // wait for a live match with BOTH teams alive (a fresh game start, not a mid-KO/loading copy)
-            let base = match unsafe { anchor_array(h) } { Some(b) => b, None => { unsafe { let _ = CloseHandle(h); } std::thread::sleep(std::time::Duration::from_millis(300)); continue; } };
+            // wait for a live match with BOTH teams alive (a fresh game start, not a mid-KO/loading copy).
+            // Prefer the base the MAIN reader already located via find_array (struct-layout scan → the LIVE copy,
+            // not a rollback savestate). anchor_array is only a fallback for the brief window before the reader
+            // locks on — using it as the primary source is why the capture recorded ZERO frames (it kept landing
+            // on rejected savestate copies).
+            let base = {
+                let rb = { snapshot().lock().unwrap().ram_base };
+                if rb != 0 && unsafe { array_valid(h, rb) } { rb }
+                else { match unsafe { anchor_array(h) } { Some(b) => b, None => { unsafe { let _ = CloseHandle(h); } std::thread::sleep(std::time::Duration::from_millis(300)); continue; } } }
+            };
             let start_row = match unsafe { read_gs_row(h, base, 0) } { Some(r) => r, None => { unsafe { let _ = CloseHandle(h); } std::thread::sleep(std::time::Duration::from_millis(200)); continue; } };
             // TRUE match-load gate. Ideal: catch the +-213 spawn during the intro (gs_match_load) so the tape
             // starts at frame 0 of the FIGHT. Fallback: if all real chars have been full for ~1.5s but we never
@@ -2488,13 +2496,25 @@ pub fn start_reader() {
             // the leftover real char no correctly-read slot accounted for. (Common case = one point-slot reading 0 →
             // exactly one leftover → unambiguous.) Keeps the overlay/skin on the true character. The team split for
             // display comes from the game slots' own player field, which IS reliable — not the roster order.
+            // gs-93: the old set-difference fill produced PHANTOM DUPLICATES ("opponent has 2 Ryus") because 0 is
+            // BOTH the mis-read default AND a real char (Ryu) — a mis-read 0 looked "known" whenever the roster held
+            // a real Ryu, so it was never corrected. Fix: the 6 live slots must COLLECTIVELY equal the sig-scan
+            // roster MULTISET. Claim greedily from that pool, trusting NON-zero reads first (a 0 read is the
+            // unreliable default); a 0 that matches a still-unclaimed roster Ryu is kept as a real Ryu; any slot
+            // left unclaimed (a mis-read) takes a remaining pool char. Guarantees no character shows more times than
+            // the roster actually contains → no phantom dupes. (Exact per-slot identity still needs char-select.)
             if let Some(g) = game.as_mut() {
-                let rset: Vec<u8> = roster.iter().map(|f| f.cid as u8).collect();
-                if rset.len() >= 4 {
-                    let known: Vec<u8> = g.slots.iter().map(|s| s.char_id).filter(|c| rset.contains(c)).collect();
-                    let mut leftover: Vec<u8> = rset.iter().cloned().filter(|c| !known.contains(c)).collect();
-                    for s in g.slots.iter_mut() {
-                        if !rset.contains(&s.char_id) { if let Some(c) = leftover.pop() { s.char_id = c; } }
+                let mut pool: Vec<u8> = roster.iter().map(|f| f.cid as u8).collect();   // 6-char multiset
+                if pool.len() >= 4 {
+                    let mut claimed = vec![false; g.slots.len()];
+                    for (i, s) in g.slots.iter().enumerate() {                            // pass 1: trustworthy non-zero reads
+                        if s.char_id != 0 { if let Some(p) = pool.iter().position(|&c| c == s.char_id) { pool.remove(p); claimed[i] = true; } }
+                    }
+                    for (i, s) in g.slots.iter().enumerate() {                            // pass 2: a 0 that IS a real remaining Ryu
+                        if !claimed[i] && s.char_id == 0 { if let Some(p) = pool.iter().position(|&c| c == 0) { pool.remove(p); claimed[i] = true; } }
+                    }
+                    for (i, s) in g.slots.iter_mut().enumerate() {                        // pass 3: mis-reads take the leftovers
+                        if !claimed[i] { if let Some(c) = pool.pop() { s.char_id = c; } }
                     }
                 }
             }
