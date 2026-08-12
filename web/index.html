@@ -1448,6 +1448,10 @@ async function stateTick(){
     // Side shows only once actually resolved (localPlayerNum); never assert P1 by default.
     $('#sideTxt').textContent = sideConfirmed ? side.toUpperCase() : '—';
     $('#sideSwap').classList.toggle('p2', sideConfirmed && side==='p2');
+    // Show the manual side override during an ONLINE match. localPlayerNum is the netplay CONNECTION index (player
+    // 0/1 by who connected), NOT the physical P1/P2 side — so the auto side is only a guess and can be backwards.
+    // Tap to correct it: it sticks for the set and fixes the recorded win/loss side too.
+    $('#sideSwap').style.display = (oppIdentity && oppIdentity.steamid) ? 'inline-flex' : 'none';
     { const sa=$('#sideAuto'), sw=$('#sideSwap'); if(sw) sw.classList.remove('unconfirmed'); if(sa){
         sa.textContent = sideConfirmed ? '· auto ✓' : '· detecting…';
         sa.style.opacity = sideConfirmed ? '.9' : '.5';
@@ -1465,6 +1469,7 @@ async function stateTick(){
   } else {
     // NO live team (menus / between sessions) → BOTH cards empty. Match cards reflect the LIVE match only; your
     // saved skins live in activeSkins (persisted) and auto-apply whenever those characters actually appear.
+    $('#sideSwap').style.display='none';
     if(myTeam.length){ myTeam=[]; renderYou(); if(syncOn) publishMine(); }
     if(oppDetected.length){ oppDetected=[]; if(!oppMeta) setOpp(null); else rebuildOpp(); }
   }
@@ -1506,6 +1511,9 @@ let _updHideT=null;
 // so it can be updated without shipping a new build. This bundled copy is the offline FALLBACK — keep it
 // roughly current, but the remote is authoritative.
 let CHANGELOG = [
+  { v:'0.1.21', t:'One-tap side fix', items:[
+    'Added the "You: P2 ⇄" control back during online matches. The automatic side guess uses the game’s netplay index, which isn’t always your physical P1/P2 side — so if the overlay shows you on the wrong side, tap it to swap. That instantly fixes your skin side and which way wins/losses are recorded.',
+  ]},
   { v:'0.1.20', t:'Correct characters on the right cards', items:[
     'Fixed characters showing on the wrong card and the odd wrong character (e.g. Colossus reading as Ryu, or Tron Bonne on the wrong side) — teams now come from the game’s own player sides, and mis-read characters are corrected from the roster.',
   ]},
@@ -2065,7 +2073,7 @@ function stApply(){ if(stCid==null||!stPal) return null;
 
 // ── boot ──
 async function boot(){
-  console.log('%c MetaSync v0.1.20 (beta) (beta: auto-records anonymized match state to improve the app. click the version in the header to see the changelog; a live pill shows up-to-date vs update-available; "What\'s New" pops after you update. Earlier: renamed to MetaSync. Fixed the library palette swatches (the strict CSP was blocking inline colors - now allowed via dangerousDisableAssetCspModification style-src). Updates now ship via GitHub Releases with nobd.net as fallback. Includes the same-character mirror fix + the "🪞 mirror · your side" tag when a mirror is detected and split. MIRROR FIX - in a same-character mirror your skin no longer bleeds onto the opponent. paint_live now side-gates mirror characters (each fighter has its own DatPal), and same-variant collisions (byte-identical palette, detected via the cl+0x6 color field / the 6 select-button variants) are withheld from the signature hook. Different variants keep round-start hook painting.) ','background:#00c853;color:#00160a;font-weight:800;padding:3px 8px;border-radius:4px');
+  console.log('%c MetaSync v0.1.21 (beta) (beta: auto-records anonymized match state to improve the app. click the version in the header to see the changelog; a live pill shows up-to-date vs update-available; "What\'s New" pops after you update. Earlier: renamed to MetaSync. Fixed the library palette swatches (the strict CSP was blocking inline colors - now allowed via dangerousDisableAssetCspModification style-src). Updates now ship via GitHub Releases with nobd.net as fallback. Includes the same-character mirror fix + the "🪞 mirror · your side" tag when a mirror is detected and split. MIRROR FIX - in a same-character mirror your skin no longer bleeds onto the opponent. paint_live now side-gates mirror characters (each fighter has its own DatPal), and same-variant collisions (byte-identical palette, detected via the cl+0x6 color field / the 6 select-button variants) are withheld from the signature hook. Different variants keep round-start hook painting.) ','background:#00c853;color:#00160a;font-weight:800;padding:3px 8px;border-radius:4px');
   loadBaked();
   try{ const d=await(await fetch('idle_frames.json')).json(); idleData=d; }catch(e){}
   try{ const chars=await(await fetch('skins/characters.json')).json(); for(const c of chars){ dirById[c.char_id]=c.dir; nameById[c.char_id]=c.name; charByDir[c.dir]=c.char_id; } }catch(e){}
