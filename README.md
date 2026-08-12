@@ -38,6 +38,10 @@ cargo tauri build    # produce an installer under src-tauri/target/release/bundl
 
 The frontend is static — there's no npm build step for `web/`.
 
+## Reverse-engineering notes
+
+Black-box RE notes on the Steam MvC2 build (file/palette formats, the fighter-array layout, and the "native x86-64 recompile, not SH4 emulation" finding) are in [docs/STEAM-RE-NOTES.md](docs/STEAM-RE-NOTES.md) — shared for other modders and tool-makers.
+
 ## License
 
 MIT — see [LICENSE](LICENSE).
