@@ -402,6 +402,7 @@ async fn install_update(app: tauri::AppHandle) -> Result<(), String> {
 }
 
 pub fn run() {
+    sync::kill_other_instances(); // an in-place update can leave the old instance running → two readers/recorders. Kill stale copies first.
     sync::start_reader(); // single background thread owns all game-memory reads (keeps the UI unblockable)
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init()) // ROM file picker for the Studio tab

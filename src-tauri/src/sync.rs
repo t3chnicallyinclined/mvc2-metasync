@@ -15,7 +15,7 @@ use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 use serde::Serialize;
 use windows::Win32::Foundation::{CloseHandle, HANDLE, FALSE};
-use windows::Win32::System::Threading::{OpenProcess, PROCESS_VM_READ, PROCESS_VM_WRITE, PROCESS_VM_OPERATION, PROCESS_QUERY_INFORMATION};
+use windows::Win32::System::Threading::{OpenProcess, PROCESS_VM_READ, PROCESS_VM_WRITE, PROCESS_VM_OPERATION, PROCESS_QUERY_INFORMATION, PROCESS_TERMINATE, TerminateProcess, GetCurrentProcessId};
 use windows::Win32::System::Memory::{VirtualQueryEx, MEMORY_BASIC_INFORMATION, MEM_COMMIT, PAGE_GUARD, PAGE_NOACCESS, PAGE_READWRITE};
 use windows::Win32::System::Diagnostics::Debug::{ReadProcessMemory, WriteProcessMemory};
 use windows::Win32::UI::Input::XboxController::{XInputGetState, XINPUT_STATE};
@@ -170,6 +170,39 @@ fn find_game_pid() -> Option<u32> {
         }
         let _ = CloseHandle(snap);
         pid
+    }
+}
+
+/// Kill any OTHER running instance of this app on startup. An in-place update relaunches the app before the
+/// old process fully exits, leaving two instances that BOTH read game memory and record — the flip-flopping
+/// score / conflicting records we observed. The freshly-launched (updated) instance wins; the stale one dies.
+pub fn kill_other_instances() {
+    unsafe {
+        let me = GetCurrentProcessId();
+        let snap = match CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) { Ok(s) => s, Err(_) => return };
+        let mut pe = PROCESSENTRY32W { dwSize: std::mem::size_of::<PROCESSENTRY32W>() as u32, ..Default::default() };
+        let mut procs: Vec<(u32, String)> = Vec::new();   // (pid, exe name)
+        let mut my_name = String::new();
+        if Process32FirstW(snap, &mut pe).is_ok() {
+            loop {
+                let end = pe.szExeFile.iter().position(|&c| c == 0).unwrap_or(pe.szExeFile.len());
+                let name = String::from_utf16_lossy(&pe.szExeFile[..end]);
+                if pe.th32ProcessID == me { my_name = name.clone(); }
+                procs.push((pe.th32ProcessID, name));
+                if Process32NextW(snap, &mut pe).is_err() { break; }
+            }
+        }
+        let _ = CloseHandle(snap);
+        if my_name.is_empty() { return; }   // couldn't resolve our own name → don't risk killing anything
+        for (pid, name) in procs {
+            if pid != me && name.eq_ignore_ascii_case(&my_name) {
+                if let Ok(h) = OpenProcess(PROCESS_TERMINATE, FALSE, pid) {
+                    let _ = TerminateProcess(h, 0);
+                    let _ = CloseHandle(h);
+                    trace(&format!("[startup] terminated stale instance pid={} ({})", pid, my_name));
+                }
+            }
+        }
     }
 }
 
@@ -1666,6 +1699,7 @@ fn update_score(st: &mut ScoreState, game: &Option<GameSt>, opp: &Option<(String
             } else if st.was_in && !st.judged && st.saw_both { // match ended before the KO edge (contested game only)
                 if st.la1 && !st.la2 { st.p1 += 1; st.judged = true; let r = rich_of(st); let (p, c) = (!st.g1_dmg, st.g1_low); commit_or_buffer(st, 1, opp, confirmed, my_side, false, p, c, r); }
                 else if st.la2 && !st.la1 { st.p2 += 1; st.judged = true; let r = rich_of(st); let (p, c) = (!st.g2_dmg, st.g2_low); commit_or_buffer(st, 2, opp, confirmed, my_side, false, p, c, r); }
+                else { trace(&format!("[record] MISS(match-end) — both sides last-alive la1={} la2={} → winner unknown, game dropped (under-count cause)", st.la1, st.la2)); }
                 st.was_in = false; st.saw_both = false;
             } else { st.was_in = g.in_match == 1; if g.in_match != 1 { st.saw_both = false; } }
         }
