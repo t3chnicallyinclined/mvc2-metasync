@@ -1394,17 +1394,27 @@ unsafe fn find_array(h: HANDLE) -> Option<usize> {
     // move every frame; the rollback savestate COPIES are frozen snapshots — the app's fixed anchor lands on
     // one, which is the whole bug. Probe that region across ~180ms (~11 frames) and lock ONLY a candidate that
     // actually MOVED. If none moved this instant, return None and retry — never lock a static copy.
+    // LIVENESS: sample a WIDE per-fighter region — position/velocity (0x61c, live on this build, external-logger
+    // confirmed) AND the action/animation area (0x100) — and prefer the candidate that CHANGED across ~180ms (the
+    // live fight animates every frame; rollback savestate COPIES are frozen).
     let anim = |c: usize| -> Vec<u8> {
-        let mut v = Vec::with_capacity(6 * 0x40);
-        for i in 0..6 { if let Some(b) = read_at(h, c + i * STRIDE + OFF_POS_X, 0x40) { v.extend_from_slice(&b); } }
+        let mut v = Vec::with_capacity(6 * 0x80);
+        for i in 0..6 {
+            if let Some(b) = read_at(h, c + i * STRIDE + OFF_POS_X, 0x40) { v.extend_from_slice(&b); }
+            if let Some(b) = read_at(h, c + i * STRIDE + 0x100, 0x40) { v.extend_from_slice(&b); }
+        }
         v
     };
     let before: Vec<Vec<u8>> = cands.iter().map(|&(c, _)| anim(c)).collect();
     std::thread::sleep(std::time::Duration::from_millis(180));
     for (i, &(c, _)) in cands.iter().enumerate() {
-        if !before[i].is_empty() && anim(c) != before[i] { return Some(c); }  // this candidate is LIVE (moving)
+        if !before[i].is_empty() && anim(c) != before[i] { return Some(c); }  // this candidate is LIVE (animating)
     }
-    None   // nothing demonstrably live right now → don't lock a frozen copy; the caller retries next cycle
+    // BEST-EFFORT (the reliability fix): nothing demonstrably moved THIS instant (a lull, or we sampled between
+    // frames) — return the highest-SCORED candidate (cands is score-sorted) instead of None, so the reader never
+    // goes blind mid-match ("no gamestate for 20 min"). If this pick is actually a frozen copy, the reader's
+    // animation-region frozen-guard drops it within ~1s and re-finds → we keep tracking rather than losing the match.
+    cands.first().map(|&(c, _)| c)
 }
 
 // Cheap (~6 small reads/slot) — read the six fighters from a located base. side = slot parity (VALIDATED:
@@ -1467,6 +1477,9 @@ fn read_gamestate_rpm(pid: u32, ram_base: &mut usize, last_find: &mut std::time:
         if *ram_base == 0 && allow_find && last_find.elapsed().as_millis() >= 1200 {
             *last_find = std::time::Instant::now();
             *ram_base = find_array(h).unwrap_or(0);
+            // TELEMETRY: log every (re)location so a set's trace proves the array was found each game (it relocates
+            // per match). Grep "[find] located" after a set → one entry per game = solid data collection.
+            if *ram_base != 0 { trace(&format!("[find] located live array @ {:x}", *ram_base)); }
             // empty scan (char-select/loading — array not instantiated) → back the NEXT attempt off slightly so
             // the scan doesn't thrash, but retry fast so teams lock within ~1-2s of a round starting.
             if *ram_base == 0 { *last_find += std::time::Duration::from_millis(300); }
