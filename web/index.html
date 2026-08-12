@@ -508,6 +508,7 @@
 
   <div class="dock">
     <span class="lbl">Effects</span>
+    <span class="lbl" title="Palette effects animate on your own screen only — they are not synced to other players and don't show in online matches." style="font-size:10px;letter-spacing:.04em;text-transform:uppercase;color:var(--dim);border:1px solid var(--line);border-radius:999px;padding:1px 7px;opacity:.85">local only</span>
     <button class="fx on" data-m="0">Off</button>
     <button class="fx" data-m="1">🌈 Rainbow</button>
     <button class="fx" data-m="2">🎨 Spread</button>
@@ -1657,7 +1658,7 @@ async function presenceTick(){
 
 // ── effects ──
 let fxMode=0;
-function setEffect(mode){ fxMode=mode; $$('.fx').forEach(b=>b.classList.toggle('on',+b.dataset.m===mode)); invoke('set_effect',{mode,speed:+$('#fxSpeed').value}).then(()=>toast(mode?'effect on':'effects off')).catch(e=>toast('⚠ '+e)); }
+function setEffect(mode){ fxMode=mode; $$('.fx').forEach(b=>b.classList.toggle('on',+b.dataset.m===mode)); invoke('set_effect',{mode,speed:+$('#fxSpeed').value}).then(()=>toast(mode?'effect on · local only':'effects off')).catch(e=>toast('⚠ '+e)); }
 
 // ── status / inject ──
 // gs-76: the render-layer hook (d3dhook.dll) is the PRIMARY painter — it repaints at the D3D palette upload so
