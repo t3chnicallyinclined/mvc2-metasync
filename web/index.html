@@ -1041,8 +1041,11 @@ function buildPaintTargets(){
     const cid=+s.cid;
     let pal=null;
     const mine=activeSkins[cid];
-    // YOUR skin paints on any fighter of that char — EXCEPT a mirror char once the side is locked (then your side only)
-    if(mine&&mine.palette && (!mirrorCids.has(cid) || meNum===0 || s.player===meNum)){ pal=mine.palette; }
+    // YOUR skin paints on any fighter of that char. For a MIRROR char (same cid on both sides) we WITHHOLD until
+    // the side is locked, then paint YOUR copy only — never on both. Painting a mirror before the side resolves
+    // is exactly what flashed your skin onto the opponent's fighter at match start (it "fixed" once the side
+    // locked); withholding for that brief, deterministic window shows it only on the correct side from the start.
+    if(mine&&mine.palette && (!mirrorCids.has(cid) || (meNum!==0 && s.player===meNum))){ pal=mine.palette; }
     else if(meNum!==0 && s.player!==meNum){ const os=oppSkinFor(cid); if(os&&os.palette) pal=os.palette; }  // opponent-only skin, applied to their side once known
     if(!pal) continue;
     const p16=pal16For(cid, pal); if(!p16) continue;
