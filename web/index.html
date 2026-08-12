@@ -4,6 +4,8 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>MetaSync</title>
+<script>/* default to DARK (overrides the OS light preference); respect a saved choice. Runs pre-paint = no flash. */
+try{document.documentElement.setAttribute('data-theme', localStorage.getItem('metasync_theme')||'dark');}catch(e){document.documentElement.setAttribute('data-theme','dark');}</script>
 <style>
   /* ── MvC Live Skins · Match Board — fighting-game VS / netplay HUD ───── */
   :root{
@@ -2189,7 +2191,7 @@ $('#btnBrowseArc').onclick=()=>browseRom(false);
 $('#btnBrowseFolder').onclick=()=>browseRom(true);
 $('#btnDetectRom').onclick=async()=>{ $('#romPath').textContent='detecting…'; try{ const p=await invoke('detect_rom'); $('#romPath').textContent=p; $('#romInput').value=p; refreshRomChip(p); onRomChanged(); toast('ROM found'); }catch(e){ $('#romPath').textContent='(not found)'; toast('⚠ '+e); } };
 $('#btnSaveRom').onclick=()=>saveRomPath($('#romInput').value);
-$('#themeBtn').onclick=()=>{ const r=document.documentElement; const now=r.getAttribute('data-theme')||(matchMedia('(prefers-color-scheme:dark)').matches?'dark':'light'); r.setAttribute('data-theme', now==='dark'?'light':'dark'); };
+$('#themeBtn').onclick=()=>{ const r=document.documentElement; const now=r.getAttribute('data-theme')||'dark'; const nx=now==='dark'?'light':'dark'; r.setAttribute('data-theme', nx); try{localStorage.setItem('metasync_theme', nx);}catch(e){} };
 // suite tabs / library / target
 $('#tabs').addEventListener('click',e=>{ const b=e.target.closest('button'); if(b) switchTab(b.dataset.t); });
 $('#libSearch').oninput=renderLibrary;
