@@ -219,6 +219,11 @@
   #p-ranks .lb-tabs button{padding:8px 14px; border-radius:9px; border:1px solid var(--line); background:var(--panel); color:var(--dim); font-weight:700; font-size:13px; cursor:pointer; transition:all .15s;}
   #p-ranks .lb-tabs button:hover{color:var(--ink); border-color:var(--gold-soft);}
   #p-ranks .lb-tabs button.on{color:var(--gold-ink); background:var(--gold); border-color:var(--gold);}
+  #p-ranks .lb-tabs button.lb-suggest{margin-left:auto; border-style:dashed; color:var(--gold-soft); border-color:var(--gold-soft); background:transparent;}
+  #p-ranks .lb-tabs button.lb-suggest:hover{color:var(--gold-ink); background:var(--gold); border-style:solid;}
+  #p-ranks .lb-explain{font-size:12px; line-height:1.5; color:var(--dim); margin:-6px 0 12px; padding:9px 12px; background:var(--panel); border:1px solid var(--line); border-radius:9px;}
+  #p-ranks .lb-explain b{color:var(--ink);}
+  #p-ranks .lb-explain .how{display:block; margin-top:3px; color:var(--dim); opacity:.82; font-size:11px;}
   #p-ranks .lb-list{display:flex; flex-direction:column; gap:7px;}
   .lb-row{display:flex; align-items:center; gap:12px; padding:11px 15px; border-radius:11px; background:var(--card); border:1px solid var(--line);}
   .lb-row.r1{background:linear-gradient(90deg,var(--gold-soft),transparent); border-color:var(--gold);}
@@ -411,6 +416,24 @@
     </div>
   </div>
 
+  <!-- Suggest-a-stat — community-proposed leaderboards -->
+  <div id="suggestModal" style="display:none; position:fixed; inset:0; z-index:9999; background:rgba(0,0,0,.62); align-items:center; justify-content:center;">
+    <div style="max-width:520px; margin:16px; background:var(--panel-2,#161a22); border:1px solid var(--line,#2a3140); border-radius:12px; padding:22px; color:var(--ink,#e8ecf2); box-shadow:0 14px 44px rgba(0,0,0,.55); max-height:88vh; overflow:auto;">
+      <h3 style="margin:0 0 6px; font-size:16px;">💡 Suggest a leaderboard stat</h3>
+      <p style="font-size:12.5px; line-height:1.55; color:var(--dim,#9aa4b2); margin:0 0 12px;">Think a stat is worth tracking? Tell us what to rank and how you'd score it — good ideas get added to the Hall of Fame.</p>
+      <div style="font-size:11.5px; line-height:1.5; color:var(--dim,#9aa4b2); background:var(--panel,#12151d); border:1px solid var(--line,#2a3140); border-radius:9px; padding:10px 12px; margin:0 0 12px;">
+        <b style="color:var(--ink,#e8ecf2)">Data we can rank on:</b> match wins/losses, teams &amp; characters used, per-round outcomes, health &amp; comeback situations, combo hit-counts, OCVs, perfects, and head-to-head matchups.
+        <div style="margin-top:8px;"><b style="color:var(--ink,#e8ecf2)">Example:</b> <i>"Anchor Clutch — win-rate when you're down to your last character. Ranks players who close out games from behind the most often."</i></div>
+      </div>
+      <textarea id="suggestText" rows="4" maxlength="600" placeholder="Name your stat, say what it ranks, and how it should be scored…" style="width:100%; box-sizing:border-box; resize:vertical; padding:10px 12px; border-radius:9px; border:1px solid var(--line,#2a3140); background:var(--panel,#12151d); color:var(--ink,#e8ecf2); font:inherit; font-size:12.5px; line-height:1.5;"></textarea>
+      <div style="display:flex; align-items:center; gap:10px; justify-content:flex-end; margin-top:14px;">
+        <span id="suggestCount" style="margin-right:auto; font-size:11px; color:var(--dim,#9aa4b2);">0 / 600</span>
+        <button id="suggestCancel" style="padding:8px 14px; border-radius:8px; border:1px solid var(--line,#2a3140); background:transparent; color:var(--ink,#e8ecf2); cursor:pointer;">Cancel</button>
+        <button id="suggestSend" style="padding:8px 14px; border-radius:8px; border:0; background:var(--gold,#e8b84b); color:var(--gold-ink,#241a02); font-weight:700; cursor:pointer;">Send suggestion</button>
+      </div>
+    </div>
+  </div>
+
   <div class="tabbar">
     <div class="tabs" id="tabs">
       <button data-t="match" class="on">🎮 Match</button>
@@ -515,7 +538,9 @@
         <button data-lt="comeback">🔄 Comeback</button>
         <button data-lt="combo">🎯 Combo</button>
         <button data-lt="rating">⚔️ Ranked</button>
+        <button class="lb-suggest" id="lbSuggest" title="Suggest a stat for the leaderboards">💡 Suggest a stat</button>
       </div>
+      <div class="lb-explain" id="lbExplain"></div>
       <div class="lb-list" id="lbList"><div class="lb-empty">LOADING…</div></div>
     </div>
   </section>
@@ -1960,10 +1985,22 @@ $('#btnReset').onclick=async()=>{ activeSkins={}; myTeam=[]; for(let i=localStor
 // ── Leaderboard (Ranks tab) — global Hall of Fame from the skinsync server ──
 let lbTab='streak', lbLoading=false;
 const LB_STAT_LABEL={streak:'streak',wins:'wins',ocv:'OCVs',perfect:'perfects',comeback:'comebacks',combo:'max combo',rating:'ELO'};
+// What each leaderboard stat means + which match data decides it (shown under the tabs).
+const LB_STAT_INFO={
+  streak:{t:'🔥 Win Streak',d:'Your longest run of consecutive match wins with no loss in between.',h:'Counted from the win/loss result of each synced match, reset on your first loss.'},
+  wins:{t:'🏅 Total Wins',d:'Every match you\'ve won across all your synced games.',h:'A tally of match results where you took the set.'},
+  ocv:{t:'💥 OCV — One-Character Victory',d:'Sweeping all three of the opponent\'s characters with a single character — never tagging out.',h:'Detected when your team wins while only your point character ever took the screen and the opponent lost all three.'},
+  perfect:{t:'✨ Perfect',d:'Winning a game without your team\'s health ever being touched.',h:'Flagged when your side\'s health reads full for the entire game at the win.'},
+  comeback:{t:'🔄 Comeback',d:'Winning after being reduced to your last character while the opponent still had two or more.',h:'Detected from character-count + health when the round turns: down to your anchor, then closing it out.'},
+  combo:{t:'🎯 Max Combo',d:'The highest single-combo hit count you\'ve landed.',h:'Read live from the game\'s combo counter, per hit-string, and the peak is kept.'},
+  rating:{t:'⚔️ Ranked (ELO)',d:'A skill rating that rises when you beat stronger players and dips on losses — Rookie → Legend.',h:'Computed from match results weighted by each opponent\'s current rating.'},
+};
 const esc=s=>String(s==null?'':s).replace(/[<>&"]/g,c=>({'<':'&lt;','>':'&gt;','&':'&amp;','"':'&quot;'}[c]));
 async function renderLeaderboard(tab){
   lbTab=tab||lbTab;
   $$('#lbTabs button').forEach(b=>b.classList.toggle('on',b.dataset.lt===lbTab));
+  const info=LB_STAT_INFO[lbTab], ex=$('#lbExplain');
+  if(ex&&info){ ex.innerHTML=`<b>${esc(info.t)}</b> — ${esc(info.d)}<span class="how">How it's scored: ${esc(info.h)}</span>`; }
   const list=$('#lbList'); if(!list||!invoke) return;
   if(lbLoading) return; lbLoading=true;
   if(!list.children.length||list.querySelector('.lb-empty')) list.innerHTML='<div class="lb-empty">LOADING…</div>';
@@ -1986,8 +2023,26 @@ async function renderLeaderboard(tab){
   }catch(e){ list.innerHTML='<div class="lb-empty">LEADERBOARD UNAVAILABLE</div>'; }
   finally{ lbLoading=false; }
 }
-$('#lbTabs')?.addEventListener('click',e=>{ const b=e.target.closest('button'); if(b) renderLeaderboard(b.dataset.lt); });
+$('#lbTabs')?.addEventListener('click',e=>{ const b=e.target.closest('button'); if(!b) return; if(b.id==='lbSuggest') return openSuggest(); renderLeaderboard(b.dataset.lt); });
 $('#lbRefresh')?.addEventListener('click',()=>renderLeaderboard());
+
+// ── Suggest-a-stat: community proposals → server (POST /skinsync/suggest) ──
+function openSuggest(){ const t=$('#suggestText'); if(t){ t.value=''; $('#suggestCount').textContent='0 / 600'; } $('#suggestModal').style.display='flex'; setTimeout(()=>t&&t.focus(),40); }
+function closeSuggest(){ $('#suggestModal').style.display='none'; }
+$('#suggestText')?.addEventListener('input',e=>{ $('#suggestCount').textContent=`${e.target.value.length} / 600`; });
+$('#suggestCancel')?.addEventListener('click',closeSuggest);
+$('#suggestModal')?.addEventListener('click',e=>{ if(e.target.id==='suggestModal') closeSuggest(); });
+$('#suggestSend')?.addEventListener('click',async()=>{
+  const text=($('#suggestText').value||'').trim();
+  if(text.length<8){ toast('Add a little more detail first'); return; }
+  const btn=$('#suggestSend'); btn.disabled=true; btn.textContent='Sending…';
+  try{
+    await invoke('suggest_stat',{ steamid:(mySteam&&mySteam.steamid)?String(mySteam.steamid):'', name:(mySteam&&mySteam.name)?String(mySteam.name):'', text });
+    toast('💡 Thanks — suggestion sent!');
+    closeSuggest();
+  }catch(e){ toast('Could not send — try again later'); }
+  finally{ btn.disabled=false; btn.textContent='Send suggestion'; }
+});
 
 // ── Click-a-name PROFILE: record + team-comp win-rates + recent matchup history (from server /profile) ──
 function charName(id){ return nameById[id] || ('#'+id); }

@@ -779,6 +779,18 @@ pub fn record_consent(steamid: String, version: String) {
     });
 }
 
+/// Send a community leaderboard-stat suggestion to the service. Blocks briefly so the UI
+/// can confirm delivery (success toast); returns an error the frontend surfaces on failure.
+#[tauri::command]
+pub fn suggest_stat(steamid: String, name: String, text: String) -> Result<(), String> {
+    let text = text.chars().take(600).collect::<String>();
+    ureq::post(&format!("{}/suggest", SKINSYNC))
+        .timeout(std::time::Duration::from_secs(10))
+        .send_json(serde_json::json!({ "steamid": steamid, "name": name, "text": text }))
+        .map(|_| ())
+        .map_err(|e| e.to_string())
+}
+
 // One captured frame row (matches GS_SCHEMA). Frame-keyed in a BTreeMap → sorted + last-write-wins.
 #[derive(Clone)]
 struct GsRow {
