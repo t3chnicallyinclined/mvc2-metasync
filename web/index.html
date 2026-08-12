@@ -161,8 +161,8 @@ try{document.documentElement.setAttribute('data-theme', localStorage.getItem('me
   .dh .meta h3{font-size:19px; font-weight:800;} .dh .meta .cur{font-size:12px; color:var(--dim); margin-top:2px;}
   /* big full-width character preview in the drawer (was a tiny 66px icon) */
   .dpor-wrap{padding:12px 18px 4px;}
-  .dpor-wrap .por-wrap{width:100%; height:240px; aspect-ratio:auto; margin:0;}
-  .dpor-wrap .por-wrap canvas{max-width:96%; max-height:96%;}
+  .dpor-wrap .por-wrap{width:100%; height:240px; aspect-ratio:auto; margin:0; overflow:hidden;}
+  .dpor-wrap .por-wrap canvas{max-width:96%; max-height:96%; transform:scale(1.9); transform-origin:center;}
   .dtools{display:flex; gap:8px; padding:11px 18px; border-bottom:1px solid var(--line-soft);}
   .dtools input{flex:1; font:inherit; color:var(--ink); background:var(--panel-2); border:1px solid var(--line); border-radius:9px; padding:8px 12px;}
   .dtools input::placeholder{color:var(--faint);}
@@ -745,13 +745,14 @@ try{document.documentElement.setAttribute('data-theme', localStorage.getItem('me
   <div class="dpor-wrap"><div class="por-wrap" id="dPor" style="--tint:var(--p1)"><canvas></canvas></div></div>
   <div class="dtools"><input type="text" placeholder="Search author / pack…" id="dSearch"><button class="btn ghost sm" id="dRecolor" title="Recolor this character's palette">🎨 Recolor</button><button class="btn ghost sm" id="dRandom">🎲</button></div>
   <div class="drecolor" id="dRecolorPanel" hidden>
-    <p class="dr-hint">Tap any color to change it — the preview updates live. Then Apply, Save to your Library, or Bake into the game.</p>
+    <p class="dr-hint">Tap any color to change it — the preview updates live.<br>
+      <b style="color:var(--ink)">◉ Apply live</b> = paint it into the game right now (nothing on disk, <b style="color:var(--good,#4ade80)">ranked-safe</b>).<br>
+      <b style="color:var(--ink)">⬇ Bake</b> = permanently write it into your game files (makes an auto-backup first; ⚠ online ranked may checksum files).</p>
     <div class="dr-swatches" id="drSwatches"></div>
     <div class="dr-acts">
       <button class="btn ghost sm" id="drReset">↺ Reset</button>
-      <button class="btn ghost sm" id="drSave">💾 Save</button>
-      <button class="btn ghost sm st-bake" id="drBake">⬇ Bake</button>
-      <button class="btn sm" id="drApply" style="background:var(--gold);border-color:var(--gold);color:var(--gold-ink,#241700)">◉ Apply live</button>
+      <button class="btn ghost sm st-bake" id="drBake" title="Permanently patch this palette into your local game files. An auto .bak backup is made first. ⚠ Online ranked may checksum game files.">⬇ Bake</button>
+      <button class="btn sm" id="drApply" title="Paint this skin into the running game now — cosmetic, nothing written to disk, ranked-safe." style="background:var(--gold);border-color:var(--gold);color:var(--gold-ink,#241700)">◉ Apply live</button>
     </div>
   </div>
   <div class="dgrid" id="dGrid"></div>
@@ -1015,7 +1016,7 @@ async function bakeRecolor(){
 }
 $('#dRecolor')?.addEventListener('click', toggleRecolor);
 $('#drReset')?.addEventListener('click', resetRecolor);
-$('#drSave')?.addEventListener('click', saveRecolorSkin);
+// (Save removed — recolor is Apply-live or Bake only)
 $('#drBake')?.addEventListener('click', bakeRecolor);
 $('#drApply')?.addEventListener('click', applyRecolor);
 
@@ -2038,7 +2039,7 @@ function stApply(){ if(stCid==null||!stPal) return null;
 
 // ── boot ──
 async function boot(){
-  console.log('%c MetaSync v0.1.14 (beta) (beta: auto-records anonymized match state to improve the app. click the version in the header to see the changelog; a live pill shows up-to-date vs update-available; "What\'s New" pops after you update. Earlier: renamed to MetaSync. Fixed the library palette swatches (the strict CSP was blocking inline colors - now allowed via dangerousDisableAssetCspModification style-src). Updates now ship via GitHub Releases with nobd.net as fallback. Includes the same-character mirror fix + the "🪞 mirror · your side" tag when a mirror is detected and split. MIRROR FIX - in a same-character mirror your skin no longer bleeds onto the opponent. paint_live now side-gates mirror characters (each fighter has its own DatPal), and same-variant collisions (byte-identical palette, detected via the cl+0x6 color field / the 6 select-button variants) are withheld from the signature hook. Different variants keep round-start hook painting.) ','background:#00c853;color:#00160a;font-weight:800;padding:3px 8px;border-radius:4px');
+  console.log('%c MetaSync v0.1.15 (beta) (beta: auto-records anonymized match state to improve the app. click the version in the header to see the changelog; a live pill shows up-to-date vs update-available; "What\'s New" pops after you update. Earlier: renamed to MetaSync. Fixed the library palette swatches (the strict CSP was blocking inline colors - now allowed via dangerousDisableAssetCspModification style-src). Updates now ship via GitHub Releases with nobd.net as fallback. Includes the same-character mirror fix + the "🪞 mirror · your side" tag when a mirror is detected and split. MIRROR FIX - in a same-character mirror your skin no longer bleeds onto the opponent. paint_live now side-gates mirror characters (each fighter has its own DatPal), and same-variant collisions (byte-identical palette, detected via the cl+0x6 color field / the 6 select-button variants) are withheld from the signature hook. Different variants keep round-start hook painting.) ','background:#00c853;color:#00160a;font-weight:800;padding:3px 8px;border-radius:4px');
   loadBaked();
   try{ const d=await(await fetch('idle_frames.json')).json(); idleData=d; }catch(e){}
   try{ const chars=await(await fetch('skins/characters.json')).json(); for(const c of chars){ dirById[c.char_id]=c.dir; nameById[c.char_id]=c.name; charByDir[c.dir]=c.char_id; } }catch(e){}
