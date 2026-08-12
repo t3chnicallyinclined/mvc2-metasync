@@ -2561,20 +2561,23 @@ pub fn start_reader() {
             // (allow_find above) and gates the deterministic side lock below.
             if game.is_some() { live_seen = Some(std::time::Instant::now()); }
 
-            // ── SIDE HINT — NON-authoritative (gs-92) ── localPlayerNum @ exe+0xac7230 is flycast's netplay
-            // CONNECTION index (player 0/1 by who connected), NOT the physical P1/P2 side. It leans one way and so
-            // records the OTHER side's games backwards (verified: the user's P2 wins logged as losses; P1 games were
-            // correct only because the app happened to guess P1). So it is a WEAK DISPLAY HINT and does NOT confirm
-            // the side for stats. The AUTHORITATIVE side is the UI's CHARACTER-BASED detection — which team holds
-            // YOUR characters, reliable for P1 AND P2 — or the manual toggle; both arrive as manual_side and set
-            // side_confirmed. on_game_win gates on side_confirmed, so a game NEVER records off this guess.
-            let _ = (&mut side_seen, &mut side_stable);   // retained for signature; debounce retired with the auto-confirm
+            // ── SIDE — AUTHORITATIVE from localPlayerNum (gs-94) ── localPlayerNum @ exe+0xac7230 is the game's OWN
+            // local netplay index (0/1). Validated live: stable 16/16 within a session, while the char-based method
+            // flip-flopped on point-char mis-reads and inverted the stats. It is PER-MACHINE (each app reads its own
+            // user's index) and, because the game state is shared, the two players' values are complementary — so it
+            // cleanly identifies YOUR team. Map it straight to the user's parity and CONFIRM it: 0 => you are the
+            // odd/player-2 slots, 1 => even/player-1 (observed live — flip the two arms if a future build inverts).
+            // An explicit manual override (rare now) still wins; otherwise localPlayerNum decides and games record
+            // immediately (no buffering, no wrong guess). NOTE: unproven case is localPlayerNum=1 (the side-flip) —
+            // the next session on the other side confirms it live, and every recording carries local_pn + the frame
+            // KO so we can validate/correct offline regardless.
+            let _ = (&mut side_seen, &mut side_stable);
             if game.is_some() && exe_base != 0 {
                 if let Some(pn) = unsafe { rpm_u32(h, exe_base + LOCALPLAYER_OFF) } {
-                    let side = match pn { 0 => 2u8, 1 => 1u8, _ => 0u8 };   // best-guess hint only, unconfirmed
+                    let side = match pn { 0 => 2u8, 1 => 1u8, _ => 0u8 };
                     if side != 0 {
                         let mut s = snapshot().lock().unwrap();
-                        if s.manual_side == 0 && !s.side_confirmed { s.local_side = side; }
+                        if s.manual_side == 0 { s.local_side = side; s.side_confirmed = true; }
                     }
                 }
             }

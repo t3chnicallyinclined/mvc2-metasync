@@ -1389,14 +1389,15 @@ function pickMySide(p1,p2){
   // so you are P1 by definition. A real opponent SteamID only exists in an online match, so with no opponent
   // we return P1 and DON'T auto-detect (this is what was wrongly swapping in Training).
   if(!oppIdentity || !oppIdentity.steamid) return 'p1';
-  if(sideManual) return sideManual;                          // ★ manual override (You:P1/P2 toggle) — always wins
-  // ★ CHARACTER-BASED side (PRIMARY, reliable): the side holding YOUR characters is you — works for P1 AND P2,
-  // independent of localPlayerNum (which is the netplay connection index and leans P1, inverting your P2 games).
-  const mine=new Set(Object.keys(activeSkins).map(Number));
-  if(mine.size){ const o1=p1.filter(x=>mine.has(x.cid)).length, o2=p2.filter(x=>mine.has(x.cid)).length; if(o1!==o2) return o1>o2?'p1':'p2'; }
-  // Fallbacks only when we have no character signal: localPlayerNum (weak guess), then last-known.
+  if(sideManual) return sideManual;                          // manual override still wins if ever set
+  // ★ localPlayerNum (detLocalSide) is now the PRIMARY, deterministic side — the game's own local netplay index,
+  // validated live as stable within a session (the char-based guess flip-flopped on mis-reads and inverted stats).
+  // 1 = you're the even/p1 team, 2 = you're the odd/p2 team.
   if(detLocalSide===1) return 'p1';
   if(detLocalSide===2) return 'p2';
+  // FALLBACK only if localPlayerNum is unreadable: which team holds YOUR characters.
+  const mine=new Set(Object.keys(activeSkins).map(Number));
+  if(mine.size){ const o1=p1.filter(x=>mine.has(x.cid)).length, o2=p2.filter(x=>mine.has(x.cid)).length; if(o1!==o2) return o1>o2?'p1':'p2'; }
   return mySide;
 }
 let inMatch=null, gameScreen=null, matchStateRaw=null;   // null = hook not feeding real state
@@ -1447,14 +1448,15 @@ async function stateTick(){
   const cnt=p1.length+p2.length, curScreen=(st.has_game?st.screen:st.state);
   if(cnt>0){
     const side=pickMySide(p1,p2); mySide=side;
-    // ★ Push the CHARACTER-BASED side to the backend so RECORDING attributes to the right side (not the unreliable
-    // localPlayerNum that inverts your P2 games). Fires once per set when the signal is confident; a manual swap
-    // (userSetSide) always wins and stops this.
-    if(!userSetSide && oppIdentity && oppIdentity.steamid && invoke){
-      const mineC=new Set(Object.keys(activeSkins).map(Number));
-      if(mineC.size){ const c1=p1.filter(x=>mineC.has(x.cid)).length, c2=p2.filter(x=>mineC.has(x.cid)).length;
-        if(c1!==c2){ const cs=c1>c2?1:2; if(st.manual_side!==cs) invoke('set_manual_side',{side:cs}).catch(()=>{}); } }
-    }
+    // gs-94: side is now AUTHORITATIVE from the game's own localPlayerNum (the backend sets local_side +
+    // side_confirmed from it). The old CHARACTER-BASED push is DISABLED — it clobbered localPlayerNum with a
+    // mis-read-prone guess (manual_side wins over local_side), which is what inverted the records. Left here,
+    // commented, as the documented fallback path.
+    // if(!userSetSide && oppIdentity && oppIdentity.steamid && invoke){
+    //   const mineC=new Set(Object.keys(activeSkins).map(Number));
+    //   if(mineC.size){ const c1=p1.filter(x=>mineC.has(x.cid)).length, c2=p2.filter(x=>mineC.has(x.cid)).length;
+    //     if(c1!==c2){ const cs=c1>c2?1:2; if(st.manual_side!==cs) invoke('set_manual_side',{side:cs}).catch(()=>{}); } }
+    // }
     // Side shows only once actually resolved (localPlayerNum); never assert P1 by default.
     $('#sideTxt').textContent = sideConfirmed ? side.toUpperCase() : '—';
     $('#sideSwap').classList.toggle('p2', sideConfirmed && side==='p2');
@@ -1521,6 +1523,9 @@ let _updHideT=null;
 // so it can be updated without shipping a new build. This bundled copy is the offline FALLBACK — keep it
 // roughly current, but the remote is authoritative.
 let CHANGELOG = [
+  { v:'0.1.29', t:'Your side now comes from the game itself', items:[
+    'Win/loss now attributes to you using the game’s own player index instead of guessing from your characters — the guess flip-flopped on a mis-read and inverted records. This should be the fix for wrong wins/losses.',
+  ]},
   { v:'0.1.28', t:'Verifying win/loss from the game itself', items:[
     'The app now records the game’s own player index and your controller input with each match, so results can be verified directly from the game data rather than a live guess. Accurate records are coming next.',
   ]},
@@ -2106,7 +2111,7 @@ function stApply(){ if(stCid==null||!stPal) return null;
 
 // ── boot ──
 async function boot(){
-  console.log('%c MetaSync v0.1.28 (beta) (beta: auto-records anonymized match state to improve the app. click the version in the header to see the changelog; a live pill shows up-to-date vs update-available; "What\'s New" pops after you update. Earlier: renamed to MetaSync. Fixed the library palette swatches (the strict CSP was blocking inline colors - now allowed via dangerousDisableAssetCspModification style-src). Updates now ship via GitHub Releases with nobd.net as fallback. Includes the same-character mirror fix + the "🪞 mirror · your side" tag when a mirror is detected and split. MIRROR FIX - in a same-character mirror your skin no longer bleeds onto the opponent. paint_live now side-gates mirror characters (each fighter has its own DatPal), and same-variant collisions (byte-identical palette, detected via the cl+0x6 color field / the 6 select-button variants) are withheld from the signature hook. Different variants keep round-start hook painting.) ','background:#00c853;color:#00160a;font-weight:800;padding:3px 8px;border-radius:4px');
+  console.log('%c MetaSync v0.1.29 (beta) (beta: auto-records anonymized match state to improve the app. click the version in the header to see the changelog; a live pill shows up-to-date vs update-available; "What\'s New" pops after you update. Earlier: renamed to MetaSync. Fixed the library palette swatches (the strict CSP was blocking inline colors - now allowed via dangerousDisableAssetCspModification style-src). Updates now ship via GitHub Releases with nobd.net as fallback. Includes the same-character mirror fix + the "🪞 mirror · your side" tag when a mirror is detected and split. MIRROR FIX - in a same-character mirror your skin no longer bleeds onto the opponent. paint_live now side-gates mirror characters (each fighter has its own DatPal), and same-variant collisions (byte-identical palette, detected via the cl+0x6 color field / the 6 select-button variants) are withheld from the signature hook. Different variants keep round-start hook painting.) ','background:#00c853;color:#00160a;font-weight:800;padding:3px 8px;border-radius:4px');
   loadBaked();
   try{ const d=await(await fetch('idle_frames.json')).json(); idleData=d; }catch(e){}
   try{ const chars=await(await fetch('skins/characters.json')).json(); for(const c of chars){ dirById[c.char_id]=c.dir; nameById[c.char_id]=c.name; charByDir[c.dir]=c.char_id; } }catch(e){}
