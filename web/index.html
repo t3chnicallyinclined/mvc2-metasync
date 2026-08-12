@@ -1310,7 +1310,7 @@ async function stateTick(){
   // reader sig-scan roster — present at match START before the fighter array locks; drives array-free capture
   readerRoster = [...(st.p1||[]),...(st.p2||[])].map(x=>x.cid).filter(c=>c!=null);
   paintSlots = st.paint_slots||[];                           // exact render-palette pointers (non-liveness-gated) for the paint path
-  // Ground truth from the hook (real SH4 structs) wins over the RPM sig heuristic when present.
+  // Ground truth from the hook (real game structs) wins over the RPM sig heuristic when present.
   detSlots = st.has_game ? (st.slots||[]) : [];
   maybeReemitForCollisions();                                // re-emit skins.dat if the mirror-collision set changed (hook stops/starts on the right chars)
   detLocalSide = st.local_side||0;                           // 0=unknown, 1=P1, 2=P2 (input-correlation detector)

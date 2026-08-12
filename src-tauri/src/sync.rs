@@ -497,7 +497,7 @@ struct Snapshot {
     state: String,                       // game_off | menu | select | match
     roster: Vec<Found>,                  // addr-sorted; [0..3]=P1, [3..6]=P2
     opponent: Option<(String, String)>,  // (steamid, name) via NaCherO co-location
-    game: Option<GameSt>,                // real SH4 game state (RPM-read reversed player array)
+    game: Option<GameSt>,                // live game state (RPM-read player array)
     score: (u32, u32),                   // (P1, P2) games won this set, computed from KO events
     local_side: u8,                      // auto-detected local side: 0=unknown, 1=P1, 2=P2 (input correlation)
     manual_side: u8,                     // user override: 0=auto (use local_side), 1=P1, 2=P2. Wins over auto for
@@ -521,7 +521,7 @@ fn snapshot() -> &'static Mutex<Snapshot> {
 }
 
 // Per-fighter live state (the 6 fighter slots: char_id, palette colour index, health, DatPal, and the live
-// 16-colour palette) read DIRECTLY from the reversed SH4 player array via read-only RPM — ground truth from
+// 16-colour palette) read DIRECTLY from the game's player array via read-only RPM — ground truth from
 // the game's own memory, no hook. See read_gamestate_rpm.
 #[derive(Clone)]
 struct GSlot { player: u8, pos: u8, char_id: u8, color: u8, health: u16, combo: u16, datpal: u32, pal: [u8; 32], addr: usize }
@@ -1831,8 +1831,8 @@ fn load_anchors() -> (u32, usize, Option<(usize, usize)>, Option<(usize, usize)>
     } else { (0, 0, None, None) }
 }
 
-// ── DETERMINISTIC SIDE via Input_DEC (per-player input in DC RAM) ───────────────────────────────────
-// From marvelous2 (MvC2 SH4 disasm) + maplecast shadow_exec: the game's per-player input is Input_DEC in
+// ── DETERMINISTIC SIDE via Input_DEC (per-player input register) ────────────────────────────────────
+// The game's per-player input register (Input_DEC), offset validated live: the input is Input_DEC in
 // emulated DC RAM — P1 @ DC 0x8C2681DC, P2 @ +0x14 (stride 0x14): +0 cur / +2 prev / +4 (cur&~prev) /
 // +6 (prev&~cur), CPS2-decoded. DC RAM is a runtime MEM_PRIVATE region (earlier scans only did MEM_IMAGE →
 // missed it). We scan committed memory for the invariant-shaped pairs, then over a few seconds of your
