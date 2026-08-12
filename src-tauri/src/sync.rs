@@ -1226,7 +1226,10 @@ unsafe fn anchor_array(h: HANDLE) -> Option<usize> {
     if fb == 0 { return None; }
     let cand = fb + ARRAY_OFF;
     if !array_valid(h, cand) { return None; }
-    let live = (0..6).any(|i| { let hp = rpm_u32(h, cand + i * STRIDE + OFF_HEALTH).unwrap_or(0); (1..=144).contains(&hp) });
+    // NEGATIVE GATE (live-capture-confirmed): reject a stale/half-written savestate copy at the fixed anchor
+    // (any health > 144) so we fall back to find_array's strong locator instead of trusting a garbage copy.
+    if (0..6).any(|i| (rpm_u32(h, cand + i * STRIDE + OFF_HEALTH).unwrap_or(0) & 0xffff) > HP_FULL as u32) { return None; }
+    let live = (0..6).any(|i| { let hp = rpm_u32(h, cand + i * STRIDE + OFF_HEALTH).unwrap_or(0) & 0xffff; (1..=144).contains(&hp) });
     if live { Some(cand) } else { None }
 }
 // The roster straight off the anchored array — NO scan. Ordered P1(slots 0,2,4) then P2(slots 1,3,5) so
@@ -1291,9 +1294,13 @@ unsafe fn find_array(h: HANDLE) -> Option<usize> {
         .any(|i| { let hp = rpm_u32(h, c + i * STRIDE + OFF_HEALTH).unwrap_or(0); (1..=144).contains(&hp) });
     for &c in clusters.iter() {
         if (0..6).filter(|&i| has_cluster(c + i * STRIDE)).count() < 5 { continue; }
+        // ★ NEGATIVE GATE (live-capture-confirmed): reject any candidate with an impossible health (>144) —
+        // that's a stale/half-written savestate COPY. The live capture showed copies reading hp=11200/62807
+        // while the live mem_b array is all <=144; the old `<=0x200` check let hp=235 garbage through.
+        if (0..6).any(|i| (rpm_u32(h, c + i * STRIDE + OFF_HEALTH).unwrap_or(0) & 0xffff) > HP_FULL as u32) { continue; }
         let score = (0..6).filter(|&i| {
             let cl = c + i * STRIDE;
-            is_wb(rpm_u32(h, cl + OFF_DATPAL).unwrap_or(0)) && rpm_u32(h, cl + OFF_HEALTH).unwrap_or(0xffff) <= 0x200
+            is_wb(rpm_u32(h, cl + OFF_DATPAL).unwrap_or(0)) && (rpm_u32(h, cl + OFF_HEALTH).unwrap_or(0xffff) & 0xffff) <= HP_FULL as u32
         }).count();
         // ★ require BOTH teams to have a LIVING fighter — a frozen post-KO copy reads one whole side at 0
         // (the "P2 reads dead → phantom wins / broken side" bug). Rejecting one-sided buffers at the source is
