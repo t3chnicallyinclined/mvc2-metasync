@@ -45,7 +45,7 @@
   },
   "plugins": {
     "updater": {
-      "endpoints": ["https://github.com/t3chnicallyinclined/metasync/releases/latest/download/latest.json", "https://nobd.net/skinsync/update/latest.json"],
+      "endpoints": ["https://github.com/t3chnicallyinclined/mvc2-metasync/releases/latest/download/latest.json", "https://nobd.net/skinsync/update/latest.json"],
       "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEU5OEVFNTlGRDQzMEU2NjgKUldSbzVqRFVuK1dPNlpUdkpva2FsbHRnd3pkQlNRK1ZkWDdNUk5aQjdpSTlyclFoUFhINDhGTDEK",
       "windows": { "installMode": "passive" }
     }
