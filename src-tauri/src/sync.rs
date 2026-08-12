@@ -924,10 +924,14 @@ unsafe fn read_gs_row(h: HANDLE, base: usize, frame: u32) -> Option<GsRow> {
     }
     let hp = |i: usize| -> u16 { let v = le32(&s[i], OFF_HEALTH) & 0xffff; if v > 999 { 999 } else { v as u16 } };
     let rhp = |i: usize| -> u16 { let v = u16le(&s[i], OFF_REDHP); if v > 999 { 999 } else { v } };
+    let hp_arr = [hp(0), hp(1), hp(2), hp(3), hp(4), hp(5)];
+    // STRONG negative gate (matches read_fighters): any real fighter health > 144 means this is a
+    // stale/half-written savestate COPY — drop the frame so garbage (hp=235) never enters a recording.
+    if hp_arr.iter().any(|&v| v > HP_FULL) { return None; }
     Some(GsRow {
         frame,
         p1_in: u16le(&s[0], OFF_INPUT), p2_in: u16le(&s[1], OFF_INPUT),
-        hp: [hp(0), hp(1), hp(2), hp(3), hp(4), hp(5)],
+        hp: hp_arr,
         px: [lef32(&s[0], OFF_POS_X), lef32(&s[1], OFF_POS_X), lef32(&s[2], OFF_POS_X), lef32(&s[3], OFF_POS_X), lef32(&s[4], OFF_POS_X), lef32(&s[5], OFF_POS_X)],
         py: [lef32(&s[0], OFF_POS_Y), lef32(&s[1], OFF_POS_Y), lef32(&s[2], OFF_POS_Y), lef32(&s[3], OFF_POS_Y), lef32(&s[4], OFF_POS_Y), lef32(&s[5], OFF_POS_Y)],
         m1: rpm_u8(h, base + MET_BARS).unwrap_or(0),
@@ -992,6 +996,8 @@ fn start_gamestate_capture() {
             let mut synth = 0u32;
             let mut wipe_since: Option<std::time::Instant> = None;
             let mut last_new = std::time::Instant::now();
+            let mut prev_sig: Option<([u16; 6], [u32; 6])> = None; // freeze detector (state byte-identical → frozen)
+            let mut same_ct = 0u32;
             loop {
                 if !SHARE_GAMEPLAY.load(SeqCst) { break; }
                 let frame = match fc { Some(a) => unsafe { rpm_u32(h, a) }.unwrap_or(0), None => { synth += 1; synth } };
@@ -1008,6 +1014,12 @@ fn start_gamestate_capture() {
                         }
                         wipe_since = if gs_team_wiped(&row.hp) { wipe_since.or_else(|| Some(std::time::Instant::now())) } else { None };
                         last = frame; last_new = std::time::Instant::now();
+                        // FREEZE GUARD: a synthetic frame counter keeps incrementing even on a stuck/stale base;
+                        // if the actual state is byte-identical for many frames, the base is frozen — stop the
+                        // tape instead of filling it with a stuck copy (the 20k-identical-garbage-frame artifact).
+                        let sig = (row.hp, [row.px[0].to_bits(), row.px[1].to_bits(), row.px[2].to_bits(), row.px[3].to_bits(), row.px[4].to_bits(), row.px[5].to_bits()]);
+                        if Some(&sig) == prev_sig.as_ref() { same_ct += 1; } else { same_ct = 0; prev_sig = Some(sig); }
+                        if same_ct > 240 { break; }   // ~0.7s of zero change → frozen base
                     }
                 }
                 if wipe_since.map_or(false, |t| t.elapsed().as_millis() > 600) { break; }     // a team wiped → game over
@@ -1214,7 +1226,10 @@ unsafe fn anchor_array(h: HANDLE) -> Option<usize> {
     if fb == 0 { return None; }
     let cand = fb + ARRAY_OFF;
     if !array_valid(h, cand) { return None; }
-    let live = (0..6).any(|i| { let hp = rpm_u32(h, cand + i * STRIDE + OFF_HEALTH).unwrap_or(0); (1..=144).contains(&hp) });
+    // NEGATIVE GATE (live-capture-confirmed): reject a stale/half-written savestate copy at the fixed anchor
+    // (any health > 144) so we fall back to find_array's strong locator instead of trusting a garbage copy.
+    if (0..6).any(|i| (rpm_u32(h, cand + i * STRIDE + OFF_HEALTH).unwrap_or(0) & 0xffff) > HP_FULL as u32) { return None; }
+    let live = (0..6).any(|i| { let hp = rpm_u32(h, cand + i * STRIDE + OFF_HEALTH).unwrap_or(0) & 0xffff; (1..=144).contains(&hp) });
     if live { Some(cand) } else { None }
 }
 // The roster straight off the anchored array — NO scan. Ordered P1(slots 0,2,4) then P2(slots 1,3,5) so
@@ -1279,9 +1294,13 @@ unsafe fn find_array(h: HANDLE) -> Option<usize> {
         .any(|i| { let hp = rpm_u32(h, c + i * STRIDE + OFF_HEALTH).unwrap_or(0); (1..=144).contains(&hp) });
     for &c in clusters.iter() {
         if (0..6).filter(|&i| has_cluster(c + i * STRIDE)).count() < 5 { continue; }
+        // ★ NEGATIVE GATE (live-capture-confirmed): reject any candidate with an impossible health (>144) —
+        // that's a stale/half-written savestate COPY. The live capture showed copies reading hp=11200/62807
+        // while the live mem_b array is all <=144; the old `<=0x200` check let hp=235 garbage through.
+        if (0..6).any(|i| (rpm_u32(h, c + i * STRIDE + OFF_HEALTH).unwrap_or(0) & 0xffff) > HP_FULL as u32) { continue; }
         let score = (0..6).filter(|&i| {
             let cl = c + i * STRIDE;
-            is_wb(rpm_u32(h, cl + OFF_DATPAL).unwrap_or(0)) && rpm_u32(h, cl + OFF_HEALTH).unwrap_or(0xffff) <= 0x200
+            is_wb(rpm_u32(h, cl + OFF_DATPAL).unwrap_or(0)) && (rpm_u32(h, cl + OFF_HEALTH).unwrap_or(0xffff) & 0xffff) <= HP_FULL as u32
         }).count();
         // ★ require BOTH teams to have a LIVING fighter — a frozen post-KO copy reads one whole side at 0
         // (the "P2 reads dead → phantom wins / broken side" bug). Rejecting one-sided buffers at the source is
@@ -1317,9 +1336,12 @@ unsafe fn read_fighters(h: HANDLE, base: usize) -> Option<GameSt> {
         let cl = base + i * STRIDE;
         let cid = rpm_u8(h, cl + OFF_CHARID).unwrap_or(255);
         if cid > MAX_CID { continue; } // not a live fighter slot
-        let hp_raw = rpm_u32(h, cl + OFF_HEALTH).unwrap_or(0);
-        let health = if hp_raw <= 0x200 { hp_raw as u16 } else { 0 };
-        if health > 0 && health <= HP_FULL { any_live = true; }
+        let health = (rpm_u32(h, cl + OFF_HEALTH).unwrap_or(0) & 0xffff) as u16;
+        // STRONG negative gate (naomi-re-expert): a real fighter's health is 0..=144. A value above that is a
+        // stale/half-written savestate COPY (the hp=235 that produced frozen garbage tapes + inverted wins) —
+        // reject the whole base so the caller re-locates onto the live mem_b array instead of a dead copy.
+        if health > HP_FULL { return None; }
+        if health > 0 { any_live = true; }
         let dp = rpm_u32(h, cl + OFF_DATPAL).unwrap_or(0);
         let mut pal = [0u8; 32];  // the fighter's live 16-colour palette (ARGB4444) at the DatPal target
         if is_wb(dp) { if let Some(v) = read_at(h, dp as usize, 32) { let n = v.len().min(32); pal[..n].copy_from_slice(&v[..n]); } }
