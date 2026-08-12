@@ -410,7 +410,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![apply_skin, clear_skin, learn_character, capture_live, apply_sigs, apply_multi, reset_all, reset_hook_regions, set_effect, set_effect_target, detect_rom, set_rom_path, get_rom_path,
             check_update, install_update,
             sync::sync_self, sync::detect_opponent, sync::sync_publish, sync::sync_unpublish, sync::sync_fetch_peers,
-            sync::detect_state, sync::sync_heartbeat, sync::sync_presence, sync::paint_palettes, sync::paint_live, sync::paint_signatures, sync::inject_hook, sync::get_record, sync::leaderboard, sync::profile, sync::matchup, sync::app_version, sync::set_manual_side, sync::capture_start, sync::capture_stop, sync::capture_status,
+            sync::detect_state, sync::sync_heartbeat, sync::sync_presence, sync::paint_palettes, sync::paint_live, sync::paint_signatures, sync::inject_hook, sync::get_record, sync::leaderboard, sync::profile, sync::session_stats, sync::matchup, sync::app_version, sync::set_manual_side, sync::capture_start, sync::capture_stop, sync::capture_status,
             sync::get_share_gameplay, sync::set_share_gameplay, sync::record_consent, sync::suggest_stat, sync::ensure_registered, sync::fetch_changelog,
             rom::rom_size, rom::rom_read, rom::rom_write, rom::rom_backup, rom::rom_prepare, rom::bake_palette, rom::extract_char_dat])
         .run(tauri::generate_context!())

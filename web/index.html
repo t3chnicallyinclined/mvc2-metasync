@@ -787,7 +787,7 @@ function recordBaked(cid, cols){ bakedSkins[cid]={sig:bakedSigHex(cols)}; try{ l
 function stockPalInts(cid){ const b=idleData[cid]?.bank0; if(!b) return null; return b.map(c=>((c[0]<<16)|(c[1]<<8)|c[2])>>>0); }
 let oppTeam=[];                  // [{cid, name, palette, author, skinName}]
 let mySteam={}, syncOn=false, syncTimer=null, oppMeta=null;
-let matchState='detecting', prevMode='', mySide='p1', stateTimer=null, detLocalSide=0, inSessionNow=false, sideManual=null, sideConfirmed=false, userSetSide=false;
+let matchState='detecting', prevMode='', mySide='p1', stateTimer=null, detLocalSide=0, inSessionNow=false, sideManual=null, sideConfirmed=false, userSetSide=false, curSessionId='';
 let detTeams={p1:[],p2:[]};       // last detect_state rosters, each [{cid,name,addr}]
 let detSlots=[];                  // last detect_state per-fighter slots [{player,cid,datpal,...}] (real array)
 let perSideCids=new Set();        // cids Live Paint is confidently painting per-side THIS tick — the hook skips exactly these
@@ -1493,7 +1493,13 @@ async function stateTick(){
   // set score (computed from KO events, keyed to the sticky opponent) → "set You – Opp"
   const sc=st.score||{p1:0,p2:0}, scEl=$('#scoreChip');
   if(scEl){ if(sc.p1||sc.p2){ const me=mySide==='p2'?sc.p2:sc.p1, them=mySide==='p2'?sc.p1:sc.p2;
-      scEl.style.display=''; scEl.innerHTML=`set <b>${me}</b> – ${them}`; } else scEl.style.display='none'; }
+      // session chip: game X/10 + a clickable short id → opens the set's full breakdown (per-session stats)
+      const sid=st.session_id||''; const mi=Math.min((st.match_index||0)+1,10);
+      curSessionId = sid;
+      const sess = sid ? ` · <span style="color:var(--dim)">game ${mi}/10</span> · <a href="#" id="sessLink" style="color:var(--gold);text-decoration:none" title="View this set's full breakdown">#${sid.slice(-4)}</a>` : '';
+      scEl.style.display=''; scEl.innerHTML=`set <b>${me}</b> – ${them}${sess}`;
+      const sl=$('#sessLink'); if(sl) sl.onclick=(e)=>{ e.preventDefault(); openSession(sid); };
+    } else scEl.style.display='none'; }
 }
 // Manual side override — the escape hatch when auto-detect picks the wrong side (your team shows the opponent's
 // characters). Flips your side, sticks for the set (cleared when the opponent changes), pushes the corrected side
@@ -1523,6 +1529,9 @@ let _updHideT=null;
 // so it can be updated without shipping a new build. This bundled copy is the offline FALLBACK — keep it
 // roughly current, but the remote is authoritative.
 let CHANGELOG = [
+  { v:'0.1.31', t:'Ranked-set tracking', items:[
+    'Your set score now shows which game you’re on (e.g. game 3/10) and a clickable set tag — click it to see the whole set’s breakdown: every game, both players’ records, and ELO. A set is capped at 10 games, and if you restart mid-set the app picks it back up.',
+  ]},
   { v:'0.1.30', t:'No more phantom Ryu on your active character', items:[
     'Fixed your active/point character sometimes showing as Ryu. The game briefly blanks the point fighter’s ID; the app now reads the true character from its loaded data instead, so the right character always shows (mirrors included).',
   ]},
@@ -2114,7 +2123,7 @@ function stApply(){ if(stCid==null||!stPal) return null;
 
 // ── boot ──
 async function boot(){
-  console.log('%c MetaSync v0.1.30 (beta) (beta: auto-records anonymized match state to improve the app. click the version in the header to see the changelog; a live pill shows up-to-date vs update-available; "What\'s New" pops after you update. Earlier: renamed to MetaSync. Fixed the library palette swatches (the strict CSP was blocking inline colors - now allowed via dangerousDisableAssetCspModification style-src). Updates now ship via GitHub Releases with nobd.net as fallback. Includes the same-character mirror fix + the "🪞 mirror · your side" tag when a mirror is detected and split. MIRROR FIX - in a same-character mirror your skin no longer bleeds onto the opponent. paint_live now side-gates mirror characters (each fighter has its own DatPal), and same-variant collisions (byte-identical palette, detected via the cl+0x6 color field / the 6 select-button variants) are withheld from the signature hook. Different variants keep round-start hook painting.) ','background:#00c853;color:#00160a;font-weight:800;padding:3px 8px;border-radius:4px');
+  console.log('%c MetaSync v0.1.31 (beta) (beta: auto-records anonymized match state to improve the app. click the version in the header to see the changelog; a live pill shows up-to-date vs update-available; "What\'s New" pops after you update. Earlier: renamed to MetaSync. Fixed the library palette swatches (the strict CSP was blocking inline colors - now allowed via dangerousDisableAssetCspModification style-src). Updates now ship via GitHub Releases with nobd.net as fallback. Includes the same-character mirror fix + the "🪞 mirror · your side" tag when a mirror is detected and split. MIRROR FIX - in a same-character mirror your skin no longer bleeds onto the opponent. paint_live now side-gates mirror characters (each fighter has its own DatPal), and same-variant collisions (byte-identical palette, detected via the cl+0x6 color field / the 6 select-button variants) are withheld from the signature hook. Different variants keep round-start hook painting.) ','background:#00c853;color:#00160a;font-weight:800;padding:3px 8px;border-radius:4px');
   loadBaked();
   try{ const d=await(await fetch('idle_frames.json')).json(); idleData=d; }catch(e){}
   try{ const chars=await(await fetch('skins/characters.json')).json(); for(const c of chars){ dirById[c.char_id]=c.dir; nameById[c.char_id]=c.name; charByDir[c.dir]=c.char_id; } }catch(e){}
@@ -2249,6 +2258,22 @@ async function openProfile(sid,nm){
       <h4>Recent matches</h4>
       <table class="pf-tbl"><tr><th></th><th>Opp</th><th>Your team</th><th>Their team</th><th>ELO</th><th></th></tr>${recent||'<tr><td colspan="6">—</td></tr>'}</table>`;
   }catch(e){ body.innerHTML='<div class="lb-empty">PROFILE UNAVAILABLE</div>'; }
+}
+// Per-session (ranked set) breakdown — reuses the profile modal. Opened by the session chip next to the set score.
+async function openSession(sid){
+  const modal=$('#pfModal'), body=$('#pfBody'); if(!modal||!invoke||!sid) return;
+  modal.classList.add('show'); body.innerHTML='<div class="lb-empty">LOADING…</div>';
+  try{
+    const s=await invoke('session_stats',{id:String(sid)});
+    if(!s||!s.ok||!(s.games||[]).length){ body.innerHTML='<h3>Ranked set</h3><div class="lb-empty">No games recorded for this set yet.</div>'; return; }
+    const eloc=e=>`<td style="font-weight:700;color:${(e||0)>=0?'#4ade80':'#f87171'};font-variant-numeric:tabular-nums">${(e||0)>0?'+':''}${e||0}</td>`;
+    const players=(s.players||[]).map(p=>`<tr class="lb-click" data-sid="${esc(p.steamid)}" data-nm="${esc(p.name||'Player')}"><td>${esc(p.name||'Player')}</td><td>${p.wins}–${p.losses}</td>${eloc(p.elo)}</tr>`).join('');
+    const games=(s.games||[]).map(m=>`<tr><td>${(m.match_index||0)+1}</td><td>${esc(m.wname||'?')}</td><td>${esc(m.lname||'?')}</td><td>${esc(teamStr(m.wteam))}</td><td>${m.combo?('🎯'+m.combo):''}${m.ocv?' 💥':''}${m.perfect?' ✨':''}${m.comeback?' 🔄':''}${m.verified?' ✓':''}</td></tr>`).join('');
+    body.innerHTML=`<h3>Ranked set <span style="text-transform:none;letter-spacing:0;color:#8b90a5;font-weight:400">— ${s.count} game${s.count===1?'':'s'} · #${String(sid).slice(-4)}</span></h3>
+      <h4>Players <span style="text-transform:none;letter-spacing:0;color:#8b90a5;font-weight:400">— click to open a profile</span></h4>
+      <table class="pf-tbl"><tr><th>Player</th><th>Record</th><th>ELO</th></tr>${players}</table>
+      <h4>Games</h4><table class="pf-tbl"><tr><th>#</th><th>Winner</th><th>Loser</th><th>Winning team</th><th></th></tr>${games}</table>`;
+  }catch(e){ body.innerHTML='<div class="lb-empty">SESSION UNAVAILABLE</div>'; }
 }
 $('#lbList')?.addEventListener('click',e=>{ const n=e.target.closest('.lb-click'); if(n) openProfile(n.dataset.sid,n.dataset.nm); });
 // inside an open profile, clicking an opponent (head-to-head or recent) opens THEIR profile

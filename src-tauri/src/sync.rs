@@ -594,12 +594,14 @@ struct Snapshot {
     ram_base: usize,                     // ★ the reader's CURRENTLY-LOCATED fighter array (anchor OR find_array). The
                                          //   array is NOT always at the anchor — it relocates per match — so paint_live
                                          //   uses THIS (the real located base) to resolve live DatPals, not just the anchor.
+    session_id: String,                  // current ranked set's id ("" = none) — surfaced to the UI for the session chip
+    match_index: u32,                    // games committed this set (0..SESSION_CAP)
 }
 // The side used for team-labeling + stats: the manual override wins; else the auto-detector.
 fn effective_side(s: &Snapshot) -> u8 { if s.manual_side != 0 { s.manual_side } else { s.local_side } }
 fn snapshot() -> &'static Mutex<Snapshot> {
     static S: OnceLock<Mutex<Snapshot>> = OnceLock::new();
-    S.get_or_init(|| Mutex::new(Snapshot { state: "game_off".into(), roster: Vec::new(), opponent: None, game: None, score: (0, 0), local_side: 0, manual_side: 0, side_confirmed: false, in_session: false, paint_slots: Vec::new(), ram_base: 0 }))
+    S.get_or_init(|| Mutex::new(Snapshot { state: "game_off".into(), roster: Vec::new(), opponent: None, game: None, score: (0, 0), local_side: 0, manual_side: 0, side_confirmed: false, in_session: false, paint_slots: Vec::new(), ram_base: 0, session_id: String::new(), match_index: 0 }))
 }
 
 // Per-fighter live state (the 6 fighter slots: char_id, palette colour index, health, DatPal, and the live
@@ -1118,7 +1120,7 @@ fn b64_encode(data: &[u8]) -> String {
 // <match_key>_<reporter>.json.gz + a .meta envelope. The uploader drains the spool between matches, so no
 // large upload ever runs during a fight. The .gz gunzips to this exact record (server writes it verbatim).
 fn spool_gamestate(match_key: &str, reporter: &str, side: u8, p1_team: &[u8], p2_team: &[u8],
-                   winner: &str, loser: &str, gs: &GsSnapshot) {
+                   winner: &str, loser: &str, gs: &GsSnapshot, session_id: &str, match_index: u32) {
     let dir = gs_cache_dir();
     // soft backpressure: if uploads are failing and the spool is huge, stop piling on.
     let pending = std::fs::read_dir(&dir)
@@ -1138,6 +1140,7 @@ fn spool_gamestate(match_key: &str, reporter: &str, side: u8, p1_team: &[u8], p2
     let record = serde_json::json!({
         "id": id, "match_key": match_key, "reporter": reporter, "side": side,
         "local_pn": gs.local_pn,   // raw localPlayerNum (0/1/255=unknown) — candidate side signal for offline validation
+        "session_id": session_id, "match_index": match_index,   // gs-96: the ranked set this game belongs to
         "p1_team": p1_team, "p2_team": p2_team, "winner": winner, "loser": loser,
         "assist": gs.assist, "assist_p1": assist_p1, "assist_p2": assist_p2,
         "ts": ts, "schema": GS_SCHEMA,
@@ -1155,6 +1158,7 @@ fn spool_gamestate(match_key: &str, reporter: &str, side: u8, p1_team: &[u8], p2
     // envelope the uploader POSTs (frames_gz gets base64'd from the .gz at upload time) + spool bookkeeping.
     let meta = serde_json::json!({
         "match_key": match_key, "reporter": reporter, "side": side,
+        "session_id": session_id, "match_index": match_index,
         "p1_team": p1_team, "p2_team": p2_team, "winner": winner, "loser": loser,
         "assist_p1": assist_p1, "assist_p2": assist_p2,
         "ts": ts, "schema": GS_SCHEMA,
@@ -1560,11 +1564,35 @@ struct ScoreState { set_opp: Option<String>, p1: u32, p2: u32, was_in: bool, la1
     // CONFIRMED-KO debounce: pend_w = the side that looks KO-winner right now (a team FULLY dead), pend_n =
     // consecutive cycles it has held. We only record once pend_n reaches 2 — that rides out the speculative
     // rollback frame the app used to judge from (logger-proven: the array shows the RIGHT winner once settled).
-    pend_w: u8, pend_n: u32 }
+    pend_w: u8, pend_n: u32,
+    // ── SESSION (ranked set) ── a unique id per set (vs one opponent), HARD-capped at SESSION_CAP games (the 11th
+    // opens a fresh session), persisted to disk so an app restart mid-set RESUMES it, and stamped onto every result
+    // + recording so each match is tied to its set → per-session stats. match_index = games committed this session.
+    session_id: Option<String>, match_index: u32, session_started_ms: u64 }
+
+const SESSION_CAP: u32 = 10;                    // a ranked set is at most 10 games; the 11th opens a new session
+const SESSION_FILE: &str = "C:\\g\\mvc_session.txt";
+
+// Unique per set: reporter + opponent + start-ms (+ a cheap nonce so two sets vs the same opp in the same ms differ).
+fn new_session_id(my_id: u64, opp_id: &str) -> String {
+    let ms = gs_now_ms();
+    let nonce = ms.rotate_left(17) ^ (opp_id.len() as u64).wrapping_mul(0x9e37_79b9_7f4a_7c15);
+    format!("s_{}_{}_{:x}", my_id, opp_id, ms ^ (nonce & 0xffff))
+}
+fn save_session(st: &ScoreState) {
+    let (Some(sid), Some(opp)) = (st.session_id.as_deref(), st.set_opp.as_deref()) else { return };
+    let body = serde_json::json!({ "opp": opp, "session_id": sid, "p1": st.p1, "p2": st.p2,
+        "match_index": st.match_index, "started_ms": st.session_started_ms });
+    let _ = std::fs::write(SESSION_FILE, serde_json::to_vec(&body).unwrap_or_default());
+}
+fn load_session() -> Option<serde_json::Value> {
+    std::fs::read_to_string(SESSION_FILE).ok().and_then(|s| serde_json::from_str(&s).ok())
+}
 
 // A finished game held until the side is confirmed. winner = the side (1/2) that won; my_side is resolved at commit.
 #[derive(Clone)]
-struct PendingGame { winner: u8, opp: (String, String), ocv: bool, perfect: bool, comeback: bool, rich: GameRich }
+struct PendingGame { winner: u8, opp: (String, String), ocv: bool, perfect: bool, comeback: bool, rich: GameRich,
+    session_id: String, match_index: u32 }
 
 // Rich per-game payload for logging (both teams + combat stats). Winner/loser & my/opp are resolved downstream.
 #[derive(Clone, Default)]
@@ -1612,7 +1640,7 @@ fn plausible_opponent_name(nm: &str) -> bool {
 // A finished game: record the local per-opponent H2H AND report it to the global leaderboard. The rich-stat
 // flags (ocv/perfect/comeback) always describe the WINNER — computed symmetrically from both sides' health,
 // so we credit them correctly whether we won or lost.
-fn on_game_win(winner: u8, opp: &Option<(String, String)>, my_side: u8, ocv: bool, perfect: bool, comeback: bool, rich: &GameRich) {
+fn on_game_win(winner: u8, opp: &Option<(String, String)>, my_side: u8, ocv: bool, perfect: bool, comeback: bool, rich: &GameRich, session_id: &str, match_index: u32) {
     if my_side != 1 && my_side != 2 { return; }
     // Belt-and-suspenders: NEVER record unless the side is confirmed (manual toggle / deterministic lock). The
     // fuzzy auto-detectors set local_side for the UI label only — a confidently-WRONG side must never post stats.
@@ -1644,7 +1672,7 @@ fn on_game_win(winner: u8, opp: &Option<(String, String)>, my_side: u8, ocv: boo
     let gs = gamestate_snapshot();
     report_result_server(reporter, winner_id, winner_name, loser_id, loser_name, ocv, perfect, comeback,
         winner_team, loser_team, winner_combo, winner_met,
-        my_side, rich.p1_team.clone(), rich.p2_team.clone(), gs);
+        my_side, rich.p1_team.clone(), rich.p2_team.clone(), gs, session_id.to_string(), match_index);
 }
 
 // Fire-and-forget POST of a finished game to the skinsync leaderboard (own thread so the reader never blocks
@@ -1655,7 +1683,8 @@ fn report_result_server(reporter: String, winner: String, winner_name: String, l
                         ocv: bool, perfect: bool, comeback: bool,
                         winner_team: Vec<u8>, loser_team: Vec<u8>, biggest_combo: u16, meters_used: u32,
                         // game-state recording context (uploaded only if share_gameplay_data + a recording exists)
-                        side: u8, p1_team: Vec<u8>, p2_team: Vec<u8>, gs: Option<GsSnapshot>) {
+                        side: u8, p1_team: Vec<u8>, p2_team: Vec<u8>, gs: Option<GsSnapshot>,
+                        session_id: String, match_index: u32) {
     std::thread::spawn(move || {
         use std::sync::atomic::Ordering::SeqCst;
         let body = serde_json::json!({
@@ -1664,6 +1693,7 @@ fn report_result_server(reporter: String, winner: String, winner_name: String, l
             "ocv": ocv, "perfect": perfect, "comeback": comeback,
             "winner_team": winner_team, "loser_team": loser_team, "biggest_combo": biggest_combo, "meters_used": meters_used,
             "side": side,   // gs-92: which side the reporter was (1=P1,2=P2) — makes every game auditable server-side
+            "session_id": session_id, "match_index": match_index,   // gs-96: tie each game to its ranked set (≤10 games)
         });
         // capture the server-derived match_key from the /result response (single source of truth → both
         // players consense on ONE key, and each tags its own recording with it).
@@ -1677,16 +1707,26 @@ fn report_result_server(reporter: String, winner: String, winner_name: String, l
         if !SHARE_GAMEPLAY.load(SeqCst) { return; }
         let gs = match gs { Some(g) => g, None => return };
         let key = match key { Some(k) if !k.is_empty() => k, _ => { trace("[gamestate] no match_key returned — skipping recording upload"); return; } };
-        spool_gamestate(&key, &reporter, side, &p1_team, &p2_team, &winner, &loser, &gs);
+        spool_gamestate(&key, &reporter, side, &p1_team, &p2_team, &winner, &loser, &gs, &session_id, match_index);
         trace(&format!("[gamestate] spooled {} frames as {}_{} (uploads between matches)", gs.frames.len(), key, reporter));
     });
 }
 
 // Record a finished game now if the side is confirmed, else BUFFER it (the "never record a guess" gate).
 fn commit_or_buffer(st: &mut ScoreState, winner: u8, opp: &Option<(String, String)>, confirmed: bool, my_side: u8,
-                    ocv: bool, perfect: bool, comeback: bool, rich: GameRich) {
-    if confirmed { on_game_win(winner, opp, my_side, ocv, perfect, comeback, &rich); }
-    else if let Some(o) = opp { st.pending.push(PendingGame { winner, opp: o.clone(), ocv, perfect, comeback, rich }); }
+                    ocv: bool, perfect: bool, comeback: bool, rich: GameRich, session_id: String, match_index: u32) {
+    if confirmed { on_game_win(winner, opp, my_side, ocv, perfect, comeback, &rich, &session_id, match_index); }
+    else if let Some(o) = opp { st.pending.push(PendingGame { winner, opp: o.clone(), ocv, perfect, comeback, rich, session_id, match_index }); }
+}
+
+// Stamp the CURRENT game with (session_id, its index in the set), then advance the counter + persist. Called once
+// per judged game so the 11th game rolls a new session (via the cap check in update_score) and a restart resumes.
+fn session_stamp(st: &mut ScoreState) -> (String, u32) {
+    let sid = st.session_id.clone().unwrap_or_default();
+    let mi = st.match_index;
+    st.match_index = st.match_index.saturating_add(1);
+    save_session(st);
+    (sid, mi)
 }
 
 fn update_score(st: &mut ScoreState, game: &Option<GameSt>, opp: &Option<(String, String)>, my_side: u8, confirmed: bool) {
@@ -1695,12 +1735,32 @@ fn update_score(st: &mut ScoreState, game: &Option<GameSt>, opp: &Option<(String
     // undetected between games / long char-select) must NOT wipe the set score — hold it until a real,
     // different SteamID actually appears.
     if let Some(cur_id) = cur {
-        if st.set_opp.as_deref() != Some(cur_id.as_str()) { *st = ScoreState { set_opp: Some(cur_id), ..Default::default() }; }
+        if st.set_opp.as_deref() != Some(cur_id.as_str()) {
+            *st = ScoreState { set_opp: Some(cur_id.clone()), ..Default::default() };
+            // RESUME the same running set after an app restart mid-session (same opponent, still under the cap) so
+            // the score + session id pick up where they left off; otherwise mint a fresh session for this set.
+            if let Some(v) = load_session() {
+                if v.get("opp").and_then(|x| x.as_str()) == Some(cur_id.as_str())
+                    && (v.get("match_index").and_then(|x| x.as_u64()).unwrap_or(SESSION_CAP as u64)) < SESSION_CAP as u64 {
+                    st.session_id = v.get("session_id").and_then(|x| x.as_str()).map(String::from);
+                    st.p1 = v.get("p1").and_then(|x| x.as_u64()).unwrap_or(0) as u32;
+                    st.p2 = v.get("p2").and_then(|x| x.as_u64()).unwrap_or(0) as u32;
+                    st.match_index = v.get("match_index").and_then(|x| x.as_u64()).unwrap_or(0) as u32;
+                    st.session_started_ms = v.get("started_ms").and_then(|x| x.as_u64()).unwrap_or(0);
+                }
+            }
+            if st.session_id.is_none() {
+                let (my_id, _) = self_ident();
+                st.session_id = Some(new_session_id(my_id, &cur_id));
+                st.session_started_ms = gs_now_ms();
+            }
+            save_session(st);
+        }
     }
     // Side just got confirmed → flush the games we buffered this set, in order, with the now-known side.
     if confirmed && !st.pending.is_empty() {
         for pg in std::mem::take(&mut st.pending) {
-            on_game_win(pg.winner, &Some(pg.opp), my_side, pg.ocv, pg.perfect, pg.comeback, &pg.rich);
+            on_game_win(pg.winner, &Some(pg.opp), my_side, pg.ocv, pg.perfect, pg.comeback, &pg.rich, &pg.session_id, pg.match_index);
         }
     }
     match game {
@@ -1713,7 +1773,19 @@ fn update_score(st: &mut ScoreState, game: &Option<GameSt>, opp: &Option<(String
                 if a1 && a2 {
                     // fresh game beginning (both teams back up after the last KO) → reset per-game trackers
                     if st.judged { st.g1_dmg = false; st.g2_dmg = false; st.g1_low = false; st.g2_low = false;
-                        st.g1_maxcombo = 0; st.g2_maxcombo = 0; st.g1_met = 0; st.g2_met = 0; st.met_init = false; st.teams = None; }
+                        st.g1_maxcombo = 0; st.g2_maxcombo = 0; st.g1_met = 0; st.g2_met = 0; st.met_init = false; st.teams = None;
+                        // ── SESSION HARD CAP ── the set just reached SESSION_CAP games → the game NOW starting opens
+                        // a NEW session (rolled lazily at the next start so the completed set's score stays visible).
+                        if st.match_index >= SESSION_CAP {
+                            if let Some(opp_id) = st.set_opp.clone() {
+                                let (my_id, _) = self_ident();
+                                st.session_id = Some(new_session_id(my_id, &opp_id));
+                                st.session_started_ms = gs_now_ms();
+                                st.match_index = 0; st.p1 = 0; st.p2 = 0; st.pend_w = 0; st.pend_n = 0;
+                                save_session(st);
+                            }
+                        }
+                    }
                     st.judged = false;
                     st.saw_both = true;                        // a genuine CONTESTED game is in progress
                 }
@@ -1744,25 +1816,25 @@ fn update_score(st: &mut ScoreState, game: &Option<GameSt>, opp: &Option<(String
                 if cur_w != 0 && cur_w == st.pend_w { st.pend_n = st.pend_n.saturating_add(1); }
                 else { st.pend_w = cur_w; st.pend_n = if cur_w != 0 { 1 } else { 0 }; }
                 if !st.judged && st.saw_both && cur_w != 0 && st.pend_n >= 2 {
-                    st.judged = true; let r = rich_of(st);
-                    if cur_w == 2 { st.p2 += 1; let (o, p, c) = (alive_ct(2) == 3, !st.g2_dmg, st.g2_low); commit_or_buffer(st, 2, opp, confirmed, my_side, o, p, c, r); }
-                    else          { st.p1 += 1; let (o, p, c) = (alive_ct(1) == 3, !st.g1_dmg, st.g1_low); commit_or_buffer(st, 1, opp, confirmed, my_side, o, p, c, r); }
+                    st.judged = true; let r = rich_of(st); let (sid, mi) = session_stamp(st);
+                    if cur_w == 2 { st.p2 += 1; let (o, p, c) = (alive_ct(2) == 3, !st.g2_dmg, st.g2_low); commit_or_buffer(st, 2, opp, confirmed, my_side, o, p, c, r, sid, mi); }
+                    else          { st.p1 += 1; let (o, p, c) = (alive_ct(1) == 3, !st.g1_dmg, st.g1_low); commit_or_buffer(st, 1, opp, confirmed, my_side, o, p, c, r, sid, mi); }
                 }
                 st.la1 = a1; st.la2 = a2; st.was_in = true;
             } else if st.was_in && !st.judged && st.saw_both { // match-flag off before we confirmed in-frame → settle from the pending KO (the round is over, so its last state is settled)
                 if st.pend_w != 0 && st.pend_n >= 1 {
-                    st.judged = true; let r = rich_of(st);
-                    if st.pend_w == 1 { st.p1 += 1; let (p, c) = (!st.g1_dmg, st.g1_low); commit_or_buffer(st, 1, opp, confirmed, my_side, false, p, c, r); }
-                    else { st.p2 += 1; let (p, c) = (!st.g2_dmg, st.g2_low); commit_or_buffer(st, 2, opp, confirmed, my_side, false, p, c, r); }
+                    st.judged = true; let r = rich_of(st); let (sid, mi) = session_stamp(st);
+                    if st.pend_w == 1 { st.p1 += 1; let (p, c) = (!st.g1_dmg, st.g1_low); commit_or_buffer(st, 1, opp, confirmed, my_side, false, p, c, r, sid, mi); }
+                    else { st.p2 += 1; let (p, c) = (!st.g2_dmg, st.g2_low); commit_or_buffer(st, 2, opp, confirmed, my_side, false, p, c, r, sid, mi); }
                 } else { trace(&format!("[record] MISS(match-end) — no KO seen (pend_w={} pend_n={}) → dropped (under-count)", st.pend_w, st.pend_n)); }
                 st.was_in = false; st.saw_both = false; st.pend_w = 0; st.pend_n = 0;
             } else { st.was_in = g.in_match == 1; if g.in_match != 1 { st.saw_both = false; } }
         }
         None => {   // game data gone (liveness gate / match over): settle from the pending KO (round is over → settled)
             if st.was_in && !st.judged && st.saw_both && st.pend_w != 0 && st.pend_n >= 1 {
-                st.judged = true; let r = rich_of(st);
-                if st.pend_w == 1 { st.p1 += 1; let (p, c) = (!st.g1_dmg, st.g1_low); commit_or_buffer(st, 1, opp, confirmed, my_side, false, p, c, r); }
-                else { st.p2 += 1; let (p, c) = (!st.g2_dmg, st.g2_low); commit_or_buffer(st, 2, opp, confirmed, my_side, false, p, c, r); }
+                st.judged = true; let r = rich_of(st); let (sid, mi) = session_stamp(st);
+                if st.pend_w == 1 { st.p1 += 1; let (p, c) = (!st.g1_dmg, st.g1_low); commit_or_buffer(st, 1, opp, confirmed, my_side, false, p, c, r, sid, mi); }
+                else { st.p2 += 1; let (p, c) = (!st.g2_dmg, st.g2_low); commit_or_buffer(st, 2, opp, confirmed, my_side, false, p, c, r, sid, mi); }
             }
             st.was_in = false; st.saw_both = false; st.pend_w = 0; st.pend_n = 0;
         }
@@ -1795,6 +1867,15 @@ pub fn leaderboard(tab: String, period: Option<String>, limit: Option<u32>) -> R
 #[tauri::command]
 pub fn profile(steamid: String) -> Result<serde_json::Value, String> {
     ureq::get(&format!("{}/profile?steamid={}", SKINSYNC, steamid))
+        .timeout(std::time::Duration::from_secs(6))
+        .call().map_err(|e| e.to_string())?
+        .into_json::<serde_json::Value>().map_err(|e| e.to_string())
+}
+
+/// One ranked set's breakdown (games + each player's W-L) from the server. Backend fetch (no CORS/CSP).
+#[tauri::command]
+pub fn session_stats(id: String) -> Result<serde_json::Value, String> {
+    ureq::get(&format!("{}/session?id={}", SKINSYNC, id))
         .timeout(std::time::Duration::from_secs(6))
         .call().map_err(|e| e.to_string())?
         .into_json::<serde_json::Value>().map_err(|e| e.to_string())
@@ -2624,6 +2705,8 @@ pub fn start_reader() {
                 s.opponent = if show_opp { opp.clone() } else { None };
                 s.game = game;
                 s.score = sc;
+                s.session_id = ss.session_id.clone().unwrap_or_default();
+                s.match_index = ss.match_index;
                 s.in_session = in_session;
                 s.ram_base = last_good_base;   // gs-74: publish the located array base so paint_live paints the REAL array (it relocates off the anchor per match)
             }
@@ -2670,6 +2753,7 @@ pub fn detect_state() -> serde_json::Value {
     })).collect();
     let mut out = serde_json::json!({ "state": s.state, "count": s.roster.len(), "changed": false, "p1": to_json(&p1), "p2": to_json(&p2), "has_game": false,
         "score": { "p1": s.score.0, "p2": s.score.1 }, "local_side": s.local_side, "in_session": s.in_session,
+        "session_id": s.session_id, "match_index": s.match_index,
         "manual_side": s.manual_side, "side_confirmed": s.side_confirmed, "paint_slots": paint_slots });
     if let Some(g) = s.game.as_ref() {
         let slots: Vec<serde_json::Value> = g.slots.iter().map(|sl| serde_json::json!({
