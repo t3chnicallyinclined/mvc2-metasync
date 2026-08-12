@@ -2029,7 +2029,7 @@ function stApply(){ if(stCid==null||!stPal) return null;
 
 // ── boot ──
 async function boot(){
-  console.log('%c MetaSync v0.1.0 (beta) (beta: auto-records anonymized match state to improve the app. click the version in the header to see the changelog; a live pill shows up-to-date vs update-available; "What\'s New" pops after you update. Earlier: renamed to MetaSync. Fixed the library palette swatches (the strict CSP was blocking inline colors - now allowed via dangerousDisableAssetCspModification style-src). Updates now ship via GitHub Releases with nobd.net as fallback. Includes the same-character mirror fix + the "🪞 mirror · your side" tag when a mirror is detected and split. MIRROR FIX - in a same-character mirror your skin no longer bleeds onto the opponent. paint_live now side-gates mirror characters (each fighter has its own DatPal), and same-variant collisions (byte-identical palette, detected via the cl+0x6 color field / the 6 select-button variants) are withheld from the signature hook. Different variants keep round-start hook painting.) ','background:#00c853;color:#00160a;font-weight:800;padding:3px 8px;border-radius:4px');
+  console.log('%c MetaSync v0.1.1 (beta) (beta: auto-records anonymized match state to improve the app. click the version in the header to see the changelog; a live pill shows up-to-date vs update-available; "What\'s New" pops after you update. Earlier: renamed to MetaSync. Fixed the library palette swatches (the strict CSP was blocking inline colors - now allowed via dangerousDisableAssetCspModification style-src). Updates now ship via GitHub Releases with nobd.net as fallback. Includes the same-character mirror fix + the "🪞 mirror · your side" tag when a mirror is detected and split. MIRROR FIX - in a same-character mirror your skin no longer bleeds onto the opponent. paint_live now side-gates mirror characters (each fighter has its own DatPal), and same-variant collisions (byte-identical palette, detected via the cl+0x6 color field / the 6 select-button variants) are withheld from the signature hook. Different variants keep round-start hook painting.) ','background:#00c853;color:#00160a;font-weight:800;padding:3px 8px;border-radius:4px');
   loadBaked();
   try{ const d=await(await fetch('idle_frames.json')).json(); idleData=d; }catch(e){}
   try{ const chars=await(await fetch('skins/characters.json')).json(); for(const c of chars){ dirById[c.char_id]=c.dir; nameById[c.char_id]=c.name; charByDir[c.dir]=c.char_id; } }catch(e){}
@@ -2149,9 +2149,10 @@ async function openProfile(sid,nm){
       return `<tr><td>${esc(teamStr(cids))}</td><td>${t.games}</td><td>${t.wins}</td><td>${tw}%</td></tr>`; }).join('');
     const vs=(p.vs||[]).slice(0,30).map(v=>{ const g=v.games||0, w=v.wins||0, l=v.losses||0, r=g?Math.round(100*w/g):0;
       return `<tr class="lb-click" data-sid="${esc(v.opp_id)}" data-nm="${esc(v.name||'Player')}"><td>${esc(v.name||'Player')}</td><td>${w}–${l}</td><td>${r}%</td><td>${g}</td></tr>`; }).join('');
+    const eloCell=m=>{ const e=(typeof m.elo==='number')?m.elo:0; const s=e>0?'+':''; return `<td style="font-weight:700;color:${e>=0?'#4ade80':'#f87171'};font-variant-numeric:tabular-nums">${s}${e}</td>`; };
     const recent=(p.recent||[]).slice(0,15).map(m=>`<tr class="${m.won?'w':'l'}">
       <td>${m.won?'W':'L'}</td><td class="lb-click" data-sid="${esc(m.opp_id||'')}" data-nm="${esc(m.opp||'')}">${esc(m.opp||'?')}</td><td>${esc(teamStr(m.my_team))}</td><td>${esc(teamStr(m.opp_team))}</td>
-      <td>${m.combo?('🎯'+m.combo):''}${m.ocv?' 💥':''}${m.perfect?' ✨':''}${m.comeback?' 🔄':''}</td></tr>`).join('');
+      ${eloCell(m)}<td>${m.combo?('🎯'+m.combo):''}${m.ocv?' 💥':''}${m.perfect?' ✨':''}${m.comeback?' 🔄':''}</td></tr>`).join('');
     body.innerHTML=`<h3>${esc(p.name||nm||'Player')}</h3>
       <div class="pf-stats"><span>⚔️ <b>${esc(p.rank||'Warrior')}</b> · ${p.rating||1000} ELO</span><span><b>${p.wins||0}</b>W · <b>${p.losses||0}</b>L</span><span><b>${wr}%</b> win</span>
         <span>🔥 <b>${p.best_streak||0}</b></span><span>🎯 <b>${p.best_combo||0}</b></span>
@@ -2161,7 +2162,7 @@ async function openProfile(sid,nm){
       <h4>Team compositions</h4>
       <table class="pf-tbl"><tr><th>Team</th><th>GP</th><th>W</th><th>WR</th></tr>${teams||'<tr><td colspan="4">—</td></tr>'}</table>
       <h4>Recent matches</h4>
-      <table class="pf-tbl"><tr><th></th><th>Opp</th><th>Your team</th><th>Their team</th><th></th></tr>${recent||'<tr><td colspan="5">—</td></tr>'}</table>`;
+      <table class="pf-tbl"><tr><th></th><th>Opp</th><th>Your team</th><th>Their team</th><th>ELO</th><th></th></tr>${recent||'<tr><td colspan="6">—</td></tr>'}</table>`;
   }catch(e){ body.innerHTML='<div class="lb-empty">PROFILE UNAVAILABLE</div>'; }
 }
 $('#lbList')?.addEventListener('click',e=>{ const n=e.target.closest('.lb-click'); if(n) openProfile(n.dataset.sid,n.dataset.nm); });
