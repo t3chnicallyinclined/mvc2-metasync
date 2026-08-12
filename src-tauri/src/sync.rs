@@ -2467,7 +2467,7 @@ pub fn start_reader() {
             // ── LIVENESS GATE ── drop game data that isn't actively updating. A live fight animates every
             // frame, so a hash that's unchanged across cycles = a FROZEN buffer (menu / match over / stale
             // base) → treat as NO live match, so we never surface an old match's roster/opponent/side.
-            let game = match raw_game {
+            let mut game = match raw_game {
                 Some(g) => {
                     let hh = game_liveness_hash(cur_pid, &g);
                     if hh != 0 && hh == prev_live_hash { frozen_cycles = frozen_cycles.saturating_add(1); }
@@ -2480,6 +2480,23 @@ pub fn start_reader() {
                 }
                 None => { frozen_cycles = 0; None }
             };
+            // gs-91: the +0x554 char_id field reads a wrong value (0 = Ryu, sometimes another id) for some live
+            // fighters in the find_array copy, while the sig-scan roster carries the real 6 chars. The roster's
+            // ORDER is by address (not team parity), so we can't map it positionally — instead, treat the roster as
+            // the authoritative SET: any game slot whose char_id isn't one of the real chars is a mis-read, and gets
+            // the leftover real char no correctly-read slot accounted for. (Common case = one point-slot reading 0 →
+            // exactly one leftover → unambiguous.) Keeps the overlay/skin on the true character. The team split for
+            // display comes from the game slots' own player field, which IS reliable — not the roster order.
+            if let Some(g) = game.as_mut() {
+                let rset: Vec<u8> = roster.iter().map(|f| f.cid as u8).collect();
+                if rset.len() >= 4 {
+                    let known: Vec<u8> = g.slots.iter().map(|s| s.char_id).filter(|c| rset.contains(c)).collect();
+                    let mut leftover: Vec<u8> = rset.iter().cloned().filter(|c| !known.contains(c)).collect();
+                    for s in g.slots.iter_mut() {
+                        if !rset.contains(&s.char_id) { if let Some(c) = leftover.pop() { s.char_id = c; } }
+                    }
+                }
+            }
             // live_seen latch: set on every LIVE array read → keeps find_array re-acquiring through rollback flicker
             // (allow_find above) and gates the deterministic side lock below.
             if game.is_some() { live_seen = Some(std::time::Instant::now()); }
@@ -2561,8 +2578,23 @@ pub fn detect_state() -> serde_json::Value {
     let to_json = |r: &[Found]| serde_json::Value::Array(r.iter().map(|f| serde_json::json!({
         "cid": f.cid, "name": f.name, "addr": format!("{:x}", f.addr)
     })).collect());
-    let p1: Vec<Found> = s.roster.iter().take(3).cloned().collect();
-    let p2: Vec<Found> = s.roster.iter().skip(3).take(3).cloned().collect();
+    // Teams from the live array's OWN parity (each slot's player field) — reliable — instead of the sig-scan
+    // roster ORDER, which is by address and can put a character on the wrong side's card. char_ids were already
+    // corrected by the mis-read fill in the reader. Falls back to the roster order only when there's no live game.
+    let (mut p1, mut p2): (Vec<Found>, Vec<Found>) = (Vec::new(), Vec::new());
+    if let Some(g) = s.game.as_ref() {
+        let (sigs, _) = sigtab();
+        let mut slots: Vec<&GSlot> = g.slots.iter().collect();
+        slots.sort_by_key(|sl| (sl.player, sl.pos));
+        for sl in slots {
+            let nm = sigs.iter().find(|sg| sg.cid == sl.char_id as u32).map(|sg| sg.name.clone()).unwrap_or_default();
+            let f = Found { cid: sl.char_id as u32, name: nm, addr: sl.addr };
+            if sl.player == 1 { p1.push(f); } else if sl.player == 2 { p2.push(f); }
+        }
+    } else {
+        p1 = s.roster.iter().take(3).cloned().collect();
+        p2 = s.roster.iter().skip(3).take(3).cloned().collect();
+    }
     // exact per-fighter render-palette pointers for the paint path (NOT liveness-gated → present at match start)
     let paint_slots: Vec<serde_json::Value> = s.paint_slots.iter().map(|(pl, cid, dp)| serde_json::json!({
         "player": pl, "cid": cid, "datpal": format!("{:x}", dp)
