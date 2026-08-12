@@ -846,7 +846,7 @@ fn atomic_write(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
     std::fs::write(&tmp, bytes)?;
     std::fs::rename(&tmp, path)
 }
-const GS_SCHEMA: &str = "[frame,p1_in,p2_in,hp[6],px[6],py[6],p1_meter,p2_meter,meter_fill,combo_dealt[6],combo_recv[6],vx[6],vy[6],red_hp[6],facing[6],hitstun[6],action[6]]";
+const GS_SCHEMA: &str = "[frame,p1_in,p2_in,kcode,hp[6],px[6],py[6],p1_meter,p2_meter,meter_fill,combo_dealt[6],combo_recv[6],vx[6],vy[6],red_hp[6],facing[6],hitstun[6],action[6]]";
 
 fn gs_now_ms() -> u64 { std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0) }
 
@@ -898,6 +898,8 @@ pub fn suggest_stat(steamid: String, name: String, text: String) -> Result<(), S
 #[derive(Clone)]
 struct GsRow {
     frame: u32, p1_in: u16, p2_in: u16,
+    kcode: u32,   // ★ the LOCAL pad (flycast kcode[0] @ exe+KCODE_OFF) — correlate vs p1_in/p2_in offline to find
+                  //   which team is the reporter's (mirror-proof, skin-independent) → objective W/L attribution.
     hp: [u16; 6], px: [f32; 6], py: [f32; 6],
     m1: u8, m2: u8, mfill: u16, cd: [u16; 6], cr: [u16; 6],
     // additional per-slot match state
@@ -948,7 +950,7 @@ fn gs_match_load(r: &GsRow) -> bool {
 
 // Read one full per-frame row off the located array. 6 slot reads (0xB48 each, covers every field) + the
 // 3 global-meter reads. Read-only RPM; runs on the dedicated capture thread only.
-unsafe fn read_gs_row(h: HANDLE, base: usize, frame: u32) -> Option<GsRow> {
+unsafe fn read_gs_row(h: HANDLE, base: usize, frame: u32, exe_base: usize) -> Option<GsRow> {
     let mut s: Vec<Vec<u8>> = Vec::with_capacity(6);
     for i in 0..6 {
         let buf = read_at(h, base + i * STRIDE, 0xB50)?;   // 0xB50 (was 0xB48) to include red_health @ +0xb48
@@ -964,6 +966,7 @@ unsafe fn read_gs_row(h: HANDLE, base: usize, frame: u32) -> Option<GsRow> {
     Some(GsRow {
         frame,
         p1_in: u16le(&s[0], OFF_INPUT), p2_in: u16le(&s[1], OFF_INPUT),
+        kcode: if exe_base != 0 { rpm_u32(h, exe_base + KCODE_OFF).unwrap_or(0) } else { 0 },
         hp: hp_arr,
         px: [lef32(&s[0], OFF_POS_X), lef32(&s[1], OFF_POS_X), lef32(&s[2], OFF_POS_X), lef32(&s[3], OFF_POS_X), lef32(&s[4], OFF_POS_X), lef32(&s[5], OFF_POS_X)],
         py: [lef32(&s[0], OFF_POS_Y), lef32(&s[1], OFF_POS_Y), lef32(&s[2], OFF_POS_Y), lef32(&s[3], OFF_POS_Y), lef32(&s[4], OFF_POS_Y), lef32(&s[5], OFF_POS_Y)],
@@ -993,6 +996,7 @@ fn start_gamestate_capture() {
             if !SHARE_GAMEPLAY.load(SeqCst) { std::thread::sleep(std::time::Duration::from_millis(500)); continue; }
             let pid = match find_game_pid() { Some(p) => p, None => { std::thread::sleep(std::time::Duration::from_millis(600)); continue; } };
             let h = match unsafe { OpenProcess(PROCESS_VM_READ | PROCESS_QUERY_INFORMATION, FALSE, pid) } { Ok(h) => h, Err(_) => { std::thread::sleep(std::time::Duration::from_millis(600)); continue; } };
+            let exe_base = game_exe_base(pid);   // for the local pad (kcode) recorded per frame → offline side-attribution
             // wait for a live match with BOTH teams alive (a fresh game start, not a mid-KO/loading copy).
             // Prefer the base the MAIN reader already located via find_array (struct-layout scan → the LIVE copy,
             // not a rollback savestate). anchor_array is only a fallback for the brief window before the reader
@@ -1005,7 +1009,7 @@ fn start_gamestate_capture() {
                 if rb != 0 && unsafe { array_valid(h, rb) } { rb }
                 else { unsafe { let _ = CloseHandle(h); } std::thread::sleep(std::time::Duration::from_millis(300)); continue; }
             };
-            let start_row = match unsafe { read_gs_row(h, base, 0) } { Some(r) => r, None => { unsafe { let _ = CloseHandle(h); } std::thread::sleep(std::time::Duration::from_millis(200)); continue; } };
+            let start_row = match unsafe { read_gs_row(h, base, 0, exe_base) } { Some(r) => r, None => { unsafe { let _ = CloseHandle(h); } std::thread::sleep(std::time::Duration::from_millis(200)); continue; } };
             // TRUE match-load gate. Ideal: catch the +-213 spawn during the intro (gs_match_load) so the tape
             // starts at frame 0 of the FIGHT. Fallback: if all real chars have been full for ~1.5s but we never
             // caught the spawn (attached mid-intro), start anyway so a match is never entirely missed. The 50ms
@@ -1045,7 +1049,7 @@ fn start_gamestate_capture() {
                 if !SHARE_GAMEPLAY.load(SeqCst) { break; }
                 let frame = match fc { Some(a) => unsafe { rpm_u32(h, a) }.unwrap_or(0), None => { synth += 1; synth } };
                 if frame != last {
-                    if let Some(row) = unsafe { read_gs_row(h, base, frame) } {
+                    if let Some(row) = unsafe { read_gs_row(h, base, frame, exe_base) } {
                         {
                             let mut c = gs_capture().lock().unwrap();
                             // LAST-WRITE-WINS: a rollback re-visits an earlier frame → overwrites it with the
@@ -1121,7 +1125,7 @@ fn spool_gamestate(match_key: &str, reporter: &str, side: u8, p1_team: &[u8], p2
     let ts = gs_now_ms();
     let id = format!("{}_{}", match_key, reporter);
     let frames: Vec<serde_json::Value> = gs.frames.iter().map(|r| serde_json::json!([
-        r.frame, r.p1_in, r.p2_in, r.hp, r.px, r.py, r.m1, r.m2, r.mfill, r.cd, r.cr,
+        r.frame, r.p1_in, r.p2_in, r.kcode, r.hp, r.px, r.py, r.m1, r.m2, r.mfill, r.cd, r.cr,
         r.vx, r.vy, r.rhp, r.face, r.hitstun, r.act
     ])).collect();
     // the complete artifact that lands on disk (server writes the gunzip-able bytes verbatim)
