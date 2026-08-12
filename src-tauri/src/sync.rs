@@ -1458,18 +1458,23 @@ fn read_gamestate_rpm(pid: u32, ram_base: &mut usize, last_find: &mut std::time:
         // regressed cross-round painting (at a round reload the anchor copy's DatPal pointers go null/stale while
         // find_array's ANIMATING copy still tracks the live render). So: anchor to acquire O(1), then the
         // liveness gate below hands off to find_array's animating copy if this one freezes.
-        if *ram_base == 0 { if let Some(a) = anchor_array(h) { *ram_base = a; } }
-        // Fallbacks (only if the anchor offset ever shifts on a future game build): reuse last base, then scan.
-        if *ram_base == 0 && hint != 0 && array_valid(h, hint) { *ram_base = hint; }
-        if *ram_base == 0 && allow_find && last_find.elapsed().as_millis() >= 1500 {
+        // PRIMARY locator: the struct-layout scan. The fighter array is VOLATILE on this build — it RELOCATES
+        // every match (the external logger confirmed a different base per game: 0x15f5.., 0x1815.., 0x1625..), so
+        // the fixed anchor below CANNOT track it. Worse, running the anchor first STARVED the scan: the anchor set
+        // ram_base to a stale copy, so find_array (gated on ram_base==0) never ran → game 1 read garbage and
+        // games 2..N read nothing (the "1 of 10 recorded" bug). So scan FIRST, throttled so the ~1GB read doesn't
+        // thrash; once found, array_valid keeps it cached cheaply until the array relocates.
+        if *ram_base == 0 && allow_find && last_find.elapsed().as_millis() >= 1200 {
             *last_find = std::time::Instant::now();
             *ram_base = find_array(h).unwrap_or(0);
-            // find_array is a heavy ~1GB scan. If it came up empty (char-select/loading — the array isn't
-            // instantiated yet, but sig-scan fighters linger), back the NEXT attempt off a bit so the scan
-            // doesn't thrash, but retry FAST so teams lock within ~1-2s of a round starting (not 5-15s — the
-            // "didn't detect the match right away" lag). Once found, array_valid is cheap → no re-scan.
-            if *ram_base == 0 { *last_find += std::time::Duration::from_millis(500); }
+            // empty scan (char-select/loading — array not instantiated) → back the NEXT attempt off slightly so
+            // the scan doesn't thrash, but retry fast so teams lock within ~1-2s of a round starting.
+            if *ram_base == 0 { *last_find += std::time::Duration::from_millis(300); }
         }
+        // FALLBACK O(1): the fixed anchor, ONLY if the scan hasn't located one yet (throttle gap, or the scan hit
+        // a motion-less instant). Its own liveness gate rejects a frozen copy. Reuse-last-base (hint) after that.
+        if *ram_base == 0 { if let Some(a) = anchor_array(h) { *ram_base = a; } }
+        if *ram_base == 0 && hint != 0 && array_valid(h, hint) { *ram_base = hint; }
         // read_fighters returns None on a garbage/empty base (health>144 or no valid fighter slots). Drop the base
         // in that case so the NEXT cycle re-acquires (anchor → find_array) instead of pinning a dead base forever —
         // the second half of the "no gamestate" deadlock (a base array_valid accepts but read_fighters rejects).

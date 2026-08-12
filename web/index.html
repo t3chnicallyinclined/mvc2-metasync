@@ -1461,7 +1461,7 @@ async function stateTick(){
     // Show the manual side override during an ONLINE match. localPlayerNum is the netplay CONNECTION index (player
     // 0/1 by who connected), NOT the physical P1/P2 side — so the auto side is only a guess and can be backwards.
     // Tap to correct it: it sticks for the set and fixes the recorded win/loss side too.
-    $('#sideSwap').style.display = (oppIdentity && oppIdentity.steamid) ? 'inline-flex' : 'none';
+    $('#sideSwap').style.display = 'none';   // manual P1/P2 toggle removed — side is fully automatic (from your characters)
     { const sa=$('#sideAuto'), sw=$('#sideSwap'); if(sw) sw.classList.remove('unconfirmed'); if(sa){
         sa.textContent = sideConfirmed ? '· auto ✓' : '· detecting…';
         sa.style.opacity = sideConfirmed ? '.9' : '.5';
@@ -1521,6 +1521,10 @@ let _updHideT=null;
 // so it can be updated without shipping a new build. This bundled copy is the offline FALLBACK — keep it
 // roughly current, but the remote is authoritative.
 let CHANGELOG = [
+  { v:'0.1.24', t:'Your whole set gets tracked + simpler sides', items:[
+    'Fixed the big one: during a set, only the first game was being recorded (the app lost track of the live match after game 1). It now re-locates the match every game, so your full set is tracked and your record is right.',
+    'Removed the P1/P2 label and the manual side toggle. Your side is fully automatic now — the app knows which team is yours from your characters, and wins/losses attribute to the right person with no manual step.',
+  ]},
   { v:'0.1.23', t:'No more duplicate characters', items:[
     'Fixed the opponent sometimes showing a duplicate character (like "two Ryus") when the game briefly hides a fighter\'s ID — the team cards now always match the real roster.',
     'Steadier match recording under the hood.',
@@ -1643,16 +1647,15 @@ $('#updLater').onclick=()=>{ clearTimeout(_updHideT); $('#updBanner').style.disp
 // Reflect your actual side in the layout: your name card + team panel sit on YOUR side (P1 left / P2 right),
 // opponent on the other. .link/.board are CSS grid, whose items honor `order`, so we just reorder them.
 function applySideLayout(){
-  // ★ FIXED layout: YOU always on the LEFT, OPPONENT always on the RIGHT — cards/characters never swap. The side
-  // is just a BADGE, shown only once it's actually resolved (via localPlayerNum). We never assert P1 by default.
+  // ★ FIXED layout: YOU always on the LEFT, OPPONENT always on the RIGHT — cards/characters never swap. We no
+  // longer show a P1/P2 badge at all: that side is the netplay-relative index, which is meaningless to a player
+  // (it flips per ranked session) and only caused confusion. The cards already read "Your team" vs the opponent.
+  // Side is still tracked INTERNALLY (which detected team holds YOUR characters) purely to attribute W/L correctly.
   const set=(sel,v)=>{ const el=$(sel); if(el) el.style.order=v; };
   set('#link .node.p1','1'); set('#link .center','2'); set('#link .node.p2','3');
   set('#teamYou','1'); set('.board .seam','2'); set('#teamOpp','3');
-  const known = sideConfirmed && (mySide==='p1'||mySide==='p2');
-  const you  = known ? (mySide==='p2'?'P2':'P1') : '—';
-  const opp  = known ? (mySide==='p2'?'P1':'P2') : '—';
   const t=(sel,v)=>{ const el=$(sel); if(el) el.textContent=v; };
-  t('#teamYou .side', you); t('#teamOpp .side', opp);   // side badges live only on the team-card headers
+  t('#teamYou .side', ''); t('#teamOpp .side', '');   // no P1/P2 badge (removed per "we don't need to list p1 or p2")
 }
 
 // ── one serialized poll loop (never overlaps → no IPC pile-up, no hangs) ──
@@ -2091,7 +2094,7 @@ function stApply(){ if(stCid==null||!stPal) return null;
 
 // ── boot ──
 async function boot(){
-  console.log('%c MetaSync v0.1.23 (beta) (beta: auto-records anonymized match state to improve the app. click the version in the header to see the changelog; a live pill shows up-to-date vs update-available; "What\'s New" pops after you update. Earlier: renamed to MetaSync. Fixed the library palette swatches (the strict CSP was blocking inline colors - now allowed via dangerousDisableAssetCspModification style-src). Updates now ship via GitHub Releases with nobd.net as fallback. Includes the same-character mirror fix + the "🪞 mirror · your side" tag when a mirror is detected and split. MIRROR FIX - in a same-character mirror your skin no longer bleeds onto the opponent. paint_live now side-gates mirror characters (each fighter has its own DatPal), and same-variant collisions (byte-identical palette, detected via the cl+0x6 color field / the 6 select-button variants) are withheld from the signature hook. Different variants keep round-start hook painting.) ','background:#00c853;color:#00160a;font-weight:800;padding:3px 8px;border-radius:4px');
+  console.log('%c MetaSync v0.1.24 (beta) (beta: auto-records anonymized match state to improve the app. click the version in the header to see the changelog; a live pill shows up-to-date vs update-available; "What\'s New" pops after you update. Earlier: renamed to MetaSync. Fixed the library palette swatches (the strict CSP was blocking inline colors - now allowed via dangerousDisableAssetCspModification style-src). Updates now ship via GitHub Releases with nobd.net as fallback. Includes the same-character mirror fix + the "🪞 mirror · your side" tag when a mirror is detected and split. MIRROR FIX - in a same-character mirror your skin no longer bleeds onto the opponent. paint_live now side-gates mirror characters (each fighter has its own DatPal), and same-variant collisions (byte-identical palette, detected via the cl+0x6 color field / the 6 select-button variants) are withheld from the signature hook. Different variants keep round-start hook painting.) ','background:#00c853;color:#00160a;font-weight:800;padding:3px 8px;border-radius:4px');
   loadBaked();
   try{ const d=await(await fetch('idle_frames.json')).json(); idleData=d; }catch(e){}
   try{ const chars=await(await fetch('skins/characters.json')).json(); for(const c of chars){ dirById[c.char_id]=c.dir; nameById[c.char_id]=c.name; charByDir[c.dir]=c.char_id; } }catch(e){}
