@@ -1,6 +1,6 @@
 [package]
 name = "mvc-live-skins"
-version = "0.1.2"
+version = "0.1.13"
 description = "MvC Collection Live Skins — live palette skin changer for the Steam Marvel vs Capcom Fighting Collection"
 authors = ["tristech"]
 edition = "2021"
@@ -33,8 +33,11 @@ windows = { version = "0.58", features = [
 ] }
 
 [profile.release]
-codegen-units = 1
-lto = true
-opt-level = "s"
+# Beta: tuned for FAST compiles (LTO off + parallel codegen). App is I/O-bound (memory reads + HTTP), so
+# heavy optimization buys ~nothing at runtime. Restore lto=true / codegen-units=1 / opt-level="s" for the
+# stable release when build time stops mattering.
+codegen-units = 16
+lto = false
+opt-level = 1
 panic = "abort"
 strip = true
