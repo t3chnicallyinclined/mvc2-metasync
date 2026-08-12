@@ -1623,9 +1623,10 @@ pub fn get_record(steamid: String) -> serde_json::Value {
 /// Global leaderboard from the skinsync server for a tab (streak | wins | ocv | perfect | comeback).
 /// Returns { tab, field, players: [{ steamid, name, wins, losses, stat }] } (backend fetch → no CORS/CSP).
 #[tauri::command]
-pub fn leaderboard(tab: String, limit: Option<u32>) -> Result<serde_json::Value, String> {
+pub fn leaderboard(tab: String, period: Option<String>, limit: Option<u32>) -> Result<serde_json::Value, String> {
     let lim = limit.unwrap_or(10).min(50);
-    ureq::get(&format!("{}/leaderboard?tab={}&limit={}", SKINSYNC, tab, lim))
+    let period = period.unwrap_or_else(|| "all".into());
+    ureq::get(&format!("{}/leaderboard?tab={}&period={}&limit={}", SKINSYNC, tab, period, lim))
         .timeout(std::time::Duration::from_secs(6))
         .call().map_err(|e| e.to_string())?
         .into_json::<serde_json::Value>().map_err(|e| e.to_string())

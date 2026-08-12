@@ -221,6 +221,11 @@
   #p-ranks .lb-tabs button.on{color:var(--gold-ink); background:var(--gold); border-color:var(--gold);}
   #p-ranks .lb-tabs button.lb-suggest{margin-left:auto; border-style:dashed; color:var(--gold-soft); border-color:var(--gold-soft); background:transparent;}
   #p-ranks .lb-tabs button.lb-suggest:hover{color:var(--gold-ink); background:var(--gold); border-style:solid;}
+  #p-ranks .lb-period{display:flex; gap:6px; flex-wrap:wrap; margin:0 0 12px;}
+  #p-ranks .lb-period button{padding:5px 12px; border-radius:8px; border:1px solid var(--line); background:transparent; color:var(--dim); font-weight:600; font-size:12px; cursor:pointer; transition:all .15s;}
+  #p-ranks .lb-period button:hover{color:var(--ink); border-color:var(--gold-soft);}
+  #p-ranks .lb-period button.on{color:var(--ink); background:var(--panel); border-color:var(--gold-soft);}
+  #p-ranks .lb-period.off{opacity:.4; pointer-events:none;}
   #p-ranks .lb-explain{font-size:12px; line-height:1.5; color:var(--dim); margin:-6px 0 12px; padding:9px 12px; background:var(--panel); border:1px solid var(--line); border-radius:9px;}
   #p-ranks .lb-explain b{color:var(--ink);}
   #p-ranks .lb-explain .how{display:block; margin-top:3px; color:var(--dim); opacity:.82; font-size:11px;}
@@ -538,6 +543,12 @@
         <button data-lt="combo">🎯 Combo</button>
         <button data-lt="rating">⚔️ Ranked</button>
         <button class="lb-suggest" id="lbSuggest" title="Suggest a stat for the leaderboards">💡 Suggest a stat</button>
+      </div>
+      <div class="lb-period" id="lbPeriod">
+        <button data-lp="all" class="on">All-time</button>
+        <button data-lp="day">Today</button>
+        <button data-lp="week">This week</button>
+        <button data-lp="month">This month</button>
       </div>
       <div class="lb-explain" id="lbExplain"></div>
       <div class="lb-list" id="lbList"><div class="lb-empty">LOADING…</div></div>
@@ -2052,7 +2063,8 @@ $('#fxSpeed').oninput=()=>{ if(fxMode) invoke('set_effect',{mode:fxMode,speed:+$
 $('#btnReset').onclick=async()=>{ activeSkins={}; myTeam=[]; for(let i=localStorage.length-1;i>=0;i--){ const k=localStorage.key(i); if(k&&k.startsWith('mvcskin_')) localStorage.removeItem(k); } fxMode=0; $$('.fx').forEach(b=>b.classList.toggle('on',+b.dataset.m===0)); try{ await invoke('reset_all'); }catch(e){} if(syncOn) publishMine(); renderYou(); toast('reset to stock'); };
 
 // ── Leaderboard (Ranks tab) — global Hall of Fame from the skinsync server ──
-let lbTab='streak', lbLoading=false;
+let lbTab='streak', lbPeriod='all', lbLoading=false;
+const LB_PERIOD_LABEL={all:'all-time',day:'today',week:'this week',month:'this month'};
 const LB_STAT_LABEL={streak:'streak',wins:'wins',ocv:'OCVs',perfect:'perfects',comeback:'comebacks',combo:'max combo',rating:'ELO'};
 // What each leaderboard stat means + which match data decides it (shown under the tabs).
 const LB_STAT_INFO={
@@ -2068,16 +2080,21 @@ const esc=s=>String(s==null?'':s).replace(/[<>&"]/g,c=>({'<':'&lt;','>':'&gt;','
 async function renderLeaderboard(tab){
   lbTab=tab||lbTab;
   $$('#lbTabs button').forEach(b=>b.classList.toggle('on',b.dataset.lt===lbTab));
+  // Ranked (ELO) is cumulative skill → always all-time; grey out the period switch for it.
+  const ranked=lbTab==='rating';
+  if(ranked) lbPeriod='all';
+  $('#lbPeriod')?.classList.toggle('off',ranked);
+  $$('#lbPeriod button').forEach(b=>b.classList.toggle('on',b.dataset.lp===lbPeriod));
   const info=LB_STAT_INFO[lbTab], ex=$('#lbExplain');
   if(ex&&info){ ex.innerHTML=`<b>${esc(info.t)}</b> — ${esc(info.d)}<span class="how">How it's scored: ${esc(info.h)}</span>`; }
   const list=$('#lbList'); if(!list||!invoke) return;
   if(lbLoading) return; lbLoading=true;
   if(!list.children.length||list.querySelector('.lb-empty')) list.innerHTML='<div class="lb-empty">LOADING…</div>';
   try{
-    const res=await invoke('leaderboard',{tab:lbTab,limit:15});
+    const res=await invoke('leaderboard',{tab:lbTab,period:lbPeriod,limit:15});
     const players=(res&&res.players)||[];
     const mine=(mySteam&&mySteam.steamid)?String(mySteam.steamid):null;
-    if(!players.length){ list.innerHTML='<div class="lb-empty">NO RANKINGS YET — WIN A MATCH TO GET ON THE BOARD</div>'; return; }
+    if(!players.length){ list.innerHTML=`<div class="lb-empty">NO RANKINGS ${lbPeriod==='all'?'YET':'FOR '+(LB_PERIOD_LABEL[lbPeriod]||'').toUpperCase()} — WIN A MATCH TO GET ON THE BOARD</div>`; return; }
     const lab=LB_STAT_LABEL[lbTab]||'';
     list.innerHTML=players.map((p,i)=>{
       const isMe=mine&&String(p.steamid)===mine;
@@ -2093,6 +2110,7 @@ async function renderLeaderboard(tab){
   finally{ lbLoading=false; }
 }
 $('#lbTabs')?.addEventListener('click',e=>{ const b=e.target.closest('button'); if(!b) return; if(b.id==='lbSuggest') return openSuggest(); renderLeaderboard(b.dataset.lt); });
+$('#lbPeriod')?.addEventListener('click',e=>{ const b=e.target.closest('button'); if(!b) return; lbPeriod=b.dataset.lp; renderLeaderboard(); });
 $('#lbRefresh')?.addEventListener('click',()=>renderLeaderboard());
 
 // ── Suggest-a-stat: community proposals → server (POST /skinsync/suggest) ──
@@ -2125,13 +2143,17 @@ async function openProfile(sid,nm){
     const gp=(p.wins||0)+(p.losses||0), wr=gp?Math.round(100*(p.wins||0)/gp):0;
     const teams=(p.teams||[]).slice(0,8).map(t=>{ const cids=String(t.team).split(',').map(Number); const tw=t.games?Math.round(100*t.wins/t.games):0;
       return `<tr><td>${esc(teamStr(cids))}</td><td>${t.games}</td><td>${t.wins}</td><td>${tw}%</td></tr>`; }).join('');
+    const vs=(p.vs||[]).slice(0,30).map(v=>{ const g=v.games||0, w=v.wins||0, l=v.losses||0, r=g?Math.round(100*w/g):0;
+      return `<tr class="lb-click" data-sid="${esc(v.opp_id)}" data-nm="${esc(v.name||'Player')}"><td>${esc(v.name||'Player')}</td><td>${w}–${l}</td><td>${r}%</td><td>${g}</td></tr>`; }).join('');
     const recent=(p.recent||[]).slice(0,15).map(m=>`<tr class="${m.won?'w':'l'}">
-      <td>${m.won?'W':'L'}</td><td>${esc(m.opp||'?')}</td><td>${esc(teamStr(m.my_team))}</td><td>${esc(teamStr(m.opp_team))}</td>
+      <td>${m.won?'W':'L'}</td><td class="lb-click" data-sid="${esc(m.opp_id||'')}" data-nm="${esc(m.opp||'')}">${esc(m.opp||'?')}</td><td>${esc(teamStr(m.my_team))}</td><td>${esc(teamStr(m.opp_team))}</td>
       <td>${m.combo?('🎯'+m.combo):''}${m.ocv?' 💥':''}${m.perfect?' ✨':''}${m.comeback?' 🔄':''}</td></tr>`).join('');
     body.innerHTML=`<h3>${esc(p.name||nm||'Player')}</h3>
       <div class="pf-stats"><span>⚔️ <b>${esc(p.rank||'Warrior')}</b> · ${p.rating||1000} ELO</span><span><b>${p.wins||0}</b>W · <b>${p.losses||0}</b>L</span><span><b>${wr}%</b> win</span>
         <span>🔥 <b>${p.best_streak||0}</b></span><span>🎯 <b>${p.best_combo||0}</b></span>
         <span>💥 ${p.ocvs||0} · ✨ ${p.perfects||0} · 🔄 ${p.comebacks||0}</span></div>
+      <h4>Head-to-head vs players <span style="text-transform:none;letter-spacing:0;color:#8b90a5;font-weight:400">— click a name to open their profile</span></h4>
+      <table class="pf-tbl"><tr><th>Player</th><th>Record</th><th>WR</th><th>GP</th></tr>${vs||'<tr><td colspan="4">— no games yet</td></tr>'}</table>
       <h4>Team compositions</h4>
       <table class="pf-tbl"><tr><th>Team</th><th>GP</th><th>W</th><th>WR</th></tr>${teams||'<tr><td colspan="4">—</td></tr>'}</table>
       <h4>Recent matches</h4>
@@ -2139,6 +2161,8 @@ async function openProfile(sid,nm){
   }catch(e){ body.innerHTML='<div class="lb-empty">PROFILE UNAVAILABLE</div>'; }
 }
 $('#lbList')?.addEventListener('click',e=>{ const n=e.target.closest('.lb-click'); if(n) openProfile(n.dataset.sid,n.dataset.nm); });
+// inside an open profile, clicking an opponent (head-to-head or recent) opens THEIR profile
+$('#pfBody')?.addEventListener('click',e=>{ const n=e.target.closest('.lb-click'); if(n&&n.dataset.sid&&n.dataset.sid.length===17) openProfile(n.dataset.sid,n.dataset.nm); });
 $('#pfX')?.addEventListener('click',()=>$('#pfModal').classList.remove('show'));
 $('#pfModal')?.addEventListener('click',e=>{ if(e.target.id==='pfModal') e.currentTarget.classList.remove('show'); });
 function refreshRomChip(p){ const ok=p&&p!=='(not set)'&&p!=='(not found)'; $('#romChipTxt').textContent = ok ? (p.split(/[\\/]/).pop()||p) : 'not set'; $('#romChip').classList.toggle('set',!!ok); $('#romChip').title = ok?('ROM: '+p):'Set your Steam install / game_50.arc — required for Bake'; }
