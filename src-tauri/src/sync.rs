@@ -1509,7 +1509,11 @@ struct ScoreState { set_opp: Option<String>, p1: u32, p2: u32, was_in: bool, la1
     g1_met: u32, g2_met: u32, last_m1: u8, last_m2: u8, met_init: bool,
     // Games finished BEFORE the side was confirmed — held here (never recorded) and committed the moment the user
     // confirms their side (the "never record a guess" gate). Cleared with the rest on a new opponent.
-    pending: Vec<PendingGame> }
+    pending: Vec<PendingGame>,
+    // CONFIRMED-KO debounce: pend_w = the side that looks KO-winner right now (a team FULLY dead), pend_n =
+    // consecutive cycles it has held. We only record once pend_n reaches 2 — that rides out the speculative
+    // rollback frame the app used to judge from (logger-proven: the array shows the RIGHT winner once settled).
+    pend_w: u8, pend_n: u32 }
 
 // A finished game held until the side is confirmed. winner = the side (1/2) that won; my_side is resolved at commit.
 #[derive(Clone)]
@@ -1684,31 +1688,35 @@ fn update_score(st: &mut ScoreState, game: &Option<GameSt>, opp: &Option<(String
                 if g.meter1 < st.last_m1 { st.g1_met += (st.last_m1 - g.meter1) as u32; }   // bars spent = decreases
                 if g.meter2 < st.last_m2 { st.g2_met += (st.last_m2 - g.meter2) as u32; }
                 st.last_m1 = g.meter1; st.last_m2 = g.meter2;
-                if !st.judged && st.saw_both {                 // KO edge (only for a game we saw contested)
-                    if st.la1 && !a1 && a2 {
-                        st.p2 += 1; st.judged = true; let r = rich_of(st);
-                        let (o, p, c) = (alive_ct(2) == 3, !st.g2_dmg, st.g2_low);
-                        commit_or_buffer(st, 2, opp, confirmed, my_side, o, p, c, r);
-                    } else if st.la2 && !a2 && a1 {
-                        st.p1 += 1; st.judged = true; let r = rich_of(st);
-                        let (o, p, c) = (alive_ct(1) == 3, !st.g1_dmg, st.g1_low);
-                        commit_or_buffer(st, 1, opp, confirmed, my_side, o, p, c, r);
-                    }
+                // CONFIRMED-KO winner: one team FULLY dead (no fighter alive) while the other still has one. Require
+                // it to HOLD for 2 cycles (pend_n>=2) so the speculative rollback frame — where the wrong team
+                // briefly reads dead — is never recorded. Once rollback settles the array shows the true winner
+                // (logger-proven). cur_w: 1 = P1(even) won, 2 = P2(odd) won, 0 = no KO (both alive or both dead).
+                let cur_w = if !a1 && a2 { 2u8 } else if !a2 && a1 { 1u8 } else { 0u8 };
+                if cur_w != 0 && cur_w == st.pend_w { st.pend_n = st.pend_n.saturating_add(1); }
+                else { st.pend_w = cur_w; st.pend_n = if cur_w != 0 { 1 } else { 0 }; }
+                if !st.judged && st.saw_both && cur_w != 0 && st.pend_n >= 2 {
+                    st.judged = true; let r = rich_of(st);
+                    if cur_w == 2 { st.p2 += 1; let (o, p, c) = (alive_ct(2) == 3, !st.g2_dmg, st.g2_low); commit_or_buffer(st, 2, opp, confirmed, my_side, o, p, c, r); }
+                    else          { st.p1 += 1; let (o, p, c) = (alive_ct(1) == 3, !st.g1_dmg, st.g1_low); commit_or_buffer(st, 1, opp, confirmed, my_side, o, p, c, r); }
                 }
                 st.la1 = a1; st.la2 = a2; st.was_in = true;
-            } else if st.was_in && !st.judged && st.saw_both { // match ended before the KO edge (contested game only)
-                if st.la1 && !st.la2 { st.p1 += 1; st.judged = true; let r = rich_of(st); let (p, c) = (!st.g1_dmg, st.g1_low); commit_or_buffer(st, 1, opp, confirmed, my_side, false, p, c, r); }
-                else if st.la2 && !st.la1 { st.p2 += 1; st.judged = true; let r = rich_of(st); let (p, c) = (!st.g2_dmg, st.g2_low); commit_or_buffer(st, 2, opp, confirmed, my_side, false, p, c, r); }
-                else { trace(&format!("[record] MISS(match-end) — both sides last-alive la1={} la2={} → winner unknown, game dropped (under-count cause)", st.la1, st.la2)); }
-                st.was_in = false; st.saw_both = false;
+            } else if st.was_in && !st.judged && st.saw_both { // match-flag off before we confirmed in-frame → settle from the pending KO (the round is over, so its last state is settled)
+                if st.pend_w != 0 && st.pend_n >= 1 {
+                    st.judged = true; let r = rich_of(st);
+                    if st.pend_w == 1 { st.p1 += 1; let (p, c) = (!st.g1_dmg, st.g1_low); commit_or_buffer(st, 1, opp, confirmed, my_side, false, p, c, r); }
+                    else { st.p2 += 1; let (p, c) = (!st.g2_dmg, st.g2_low); commit_or_buffer(st, 2, opp, confirmed, my_side, false, p, c, r); }
+                } else { trace(&format!("[record] MISS(match-end) — no KO seen (pend_w={} pend_n={}) → dropped (under-count)", st.pend_w, st.pend_n)); }
+                st.was_in = false; st.saw_both = false; st.pend_w = 0; st.pend_n = 0;
             } else { st.was_in = g.in_match == 1; if g.in_match != 1 { st.saw_both = false; } }
         }
-        None => {   // game data gone (liveness gate / match over): judge from the LAST-known alive states
-            if st.was_in && !st.judged && st.saw_both {
-                if st.la1 && !st.la2 { st.p1 += 1; st.judged = true; let r = rich_of(st); let (p, c) = (!st.g1_dmg, st.g1_low); commit_or_buffer(st, 1, opp, confirmed, my_side, false, p, c, r); }
-                else if st.la2 && !st.la1 { st.p2 += 1; st.judged = true; let r = rich_of(st); let (p, c) = (!st.g2_dmg, st.g2_low); commit_or_buffer(st, 2, opp, confirmed, my_side, false, p, c, r); }
+        None => {   // game data gone (liveness gate / match over): settle from the pending KO (round is over → settled)
+            if st.was_in && !st.judged && st.saw_both && st.pend_w != 0 && st.pend_n >= 1 {
+                st.judged = true; let r = rich_of(st);
+                if st.pend_w == 1 { st.p1 += 1; let (p, c) = (!st.g1_dmg, st.g1_low); commit_or_buffer(st, 1, opp, confirmed, my_side, false, p, c, r); }
+                else { st.p2 += 1; let (p, c) = (!st.g2_dmg, st.g2_low); commit_or_buffer(st, 2, opp, confirmed, my_side, false, p, c, r); }
             }
-            st.was_in = false; st.saw_both = false;
+            st.was_in = false; st.saw_both = false; st.pend_w = 0; st.pend_n = 0;
         }
     }
 }
@@ -2484,7 +2492,12 @@ pub fn start_reader() {
             // read (previous match's value lingering at char-select) can never lock the wrong side.
             if game.is_some() && exe_base != 0 {
                 if let Some(pn) = unsafe { rpm_u32(h, exe_base + LOCALPLAYER_OFF) } {
-                    let side = match pn { 0 => 1u8, 1 => 2u8, _ => 0u8 };
+                    // gs-90 EMPIRICAL CORRECTION: localPlayerNum=0 → the local player is P2, =1 → P1 (the
+                    // OPPOSITE of the old assumption). Confirmed across 3 live sessions cross-checked by team
+                    // (Mag/Storm/Col) parity AND spawn position (P1 spawns left): lpn=1 landed on the even/left/P1
+                    // team, lpn=0 on the odd/right/P2 team, every time. The old 0→P1 mapping put the overlay on the
+                    // wrong side (records stayed right only because the winner read was ALSO inverted — both fixed together).
+                    let side = match pn { 0 => 2u8, 1 => 1u8, _ => 0u8 };
                     if side != 0 && side == side_seen { side_stable = side_stable.saturating_add(1); }
                     else { side_seen = side; side_stable = if side != 0 { 1 } else { 0 }; }
                     if side_stable >= 2 {
