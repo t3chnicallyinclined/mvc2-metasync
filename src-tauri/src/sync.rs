@@ -740,9 +740,30 @@ pub fn capture_stop() -> Result<serde_json::Value, String> {
 // game start and STOPS (but keeps the buffer) at game end. The reader thread's on_game_win() snapshots
 // that buffer and spawns the upload alongside the /result report (never on the reader hot path).
 static SHARE_GAMEPLAY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true); // beta default = share
+// TRUE while a live match is actively being recorded. The uploader NEVER runs while this is set, so a big
+// spooled upload can never compete with the game for CPU/IO — recordings are drained only between matches.
+static GS_IN_MATCH: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 const SHARE_FILE: &str = "C:\\g\\share_gameplay.txt";
 const GS_CAP: usize = 20_000;                       // max unique frames buffered per game (~5.5 min @60fps)
+const GS_SPOOL_CAP: usize = 300;                    // max pending recordings on disk (soft backpressure)
 const SKINSYNC_GAMESTATE: &str = "https://nobd.net/skinsync/gamestate";
+
+// Per-user spool for finished recordings, drained by the uploader between matches. LOCALAPPDATA so it
+// survives an app restart (a recording captured before a crash still uploads next launch); temp is a fallback.
+fn gs_cache_dir() -> std::path::PathBuf {
+    let base = std::env::var("LOCALAPPDATA").ok().map(std::path::PathBuf::from)
+        .unwrap_or_else(std::env::temp_dir);
+    let dir = base.join("MetaSync").join("gs-cache");
+    let _ = std::fs::create_dir_all(&dir);
+    dir
+}
+// Write bytes atomically (tmp + rename) so the uploader never reads a half-written spool file. The tmp
+// suffix (.gz→.gztmp / .meta→.metatmp) is chosen so it can't collide with the *.meta scan pattern.
+fn atomic_write(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
+    let tmp = path.with_extension("writing");
+    std::fs::write(&tmp, bytes)?;
+    std::fs::rename(&tmp, path)
+}
 const GS_SCHEMA: &str = "[frame,p1_in,p2_in,hp[6],px[6],py[6],p1_meter,p2_meter,meter_fill,combo_dealt[6],combo_recv[6],vx[6],vy[6],red_hp[6],facing[6],hitstun[6],action[6]]";
 
 fn gs_now_ms() -> u64 { std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0) }
@@ -913,6 +934,7 @@ fn start_gamestate_capture() {
                 c.assist = assist;
                 c.last_update = None;
             }
+            GS_IN_MATCH.store(true, SeqCst);   // pause the uploader for the duration of the fight
             trace(&format!("[gamestate] recording START base=0x{base:x} fc={} (share={})",
                 fc.map(|a| format!("0x{a:x}")).unwrap_or_else(|| "SYNTHETIC".into()), SHARE_GAMEPLAY.load(SeqCst)));
 
@@ -944,6 +966,7 @@ fn start_gamestate_capture() {
                 if !unsafe { array_valid(h, base) } { break; }                                 // array relocated/gone
                 std::thread::sleep(std::time::Duration::from_millis(3));                        // ~gentle fast poll, dedup by frame
             }
+            GS_IN_MATCH.store(false, SeqCst);  // fight over → the uploader may drain the spool again
             {
                 let n = gs_capture().lock().unwrap().frames.len();
                 trace(&format!("[gamestate] recording END frames={n} (held for upload on win-report)"));
@@ -979,10 +1002,18 @@ fn b64_encode(data: &[u8]) -> String {
     out
 }
 
-// Build the stored record (metadata + frame array), gzip it, base64 it, and POST it to /skinsync/gamestate.
-// The stored <match_key>_<reporter>.json.gz gunzips to this exact record. Fire-and-forget; never blocks.
-fn upload_gamestate(match_key: &str, reporter: &str, side: u8, p1_team: &[u8], p2_team: &[u8],
-                    winner: &str, loser: &str, gs: &GsSnapshot) {
+// Build the stored record (metadata + frame array), gzip it, and SPOOL it to the local cache as
+// <match_key>_<reporter>.json.gz + a .meta envelope. The uploader drains the spool between matches, so no
+// large upload ever runs during a fight. The .gz gunzips to this exact record (server writes it verbatim).
+fn spool_gamestate(match_key: &str, reporter: &str, side: u8, p1_team: &[u8], p2_team: &[u8],
+                   winner: &str, loser: &str, gs: &GsSnapshot) {
+    let dir = gs_cache_dir();
+    // soft backpressure: if uploads are failing and the spool is huge, stop piling on.
+    let pending = std::fs::read_dir(&dir)
+        .map(|rd| rd.flatten().filter(|e| e.file_name().to_string_lossy().ends_with(".meta")).count())
+        .unwrap_or(0);
+    if pending >= GS_SPOOL_CAP { trace(&format!("[gamestate] spool full ({pending}) — dropping {match_key}")); return; }
+
     let ts = gs_now_ms();
     let id = format!("{}_{}", match_key, reporter);
     let frames: Vec<serde_json::Value> = gs.frames.iter().map(|r| serde_json::json!([
@@ -1001,15 +1032,92 @@ fn upload_gamestate(match_key: &str, reporter: &str, side: u8, p1_team: &[u8], p
         "frame_count": frames.len(), "frames": frames,
     });
     let gz = gzip_bytes(&serde_json::to_vec(&record).unwrap_or_default());
-    let frames_gz = b64_encode(&gz);
-    // plain envelope: metadata the server can index/validate WITHOUT gunzipping + the gzipped artifact
-    let body = serde_json::json!({
+
+    // "Only one person needs to upload." The designated uploader is the participant with the smaller
+    // SteamID (both are 17-digit steamid64 → lexicographic == numeric). The other side waits a grace window
+    // and only uploads if the designated one never did (offline). The server exists-check is the real backstop.
+    let other = if reporter == winner { loser } else { winner };
+    let designated = reporter < other;
+
+    // envelope the uploader POSTs (frames_gz gets base64'd from the .gz at upload time) + spool bookkeeping.
+    let meta = serde_json::json!({
         "match_key": match_key, "reporter": reporter, "side": side,
         "p1_team": p1_team, "p2_team": p2_team, "winner": winner, "loser": loser,
         "assist_p1": assist_p1, "assist_p2": assist_p2,
-        "ts": ts, "schema": GS_SCHEMA, "frames_gz": frames_gz,
+        "ts": ts, "schema": GS_SCHEMA,
+        "designated": designated, "spool_ts": ts,
     });
-    let _ = ureq::post(SKINSYNC_GAMESTATE).timeout(std::time::Duration::from_secs(20)).send_json(body);
+    let base = format!("{}_{}", match_key, reporter);
+    let _ = atomic_write(&dir.join(format!("{base}.json.gz")), &gz);
+    let _ = atomic_write(&dir.join(format!("{base}.meta")), &serde_json::to_vec(&meta).unwrap_or_default());
+    trace(&format!("[gamestate] spooled {} frames -> {base} (designated={designated})", frames.len()));
+}
+
+// Does the server already hold a recording for this match_key (either side)? Clients check this before
+// uploading so a match is stored once. A network error returns false → we attempt the upload anyway (the
+// server is idempotent per reporter, so a duplicate is harmless).
+fn gs_exists_on_server(match_key: &str) -> bool {
+    match ureq::get(&format!("{}/gamestate/exists?key={}", SKINSYNC, match_key))
+        .timeout(std::time::Duration::from_secs(6)).call() {
+        Ok(resp) => resp.into_json::<serde_json::Value>().ok()
+            .and_then(|v| v.get("exists").and_then(|b| b.as_bool())).unwrap_or(false),
+        Err(_) => false,
+    }
+}
+
+// Drain the local spool: for each finished recording, dedup-check then POST. Runs ONLY between matches
+// (GS_IN_MATCH is false) so it never competes with the game. Returns after the first match that starts.
+fn drain_gs_cache() {
+    use std::sync::atomic::Ordering::SeqCst;
+    let dir = gs_cache_dir();
+    let rd = match std::fs::read_dir(&dir) { Ok(r) => r, Err(_) => return };
+    let now = gs_now_ms();
+    for e in rd.flatten() {
+        // a match just started, or sharing was turned off → stop immediately, resume next idle cycle.
+        if GS_IN_MATCH.load(SeqCst) || !SHARE_GAMEPLAY.load(SeqCst) { return; }
+        let fname = e.file_name().to_string_lossy().to_string();
+        if !fname.ends_with(".meta") { continue; }
+        let base = &fname[..fname.len() - 5];
+        let meta_path = dir.join(&fname);
+        let gz_path = dir.join(format!("{base}.json.gz"));
+        let cleanup = || { let _ = std::fs::remove_file(&meta_path); let _ = std::fs::remove_file(&gz_path); };
+
+        let meta: serde_json::Value = match std::fs::read_to_string(&meta_path).ok()
+            .and_then(|t| serde_json::from_str(&t).ok()) { Some(v) => v, None => { cleanup(); continue; } };
+        let key = meta.get("match_key").and_then(|v| v.as_str()).unwrap_or("");
+        if key.is_empty() { cleanup(); continue; }
+        let spool_ts = meta.get("spool_ts").and_then(|v| v.as_u64()).unwrap_or(0);
+        let designated = meta.get("designated").and_then(|v| v.as_bool()).unwrap_or(true);
+
+        // prune recordings stuck for over a week (server unreachable the whole time).
+        if now.saturating_sub(spool_ts) > 7 * 24 * 3600 * 1000 { cleanup(); continue; }
+        // non-designated side holds off ~90s so the designated uploader goes first (dedup below then wins).
+        if !designated && now.saturating_sub(spool_ts) < 90_000 { continue; }
+        // already on the server (the opponent uploaded it)? drop our copy.
+        if gs_exists_on_server(key) { trace(&format!("[gamestate] {key} already on server — dropping local")); cleanup(); continue; }
+
+        // upload: base64 the spooled gz and POST the envelope + frames_gz.
+        let gz = match std::fs::read(&gz_path) { Ok(b) => b, Err(_) => { cleanup(); continue; } };
+        let mut body = meta.clone();
+        if let Some(o) = body.as_object_mut() { o.remove("designated"); o.remove("spool_ts"); o.insert("frames_gz".into(), serde_json::Value::from(b64_encode(&gz))); }
+        match ureq::post(SKINSYNC_GAMESTATE).timeout(std::time::Duration::from_secs(30)).send_json(body) {
+            Ok(_) => { trace(&format!("[gamestate] uploaded {base} ({} bytes gz)", gz.len())); cleanup(); }
+            Err(e) => { trace(&format!("[gamestate] upload {base} failed ({e}) — retry next cycle")); }
+        }
+    }
+}
+
+// Background uploader: drains the spool at startup and every ~20s, but only between matches. Own thread so
+// the reader/UI never block on the network.
+fn start_gamestate_uploader() {
+    std::thread::spawn(|| {
+        use std::sync::atomic::Ordering::SeqCst;
+        std::thread::sleep(std::time::Duration::from_secs(6)); // let the app settle before the first drain
+        loop {
+            if SHARE_GAMEPLAY.load(SeqCst) && !GS_IN_MATCH.load(SeqCst) { drain_gs_cache(); }
+            std::thread::sleep(std::time::Duration::from_secs(20));
+        }
+    });
 }
 
 fn is_wb(v: u32) -> bool { v >= WB_LO && v < WB_HI }
@@ -1367,8 +1475,8 @@ fn report_result_server(reporter: String, winner: String, winner_name: String, l
         if !SHARE_GAMEPLAY.load(SeqCst) { return; }
         let gs = match gs { Some(g) => g, None => return };
         let key = match key { Some(k) if !k.is_empty() => k, _ => { trace("[gamestate] no match_key returned — skipping recording upload"); return; } };
-        upload_gamestate(&key, &reporter, side, &p1_team, &p2_team, &winner, &loser, &gs);
-        trace(&format!("[gamestate] uploaded {} frames as {}_{}", gs.frames.len(), key, reporter));
+        spool_gamestate(&key, &reporter, side, &p1_team, &p2_team, &winner, &loser, &gs);
+        trace(&format!("[gamestate] spooled {} frames as {}_{} (uploads between matches)", gs.frames.len(), key, reporter));
     });
 }
 
@@ -1998,6 +2106,7 @@ pub fn start_reader() {
     // start_inputdec_detector();
     load_share_setting();            // restore the gameplay-data sharing consent (beta default = on)
     start_gamestate_capture();       // dedicated fast thread: auto-records full per-frame state during matches
+    start_gamestate_uploader();      // drains the recording spool between matches (dedup'd, never during a fight)
     std::thread::spawn(|| {
         let mut cur_pid: u32 = 0;
         let mut injected_pid: u32 = 0;   // gs-75: auto-inject the render hook once per game session (pid)
