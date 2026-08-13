@@ -1402,16 +1402,41 @@ unsafe fn find_array(h: HANDLE) -> Option<usize> {
     }
     if cands.is_empty() { return None; }
     cands.sort_by(|a, b| b.1.cmp(&a.1));
-    // LIVENESS: a live match animates the fighter structs every frame; a frozen/stale copy (a leftover
-    // post-match savestate — the trace's endless phantom wins) does not. Sample each candidate's animating
-    // region, wait, re-sample, and PREFER whichever actually changed, so we never lock a frozen buffer.
-    // LIVENESS (capture-confirmed): only the LIVE array's per-frame fields (position/velocity @ +0x61c..0x64c)
-    // move every frame; the rollback savestate COPIES are frozen snapshots — the app's fixed anchor lands on
-    // one, which is the whole bug. Probe that region across ~180ms (~11 frames) and lock ONLY a candidate that
-    // actually MOVED. If none moved this instant, return None and retry — never lock a static copy.
-    // LIVENESS: sample a WIDE per-fighter region — position/velocity (0x61c, live on this build, external-logger
-    // confirmed) AND the action/animation area (0x100) — and prefer the candidate that CHANGED across ~180ms (the
-    // live fight animates every frame; rollback savestate COPIES are frozen).
+
+    // ── FRAME-COUNTER live-copy selection (gs-97, the DEFINITIVE stale-read fix) ──
+    // The rollback netcode keeps ~14 full savestate COPIES of guest RAM, each with the fighter array at the SAME
+    // offset. The animation heuristic below can lock a re-simulating STALE copy and the reader then caches it for
+    // a WHOLE match → systematically wrong health → inverted W/L for every game of a set (the Rychu04 8↔2 flip).
+    // The LIVE copy is the one at the CURRENT frame: its frame counter is HIGHEST and ADVANCING; every savestate
+    // holds an OLDER frame. The counter sits at a FIXED offset from the array (both live in guest RAM at fixed
+    // guest offsets), so we locate that offset ONCE (cached) and then pick the candidate whose counter is highest
+    // among those still advancing. This is immune to how many copies exist or where ASLR put them.
+    static FC_REL: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
+    let mut fc_rel = FC_REL.load(std::sync::atomic::Ordering::Relaxed);
+    if fc_rel == 0 {
+        // find the per-frame counter near a candidate (any copy with an advancing counter works — the offset is
+        // shared across all copies). Try the top few by score so a frozen top candidate doesn't block discovery.
+        for &(c, _) in cands.iter().take(5) {
+            if let Some(fc) = hunt_frame_counter(h, c) { fc_rel = fc as i64 - c as i64; FC_REL.store(fc_rel, std::sync::atomic::Ordering::Relaxed); break; }
+        }
+    }
+    if fc_rel != 0 {
+        let fc_of = |c: usize| -> Option<u32> { rpm_u32(h, (c as i64 + fc_rel) as usize) };
+        let t0: Vec<Option<u32>> = cands.iter().map(|&(c, _)| fc_of(c)).collect();
+        std::thread::sleep(std::time::Duration::from_millis(120));
+        let mut best: Option<(u32, usize)> = None;   // (frame_counter, base) — highest ADVANCING = the live copy
+        for (i, &(c, _)) in cands.iter().enumerate() {
+            if let (Some(a), Some(b)) = (t0[i], fc_of(c)) {
+                if b > a && b != 0xffff_ffff && best.map_or(true, |(bb, _)| b > bb) { best = Some((b, c)); }
+            }
+        }
+        if let Some((_, c)) = best { return Some(c); }
+        // counter located but nothing advanced this instant (a lull between rounds) → fall through to animation.
+    }
+
+    // FALLBACK — animation probe (used until the frame counter is located, or in a lull): sample a wide per-fighter
+    // region (position/velocity 0x61c + action/anim 0x100) across ~180ms and take the MOST-changed candidate; None
+    // if nothing moved (never lock a frozen copy — the 0.1.25 best-effort-stale regression).
     let anim = |c: usize| -> Vec<u8> {
         let mut v = Vec::with_capacity(6 * 0x80);
         for i in 0..6 {
@@ -1422,12 +1447,6 @@ unsafe fn find_array(h: HANDLE) -> Option<usize> {
     };
     let before: Vec<Vec<u8>> = cands.iter().map(|&(c, _)| anim(c)).collect();
     std::thread::sleep(std::time::Duration::from_millis(180));
-    // Pick the MOST-animating candidate (largest byte-delta), not just the first that moved. During netplay the
-    // rollback keeps ~14 savestate COPIES and several twitch; the TRUE live fight changes the MOST. Return None if
-    // NOTHING moved this instant (a lull) and let the caller retry — do NOT lock a frozen/stale copy. (Returning a
-    // best-effort stale copy here was the 0.1.25 regression: the reader latched a PREVIOUS round's savestate → a
-    // phantom Ryu on the cards and an INVERTED win/loss when that copy had the other team dead. find_array is
-    // primary + runs every ~1.2s, so a genuine live fight is re-acquired within a cycle without the stale fallback.)
     let mut best: Option<(usize, usize)> = None;   // (change_count, base)
     for (i, &(c, _)) in cands.iter().enumerate() {
         if before[i].is_empty() { continue; }
