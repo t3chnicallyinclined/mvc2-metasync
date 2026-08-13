@@ -1141,6 +1141,7 @@ fn spool_gamestate(match_key: &str, reporter: &str, side: u8, p1_team: &[u8], p2
         "id": id, "match_key": match_key, "reporter": reporter, "side": side,
         "local_pn": gs.local_pn,   // raw localPlayerNum (0/1/255=unknown) — candidate side signal for offline validation
         "session_id": session_id, "match_index": match_index,   // gs-96: the ranked set this game belongs to
+        "ver": env!("CARGO_PKG_VERSION"),   // gs-98: app build that recorded this (fixed vs pre-fix)
         "p1_team": p1_team, "p2_team": p2_team, "winner": winner, "loser": loser,
         "assist": gs.assist, "assist_p1": assist_p1, "assist_p2": assist_p2,
         "ts": ts, "schema": GS_SCHEMA,
@@ -1158,7 +1159,7 @@ fn spool_gamestate(match_key: &str, reporter: &str, side: u8, p1_team: &[u8], p2
     // envelope the uploader POSTs (frames_gz gets base64'd from the .gz at upload time) + spool bookkeeping.
     let meta = serde_json::json!({
         "match_key": match_key, "reporter": reporter, "side": side,
-        "session_id": session_id, "match_index": match_index,
+        "session_id": session_id, "match_index": match_index, "ver": env!("CARGO_PKG_VERSION"),
         "p1_team": p1_team, "p2_team": p2_team, "winner": winner, "loser": loser,
         "assist_p1": assist_p1, "assist_p2": assist_p2,
         "ts": ts, "schema": GS_SCHEMA,
@@ -1713,6 +1714,7 @@ fn report_result_server(reporter: String, winner: String, winner_name: String, l
             "winner_team": winner_team, "loser_team": loser_team, "biggest_combo": biggest_combo, "meters_used": meters_used,
             "side": side,   // gs-92: which side the reporter was (1=P1,2=P2) — makes every game auditable server-side
             "session_id": session_id, "match_index": match_index,   // gs-96: tie each game to its ranked set (≤10 games)
+            "ver": env!("CARGO_PKG_VERSION"),   // gs-98: which app build recorded this — so we can tell fixed vs pre-fix
         });
         // capture the server-derived match_key from the /result response (single source of truth → both
         // players consense on ONE key, and each tags its own recording with it).
