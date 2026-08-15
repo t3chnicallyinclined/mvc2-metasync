@@ -58,3 +58,5 @@ docs/*-CONTEXT*.md
 # deploy artifacts (session)
 /ghrel/
 /latest.json
+latest.json
+src-tauri/latest.json
