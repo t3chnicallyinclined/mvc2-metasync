@@ -81,6 +81,14 @@ const GSTATE_PTR_OFF:  usize = 0xacd3a0;    // exe global → pointer to game_st
 const PICKS_OFF:       usize = 0x758;       // char-select LOCKED picks (stride-4 char_ids) at game_state+this
 const SESSION_PTR_OFF: usize = 0xacd3a8;    // exe global → pointer to the online SESSION object (hosted-lobby state).
                                             //   Adjacent to game_state (0xacd3a0); read only by the hosted-lobby path.
+// ── Tier-3 set-score (the game's OWN per-set WINS tally — the HUD "WINS" counter). exe-relative global →
+// POINTER to the set-score block: sc = *(exe+SET_SCORE_PTR_OFF). The tally increments on ANY game win — KO OR
+// TIMEOUT — resetting per set, so a game-over always bumps exactly one side by +1. Read-only + ADDITIVE: the
+// SERVER derives/auto-confirms the winner from the delta (covers timeouts the health-KO judge can't). Live-
+// validated 2026-08-16 (lobby RE). Side mapping is the SAME as everywhere: localPlayerNum 0→P1, 1→P2.
+const SET_SCORE_PTR_OFF: usize = 0x2edf628; // exe global → pointer to the set-score block (sc = *(exe+this))
+const SET_P1_WINS_OFF:   usize = 0xbc;      // sc+this (u8) = P1 set-wins tally
+const SET_P2_WINS_OFF:   usize = 0xbd;      // sc+this (u8) = P2 set-wins tally
 const ARRAY_OFF:       usize = 0x10b3_3fc8; // anchor: fighter array = flycast_reservation_base + this (gs-70)
 
 // ── (3b) hosted-lobby opponent detection (session-relative + MemberInfo-record-relative) ──
@@ -783,6 +791,22 @@ unsafe fn rpm_u8(h: HANDLE, a: usize) -> Option<u8> { read_at(h, a, 1).filter(|b
 unsafe fn rpm_u16(h: HANDLE, a: usize) -> Option<u16> { read_at(h, a, 2).filter(|b| b.len() >= 2).map(|b| b[0] as u16 | ((b[1] as u16) << 8)) }
 unsafe fn rpm_u32(h: HANDLE, a: usize) -> Option<u32> { read_at(h, a, 4).filter(|b| b.len() >= 4).map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]])) }
 
+// ── Tier-3 set-score read (read-only RPM, ADDITIVE observation) ──────────────────────────────────────
+// Deref *(exe_base+SET_SCORE_PTR_OFF) → the set-score block, validate the pointer, then read the game's own
+// per-set WINS tally: P1 @ sc+0xbc, P2 @ sc+0xbd (u8 each). The tally bumps on ANY game win (KO OR TIMEOUT),
+// so the SERVER can auto-confirm the winner from the delta — covering timeouts the health-KO judge misses.
+// Every read is Option-returning (read_at/rpm_u8) and the pointer bytes are length-guarded → CANNOT panic.
+// Any bad/short read (or a null-ish pointer) → None, so a failed read is simply absent downstream.
+unsafe fn read_set_score(h: HANDLE, exe_base: usize) -> Option<(u8, u8)> {
+    if exe_base == 0 { return None; }
+    let b = read_at(h, exe_base + SET_SCORE_PTR_OFF, 8).filter(|b| b.len() >= 8)?;
+    let sc = u64::from_le_bytes([b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7]]) as usize;
+    if sc <= 0x10000 { return None; }   // reject a null / obviously-invalid pointer
+    let p1 = rpm_u8(h, sc + SET_P1_WINS_OFF)?;
+    let p2 = rpm_u8(h, sc + SET_P2_WINS_OFF)?;
+    Some((p1, p2))
+}
+
 // ── MATCH DATA — per-frame match-state recorder (synced to the service when sharing is on) ──
 // Records, per GAME FRAME, both players' input (+0x4FC on slots 0 & 1) keyed by the guest
 // frame_counter, plus the match context (teams, local side). Reuses the same anchor the reader
@@ -1033,10 +1057,13 @@ struct GsCapture {
     local_pn: u8,                                   // ★ raw localPlayerNum (exe+LOCALPLAYER_OFF) at match start — the
                                                     //   game's own local netplay index (0/1), UN-overridden by any app
                                                     //   layer. Candidate side signal; validated offline vs the frame KO.
+    set_start: Option<(u8, u8)>,                    // ★ Tier-3: the game's own per-set WINS tally (P1,P2) snapshotted at
+                                                    //   THIS game's START. Paired with set_end (read at win-report) so the
+                                                    //   server auto-confirms the winner from the +1 delta (KO AND timeout).
     last_update: Option<std::time::Instant>,        // for the recency guard in the snapshot
 }
 impl Default for GsCapture {
-    fn default() -> Self { GsCapture { frames: std::collections::BTreeMap::new(), frame_addr: 0, synthetic: false, assist: [0; 6], local_pn: 255, last_update: None } }
+    fn default() -> Self { GsCapture { frames: std::collections::BTreeMap::new(), frame_addr: 0, synthetic: false, assist: [0; 6], local_pn: 255, set_start: None, last_update: None } }
 }
 fn gs_capture() -> &'static Mutex<GsCapture> {
     static S: OnceLock<Mutex<GsCapture>> = OnceLock::new();
@@ -1044,14 +1071,14 @@ fn gs_capture() -> &'static Mutex<GsCapture> {
 }
 
 // A snapshot of the current/just-ended game's frames, taken by on_game_win at KO time.
-struct GsSnapshot { frames: Vec<GsRow>, frame_addr: usize, synthetic: bool, assist: [u8; 6], local_pn: u8 }
+struct GsSnapshot { frames: Vec<GsRow>, frame_addr: usize, synthetic: bool, assist: [u8; 6], local_pn: u8, set_start: Option<(u8, u8)> }
 // Return the buffered game IFF it was actively updating within the last few seconds (i.e. it IS the game
 // that just ended). This guards against attaching a stale/other game's buffer to a late (pending-flush) win.
 fn gamestate_snapshot() -> Option<GsSnapshot> {
     let c = gs_capture().lock().unwrap();
     if c.frames.is_empty() { return None; }
     if c.last_update.map_or(true, |t| t.elapsed().as_secs() > 6) { return None; }
-    Some(GsSnapshot { frames: c.frames.values().cloned().collect(), frame_addr: c.frame_addr, synthetic: c.synthetic, assist: c.assist, local_pn: c.local_pn })
+    Some(GsSnapshot { frames: c.frames.values().cloned().collect(), frame_addr: c.frame_addr, synthetic: c.synthetic, assist: c.assist, local_pn: c.local_pn, set_start: c.set_start })
 }
 
 fn le32(b: &[u8], o: usize) -> u32 { u32::from_le_bytes([b[o], b[o + 1], b[o + 2], b[o + 3]]) }
@@ -1149,6 +1176,9 @@ fn start_gamestate_capture() {
             let fc = unsafe { hunt_frame_counter(h, base) };
             let mut assist = [0u8; 6];
             for i in 0..6 { assist[i] = unsafe { rpm_u8(h, base + i * STRIDE + OFF_ASSIST) }.unwrap_or(0); }
+            // Tier-3: snapshot the game's own per-set WINS tally at THIS game's START (read-only, guarded → None
+            // on any failure). Paired with set_end (read at win-report) so the server auto-confirms via the delta.
+            let set_start = unsafe { read_set_score(h, exe_base) };
             {
                 let mut c = gs_capture().lock().unwrap();
                 c.frames.clear();
@@ -1156,6 +1186,7 @@ fn start_gamestate_capture() {
                 c.synthetic = fc.is_none();
                 c.assist = assist;
                 c.local_pn = if exe_base != 0 { unsafe { rpm_u32(h, exe_base + LOCALPLAYER_OFF) }.unwrap_or(255) as u8 } else { 255 };
+                c.set_start = set_start;
                 c.last_update = None;
             }
             GS_IN_MATCH.store(true, SeqCst);   // pause the uploader for the duration of the fight
@@ -1241,11 +1272,18 @@ fn b64_encode(data: &[u8]) -> String {
     out
 }
 
+// Tier-3: an Option set-score → a top-level JSON value. Some((p1,p2)) → [p1,p2] (2-int array); None → null.
+// Explicit (not the tuple-through-json! path) so the shape is unambiguous and absent-safe by construction.
+fn set_score_json(v: Option<(u8, u8)>) -> serde_json::Value {
+    match v { Some((a, b)) => serde_json::json!([a, b]), None => serde_json::Value::Null }
+}
+
 // Build the stored record (metadata + frame array), gzip it, and SPOOL it to the local cache as
 // <match_key>_<reporter>.json.gz + a .meta envelope. The uploader drains the spool between matches, so no
 // large upload ever runs during a fight. The .gz gunzips to this exact record (server writes it verbatim).
 fn spool_gamestate(match_key: &str, reporter: &str, side: u8, p1_team: &[u8], p2_team: &[u8],
-                   winner: &str, loser: &str, gs: &GsSnapshot, session_id: &str, match_index: u32) {
+                   winner: &str, loser: &str, gs: &GsSnapshot, session_id: &str, match_index: u32,
+                   set_end: Option<(u8, u8)>) {
     let dir = gs_cache_dir();
     // soft backpressure: if uploads are failing and the spool is huge, stop piling on.
     let pending = std::fs::read_dir(&dir)
@@ -1262,6 +1300,10 @@ fn spool_gamestate(match_key: &str, reporter: &str, side: u8, p1_team: &[u8], p2
     // the complete artifact that lands on disk (server writes the gunzip-able bytes verbatim)
     let assist_p1 = [gs.assist[0], gs.assist[2], gs.assist[4]];
     let assist_p2 = [gs.assist[1], gs.assist[3], gs.assist[5]];
+    // Tier-3: the game's own per-set WINS tally — set_start (this game's start) + set_end (win-report). Each is
+    // an Option<(u8,u8)> that serializes as [p1,p2] or null (a failed read → null), so old tapes / failed reads
+    // are absent-safe. The server derives/auto-confirms the winner from the +1 delta (works for KO AND timeout).
+    let set_start = gs.set_start;
     let record = serde_json::json!({
         "id": id, "match_key": match_key, "reporter": reporter, "side": side,
         "local_pn": gs.local_pn,   // raw localPlayerNum (0/1/255=unknown) — candidate side signal for offline validation
@@ -1269,6 +1311,7 @@ fn spool_gamestate(match_key: &str, reporter: &str, side: u8, p1_team: &[u8], p2
         "ver": env!("CARGO_PKG_VERSION"),   // gs-98: app build that recorded this (fixed vs pre-fix)
         "p1_team": p1_team, "p2_team": p2_team, "winner": winner, "loser": loser,
         "assist": gs.assist, "assist_p1": assist_p1, "assist_p2": assist_p2,
+        "set_start": set_score_json(set_start), "set_end": set_score_json(set_end),   // Tier-3 set-score (KO+timeout); [p1,p2] or null
         "ts": ts, "schema": GS_SCHEMA,
         "frame_counter_addr": gs.frame_addr as u64, "synthetic_frames": gs.synthetic,
         "frame_count": frames.len(), "frames": frames,
@@ -1282,11 +1325,14 @@ fn spool_gamestate(match_key: &str, reporter: &str, side: u8, p1_team: &[u8], p2
     let designated = reporter < other;
 
     // envelope the uploader POSTs (frames_gz gets base64'd from the .gz at upload time) + spool bookkeeping.
+    // Tier-3 set_start/set_end ride at the TOP LEVEL as [p1,p2] int arrays (or null) so the server can
+    // auto-confirm the winner from the +1 delta without unzipping the frames.
     let meta = serde_json::json!({
         "match_key": match_key, "reporter": reporter, "side": side,
         "session_id": session_id, "match_index": match_index, "ver": env!("CARGO_PKG_VERSION"),
         "p1_team": p1_team, "p2_team": p2_team, "winner": winner, "loser": loser,
         "assist_p1": assist_p1, "assist_p2": assist_p2,
+        "set_start": set_score_json(set_start), "set_end": set_score_json(set_end),
         "ts": ts, "schema": GS_SCHEMA,
         "designated": designated, "spool_ts": ts,
     });
@@ -1919,9 +1965,39 @@ fn on_game_win(winner: u8, opp: &Option<(String, String)>, my_side: u8, ocv: boo
     // later game's buffer). p1_team/p2_team are the fixed sides (not winner/loser) so the recording keeps
     // the on-screen P1/P2 orientation; `my_side` labels which side is the local reporter.
     let gs = gamestate_snapshot();
+    // Tier-3: read the game's OWN set-score at win-report time (set_end). set_start rode in on the snapshot.
+    // Only bother when a recording exists (otherwise nothing gets spooled, so the read would be wasted work
+    // and a needless reader-thread pause). Read-only + guarded → a bad read is simply absent in the envelope.
+    let set_start = gs.as_ref().and_then(|g| g.set_start);
+    let set_end = if gs.is_some() { read_set_end(set_start) } else { None };
     report_result_server(reporter, winner_id, winner_name, loser_id, loser_name, ocv, perfect, comeback,
         winner_team, loser_team, winner_combo, winner_met,
-        my_side, rich.p1_team.clone(), rich.p2_team.clone(), gs, session_id.to_string(), match_index);
+        my_side, rich.p1_team.clone(), rich.p2_team.clone(), gs, session_id.to_string(), match_index, set_end);
+}
+
+// Tier-3: read the set-score at win-report time with a SHORT retry. The HUD "WINS" tally can update a frame
+// or two AFTER the KO resolves, so re-read (≤3 tries, ~50ms between) until it's a clean +1 over set_start on
+// exactly ONE side, then stop; if it never lands clean, take whatever the last successful read was (the
+// server treats a non-clean delta as inconclusive and falls back). Opens its own read-only handle; ANY
+// failure → None. Panic-safe: every read is Option-returning (read_set_score never panics). Additive only.
+fn read_set_end(set_start: Option<(u8, u8)>) -> Option<(u8, u8)> {
+    let pid = find_game_pid()?;
+    let h = unsafe { OpenProcess(PROCESS_VM_READ | PROCESS_QUERY_INFORMATION, FALSE, pid) }.ok()?;
+    let exe = game_exe_base(pid);
+    let clean = |s: (u8, u8), e: (u8, u8)| {
+        let (d1, d2) = (e.0 as i32 - s.0 as i32, e.1 as i32 - s.1 as i32);
+        (d1 == 1 && d2 == 0) || (d1 == 0 && d2 == 1)   // exactly one side bumped by +1 → a clean game-over delta
+    };
+    let mut out: Option<(u8, u8)> = None;
+    for i in 0..3 {
+        if let Some(cur) = unsafe { read_set_score(h, exe) } {
+            out = Some(cur);
+            if set_start.map_or(false, |s| clean(s, cur)) { break; }
+        }
+        if i < 2 { std::thread::sleep(std::time::Duration::from_millis(50)); }
+    }
+    unsafe { let _ = CloseHandle(h); }
+    out
 }
 
 // Fire-and-forget POST of a finished game to the skinsync leaderboard (own thread so the reader never blocks
@@ -1933,7 +2009,7 @@ fn report_result_server(reporter: String, winner: String, winner_name: String, l
                         winner_team: Vec<u8>, loser_team: Vec<u8>, biggest_combo: u16, meters_used: u32,
                         // game-state recording context (uploaded only if share_gameplay_data + a recording exists)
                         side: u8, p1_team: Vec<u8>, p2_team: Vec<u8>, gs: Option<GsSnapshot>,
-                        session_id: String, match_index: u32) {
+                        session_id: String, match_index: u32, set_end: Option<(u8, u8)>) {
     std::thread::spawn(move || {
         use std::sync::atomic::Ordering::SeqCst;
         // gs-105 frame-derived per-match stats from the recording (BOTH teams — hp/red_hp state is global, and hp
@@ -1985,7 +2061,7 @@ fn report_result_server(reporter: String, winner: String, winner_name: String, l
         if !SHARE_GAMEPLAY.load(SeqCst) { return; }
         let gs = match gs { Some(g) => g, None => return };
         let key = match key { Some(k) if !k.is_empty() => k, _ => { trace("[gamestate] no match_key returned — skipping recording upload"); return; } };
-        spool_gamestate(&key, &reporter, side, &p1_team, &p2_team, &winner, &loser, &gs, &session_id, match_index);
+        spool_gamestate(&key, &reporter, side, &p1_team, &p2_team, &winner, &loser, &gs, &session_id, match_index, set_end);
         trace(&format!("[gamestate] spooled {} frames as {}_{} (uploads between matches)", gs.frames.len(), key, reporter));
     });
 }
