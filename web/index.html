@@ -533,7 +533,7 @@ try{document.documentElement.setAttribute('data-theme', localStorage.getItem('me
     </div>
   </div>
 
-  <div class="dock">
+  <div class="dock" style="display:none"><!-- local-only palette FX; hidden from the Match view (low value there). Un-hide to restore. -->
     <span class="lbl">Effects</span>
     <span class="lbl" title="Palette effects animate on your own screen only — they are not synced to other players and don't show in online matches." style="font-size:10px;letter-spacing:.04em;text-transform:uppercase;color:var(--dim);border:1px solid var(--line);border-radius:999px;padding:1px 7px;opacity:.85">local only</span>
     <button class="fx on" data-m="0">Off</button>
@@ -1600,6 +1600,9 @@ let _updHideT=null;
 // so it can be updated without shipping a new build. This bundled copy is the offline FALLBACK — keep it
 // roughly current, but the remote is authoritative.
 let CHANGELOG = [
+  { v:'0.1.65', t:'Tidier match view', items:[
+    'Moved the local-only palette effects out of the match view to keep it focused on the fight.',
+  ]},
   { v:'0.1.64', t:'Avatars load now', items:[
     'Fixed the security policy that was blocking Steam avatar images — profiles and the live match view now show real faces.',
   ]},
