@@ -139,6 +139,40 @@ fn resolve_arc(p: &str) -> String {
     p.to_string()
 }
 
+// Locate a character's 16-colour bank-0 palette inside an inflated `mvsc2` payload:
+// AFS entry 209+cid = the char DAT; the DAT's palette sits at dat + u32(dat,8). Returns its absolute
+// byte offset. Shared read-half of bake_palette (write) and read_char_palette (read).
+fn char_pal_offset(mvsc2: &[u8], char_id: u32) -> Result<usize, String> {
+    let afs = 0x40usize;
+    if mvsc2.len() < afs + 8 { return Err("mvsc2 too small".into()); }
+    let acount = u32le(mvsc2, afs + 4) as usize;
+    let idx = 209 + char_id as usize;
+    if idx >= acount { return Err(format!("char {char_id} (AFS {idx}) out of {acount} entries")); }
+    let eoff = u32le(mvsc2, afs + 8 + idx * 8) as usize;
+    let dat = afs + eoff;
+    if dat + 12 > mvsc2.len() { return Err("DAT header out of range".into()); }
+    let pal_abs = dat + u32le(mvsc2, dat + 8) as usize;
+    if pal_abs + 32 > mvsc2.len() { return Err("palette out of range".into()); }
+    Ok(pal_abs)
+}
+
+// Decode the 16 ARGB4444-LE colours at a char's palette offset into 16 packed 0xRRGGBB values
+// (index 0 = 0 / transparent). Each 4-bit channel is expanded ×17 (0xF → 0xFF) — the exact inverse of
+// bake_palette's write, so an unbaked char round-trips to its stock palette.
+fn read_pal_from(mvsc2: &[u8], char_id: u32) -> Result<Vec<u32>, String> {
+    let pal_abs = char_pal_offset(mvsc2, char_id)?;
+    let mut out = Vec::with_capacity(16);
+    for i in 0..16 {
+        if i == 0 { out.push(0); continue; }
+        let v = u16le(mvsc2, pal_abs + i * 2);
+        let r = (((v >> 8) & 0xF) * 17) as u32;
+        let g = (((v >> 4) & 0xF) * 17) as u32;
+        let b = ((v & 0xF) * 17) as u32;
+        out.push((r << 16) | (g << 8) | b);
+    }
+    Ok(out)
+}
+
 #[tauri::command]
 pub fn bake_palette(arc_path: String, char_id: u32, colors: Vec<u32>) -> Result<String, String> {
     use std::io::{Read, Write};
@@ -158,17 +192,8 @@ pub fn bake_palette(arc_path: String, char_id: u32, colors: Vec<u32>) -> Result<
     flate2::read::ZlibDecoder::new(&orig[doff..doff + csize]).read_to_end(&mut mvsc2).map_err(|e| format!("inflate: {e}"))?;
     let orig_decomp = mvsc2.len();
 
-    // AFS → char DAT → palette
-    let afs = 0x40usize;
-    if mvsc2.len() < afs + 8 { return Err("mvsc2 too small".into()); }
-    let acount = u32le(&mvsc2, afs + 4) as usize;
-    let idx = 209 + char_id as usize;
-    if idx >= acount { return Err(format!("char {char_id} (AFS {idx}) out of {acount} entries")); }
-    let eoff = u32le(&mvsc2, afs + 8 + idx * 8) as usize;
-    let dat = afs + eoff;
-    if dat + 12 > mvsc2.len() { return Err("DAT header out of range".into()); }
-    let pal_abs = dat + u32le(&mvsc2, dat + 8) as usize;
-    if pal_abs + 32 > mvsc2.len() { return Err("palette out of range".into()); }
+    // AFS → char DAT → 16-colour bank-0 palette (shared read-half with read_char_palette)
+    let pal_abs = char_pal_offset(&mvsc2, char_id)?;
 
     // write 16 ARGB4444 colours (index 0 transparent)
     for i in 0..16 {
@@ -210,6 +235,25 @@ pub fn bake_palette(arc_path: String, char_id: u32, colors: Vec<u32>) -> Result<
     std::fs::write(&arc_path, &out).map_err(|e| format!("write arc: {e}"))?;
     clear_mvsc2_cache(); // the on-disk arc changed — force a re-inflate on the next extract
     Ok(format!("baked char {char_id} palette · {} bytes · .bak {}", out.len(), if Path::new(&bak).exists() { "ready" } else { "?" }))
+}
+
+/// Read a character's CURRENT bank-0 palette from game_50.arc as 16 packed 0xRRGGBB values
+/// (index 0 transparent). The inverse of `bake_palette`, so an unbaked char returns its stock palette and
+/// a baked one returns the baked colours — letting the app diff against the character's stock palette to
+/// detect a pre-existing custom bake (baked outside this session) and share its full palette.
+#[tauri::command]
+pub fn read_char_palette(arc_path: String, char_id: u32) -> Result<Vec<u32>, String> {
+    let arc_path = resolve_arc(&arc_path);
+    // Fast path: read straight out of the cached inflated payload — no 112 MB clone per character.
+    let (len, mtime) = file_stamp(&arc_path);
+    if let Ok(g) = MVSC2_CACHE.lock() {
+        if let Some((p, l, m, bytes)) = g.as_ref() {
+            if p == &arc_path && *l == len && *m == mtime { return read_pal_from(bytes, char_id); }
+        }
+    }
+    // Cold: inflate + cache once (the next char reads hit the fast path above), then decode.
+    let mvsc2 = load_mvsc2(&arc_path)?;
+    read_pal_from(&mvsc2, char_id)
 }
 
 // ── Full character DAT extraction — feeds the Studio's *all-animation* decode (not just idle) ──

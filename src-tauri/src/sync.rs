@@ -79,7 +79,18 @@ const LOCALPLAYER_OFF: usize = 0xac7230;    // localPlayerNum: 0 = P1, 1 = P2 (f
                                             //   differential-capture confirmed: 0 in a live P1 match, 1 across 3 P2 matches)
 const GSTATE_PTR_OFF:  usize = 0xacd3a0;    // exe global → pointer to game_state (scene id @ +0x8, locked picks @ +PICKS_OFF)
 const PICKS_OFF:       usize = 0x758;       // char-select LOCKED picks (stride-4 char_ids) at game_state+this
+const SESSION_PTR_OFF: usize = 0xacd3a8;    // exe global → pointer to the online SESSION object (hosted-lobby state).
+                                            //   Adjacent to game_state (0xacd3a0); read only by the hosted-lobby path.
 const ARRAY_OFF:       usize = 0x10b3_3fc8; // anchor: fighter array = flycast_reservation_base + this (gs-70)
+
+// ── (3b) hosted-lobby opponent detection (session-relative + MemberInfo-record-relative) ──
+// In a HOSTED lobby the opponent's SteamID is NOT stored with the ranked pairing geometry; it lives in a heap
+// MemberInfo record whose layout is fixed relative to OUR id. These locate it (see find_opponent_lobby).
+// ⚠ HEURISTIC deltas — live-validated 2026-08-16 against a single lobby layout; harden as more lobbies are seen.
+const LOBBY_HOSTED_OFF:  usize = 0xd0320;   // session+this (u32) == 1 → we are HOSTING a versus lobby
+const LOBBY_NETSESS_OFF: usize = 0x1b8;     // session+this (i32) >= 0 → a net session is live
+const LOBBY_OPP_GAP:     usize = 0x148;     // opp SteamID addr = (addr holding OUR id) + this  (rec+0x3c → rec+0x184)
+const LOBBY_OPP_NAME:    usize = 0x184;     // opp persona addr  = (addr holding OUR id) + this  (= opp id addr + 0x3c)
 
 // ── (4) limits / ranges ──
 const WB_LO: u32 = 0x1000_0000;       // working-buffer pointer range LO (each fighter's own DAT region)
@@ -115,6 +126,13 @@ fn auth_post(url: &str) -> ureq::Request {
     // H1: default timeout on every authed POST so a hung/slow server can never park a Tauri worker thread
     // indefinitely (which would eventually starve detect_state and freeze the UI). Callers may override.
     let r = ureq::post(url).timeout(std::time::Duration::from_secs(8));
+    match auth_token() { Some(t) => r.set("Authorization", &format!("Bearer {}", t)), None => r }
+}
+
+/// A ureq GET carrying the Bearer token when we have one (auth'd read routes require it server-side).
+/// Same default timeout guard as auth_post so a hung server can never park a Tauri worker thread.
+fn auth_get(url: &str) -> ureq::Request {
+    let r = ureq::get(url).timeout(std::time::Duration::from_secs(8));
     match auth_token() { Some(t) => r.set("Authorization", &format!("Bearer {}", t)), None => r }
 }
 
@@ -425,6 +443,117 @@ fn find_opponent_netplay(pid: u32, my_id: u64, cache: &mut Option<(usize, u8, St
         let out = finish_opp(h, &my_addrs, &cand, region, cache);
         let _ = CloseHandle(h);
         out
+    }
+}
+
+// A persona that STARTS exactly at `addr` — the lobby MemberInfo stores the name inline at a fixed field offset,
+// unlike the ranked session cache where the name sits *near* the id (name_near_rpm). Read a forward window and
+// take the LEADING printable/UTF-8 run (Steam personas are UTF-8, same handling as name_near_rpm).
+fn name_fwd_rpm(h: HANDLE, addr: usize) -> String {
+    let buf = match unsafe { read_window(h, addr, 0x80) } { Some(b) => b, None => return String::new() };
+    let mut run: Vec<u8> = Vec::new();
+    for &c in &buf {
+        if (0x20..0x7f).contains(&c) || c >= 0x80 { run.push(c); } else { break; }
+    }
+    let t = String::from_utf8_lossy(&run).trim().trim_matches('\u{FFFD}').trim().to_string();
+    if t.chars().count() >= 3 && plausible_opponent_name(&t) { t } else { String::new() }
+}
+
+// HOSTED-LOBBY opponent + side — the ADDITIVE fallback to find_opponent_netplay's ranked geometry. In a Steam
+// "host a lobby" versus match the opponent's SteamID is NOT co-located with ours by the ~0x170 ranked pairing
+// (so best_pair/detect_side find nothing); it lives in a heap MemberInfo record with a layout fixed relative to
+// OUR id: our id @ rec+0x3c, opp id @ rec+0x184 (= our id + 0x148), opp persona @ rec+0x1c0 (= opp id + 0x3c).
+// So we locate the record by scanning committed memory for an address A that holds OUR id where A+0x148 holds a
+// DIFFERENT individual-account SteamID — that's the opponent; the persona is at A+0x184. Gated FIRST by the
+// game's own hosted-versus flag (session+0xd0320 == 1), so it costs ~4 reads and NEVER sweeps outside a lobby,
+// and can't misfire in ranked. On success it also PRIMES `cache` — the same slot find_opponent_netplay's fast
+// path re-validates — so subsequent cycles re-confirm the opponent cheaply instead of re-sweeping. RPM
+// read-only. Returns (opp_id, name, local_side 1/2/0) — side comes from localPlayerNum, exactly like ranked.
+fn find_opponent_lobby(pid: u32, my_id: u64, exe_base: usize, cache: &mut Option<(usize, u8, String, u64)>) -> Option<(u64, String, u8)> {
+    if pid == 0 || my_id == 0 || exe_base == 0 { return None; }
+    unsafe {
+        let h = OpenProcess(PROCESS_VM_READ | PROCESS_QUERY_INFORMATION, FALSE, pid).ok()?;
+        // ── O(1) hosted-lobby gate ── two cheap derefs; bail (freeing the handle) unless we're hosting a versus
+        // lobby, so this path is nearly free in ranked/offline and never runs the full sweep there.
+        let session = read_at(h, exe_base + SESSION_PTR_OFF, 8).filter(|b| b.len() >= 8)
+            .map(|b| u64::from_le_bytes([b[0],b[1],b[2],b[3],b[4],b[5],b[6],b[7]]) as usize)
+            .filter(|&s| s > 0x10000);
+        let session = match session { Some(s) => s, None => { let _ = CloseHandle(h); return None; } };
+        let hosted = rpm_u32(h, session + LOBBY_HOSTED_OFF) == Some(1);
+        let net_ok = read_at(h, session + LOBBY_NETSESS_OFF, 4).filter(|b| b.len() >= 4)
+            .map(|b| i32::from_le_bytes([b[0],b[1],b[2],b[3]])).map_or(false, |v| v >= 0);
+        if !(hosted && net_ok) { let _ = CloseHandle(h); return None; }
+
+        // side from flycast localPlayerNum (0=P1→1, 1=P2→2; else unknown). Downstream ignores this for stats
+        // (manual gate) but uses it for the team label, same as the ranked path.
+        let side = match rpm_u32(h, exe_base + LOCALPLAYER_OFF) { Some(0) => 1, Some(1) => 2, _ => 0 };
+
+        // ── committed-memory sweep for OUR id, then probe the MemberInfo delta ── mirrors the COLD sweep in
+        // find_opponent_netplay (same region walk + chunked, page-safe RPM). Bounded: at most a couple of small
+        // probe-reads per my_id hit (capped), first plausibly-named opponent wins.
+        let mut named:  Option<(u64, usize, String)> = None; // (opp_id, addr-holding-OUR-id, name)
+        let mut id_only: Option<(u64, usize)> = None;        // valid opp id but junk/no name at +0x184 (fallback)
+        let mut id_only_conflict = false;                    // >1 distinct id-only candidate → don't trust it
+        let mut probes = 0u32;                               // cap the per-hit probe reads (worst-case bound)
+        let mut addr = 0usize;
+        'sweep: loop {
+            let mut mbi = MEMORY_BASIC_INFORMATION::default();
+            if VirtualQueryEx(h, Some(addr as *const c_void), &mut mbi, std::mem::size_of::<MEMORY_BASIC_INFORMATION>()) == 0 { break; }
+            let base = mbi.BaseAddress as usize; let size = mbi.RegionSize; if size == 0 { break; }
+            let p = mbi.Protect.0;
+            let ok = mbi.State == MEM_COMMIT && (p & PAGE_GUARD.0) == 0 && (p & PAGE_NOACCESS.0) == 0 && (p & 0xEE) != 0;
+            if ok && size <= 0x4000_0000 {
+                let mut off = 0usize;
+                while off < size {
+                    let n = (size - off).min(0x80_0000);
+                    if let Some(buf) = read_at(h, base + off, n) {
+                        let mut i = 0usize;
+                        while i + 8 <= buf.len() {
+                            // our id is 4-aligned but not 8-aligned in these records (same as the ranked scan) → step 4
+                            if u32::from_le_bytes([buf[i+4],buf[i+5],buf[i+6],buf[i+7]]) == STEAMID_HI
+                               && u64::from_le_bytes(buf[i..i+8].try_into().unwrap()) == my_id {
+                                let a = base + off + i;
+                                if probes < 8192 {
+                                    probes += 1;
+                                    // opp SteamID at A+0x148 — a DIFFERENT individual-account id → the lobby opponent
+                                    if let Some(ob) = read_at(h, a + LOBBY_OPP_GAP, 8).filter(|b| b.len() >= 8) {
+                                        let opp = u64::from_le_bytes([ob[0],ob[1],ob[2],ob[3],ob[4],ob[5],ob[6],ob[7]]);
+                                        if (opp >> 32) as u32 == STEAMID_HI && opp != my_id {
+                                            let name = name_fwd_rpm(h, a + LOBBY_OPP_NAME);
+                                            if !name.is_empty() { named = Some((opp, a, name)); break 'sweep; }
+                                            match id_only {
+                                                None => id_only = Some((opp, a)),
+                                                Some((x, _)) if x != opp => id_only_conflict = true,
+                                                _ => {}
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            i += 4;
+                        }
+                    }
+                    off += n;
+                }
+            }
+            let nx = base + size; if nx <= base { break; } addr = nx;
+        }
+        // Prefer the named hit; else a SINGLE unambiguous id-only record (name resolves next cycle / isn't needed
+        // for the /peers skin fetch, which keys on the id).
+        let result: Option<(u64, usize, String)> = match named {
+            Some(v) => Some(v),
+            None => match (id_only, id_only_conflict) {
+                (Some((opp, a)), false) => Some((opp, a, String::new())),
+                _ => None,
+            },
+        };
+        if let Some((opp, a, name)) = &result {
+            // PRIME the ranked fast-path cache: point it at the opp-id field (A+0x148). Our id sits 0x148 below,
+            // well within the fast path's ±0x400 pairing window, so next cycle re-validates cheaply (no sweep).
+            *cache = Some((*a + LOBBY_OPP_GAP, side, name.clone(), *opp));
+        }
+        let _ = CloseHandle(h);
+        result.map(|(opp, _a, name)| (opp, name, side))
     }
 }
 
@@ -2014,6 +2143,29 @@ pub fn session_stats(id: String) -> Result<serde_json::Value, String> {
         .into_json::<serde_json::Value>().map_err(|e| e.to_string())
 }
 
+// ── Result Check (match-result contest) — CLIENT side ──────────────────────────────────────────────
+// A player who was IN a match can contest its recorded result; it lands in an admin queue server-side.
+// Both routes are token-authed (Bearer): the server rejects unless the token's SteamID is a participant
+// (contest) / matches the queried steamid (notifications). Backend fetch → no CORS/CSP.
+
+/// Contest one match's recorded result ("I should be the winner"). POST /skinsync/contest {match_key}, authed.
+/// Server returns { ok, key, queued } (or 403 if our token's SteamID wasn't in that match). Returns the server JSON.
+#[tauri::command]
+pub fn contest_match(match_key: String) -> Result<serde_json::Value, String> {
+    auth_post(&format!("{}/contest", SKINSYNC)).send_json(serde_json::json!({ "match_key": match_key }))
+        .map_err(|e| e.to_string())?
+        .into_json::<serde_json::Value>().map_err(|e| e.to_string())
+}
+
+/// Our contest history + resolution state for the 🔔 Result Check bell. GET /skinsync/notifications?steamid=X,
+/// authed (steamid must equal the token's). Returns { ok, mine:[…], heads_up:[…], unread:<int> }.
+#[tauri::command]
+pub fn result_notifications(steamid: String) -> Result<serde_json::Value, String> {
+    auth_get(&format!("{}/notifications?steamid={}", SKINSYNC, steamid))
+        .call().map_err(|e| e.to_string())?
+        .into_json::<serde_json::Value>().map_err(|e| e.to_string())
+}
+
 /// Matchup intel between two SteamIDs: { my_elo, opp_elo, my_rank, opp_rank, win_chance, elo_expected,
 /// h2h:{wins,losses}, best_team_vs_them:{team,wins}, their_kryptonite:{team,losses} }. Backend fetch (no CORS/CSP).
 #[tauri::command]
@@ -2376,7 +2528,12 @@ pub fn start_reader() {
             // (cheap → effectively every cycle for responsive liveness); only the COLD full scan is paced by backoff.
             if opp_addr.is_some() || opp_backoff <= 0 {
                 let my_id = read_self_id().unwrap_or(0);
-                match find_opponent_netplay(cur_pid, my_id, &mut opp_addr, &mut opp_region) {
+                // ranked (netplay pairing geometry) FIRST; hosted-lobby MemberInfo scan as the ADDITIVE fallback
+                // (returns None instantly outside a hosted lobby). Both feed the SAME opp_addr cache + downstream
+                // flow, so the sticky-opponent / side / /peers logic below is identical for ranked and lobby.
+                let resolved = find_opponent_netplay(cur_pid, my_id, &mut opp_addr, &mut opp_region);
+                let resolved = resolved.or_else(|| find_opponent_lobby(cur_pid, my_id, exe_base, &mut opp_addr));
+                match resolved {
                     Some((oid, onm, oside)) => {
                         // DETERMINISTIC → lock immediately (no anti-flip). Cached slot makes re-validation near-free.
                         let sid = oid.to_string();

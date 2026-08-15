@@ -82,6 +82,28 @@ The leaderboard's win/loss has been wrong repeatedly; two DISTINCT bugs, one fix
 
 ---
 
+## Lobby / tournament-mode (live-validated 2026-08-16, hosted FT10; `session = *(exe+0xacd3a8)`)
+- **In-lobby / online:** `session+0x1b8` (int32) ≥0 = net session (<0 = offline/local). **Mode:** `session+0xd0320`
+  (1 = hosted-versus). **Player-count:** `session+0xd0328` (==4 = spectator config). **Role:** `spectator =
+  (0xd0320==1 && 0xd0328==4)`. `session+0x50` = local persona name (host/self identity). `session+0x1cd` 0→1 at
+  standby→match. ⚠ `session+0x1ac` (raw, was 5) is NOT the side — use `localPlayerNum @ exe+0xac7230` (0=P1/1=P2,
+  SAME pointer in lobby as ranked; confirmed 0 for the P1 host).
+- **⭐ SET SCORE (per-set win tally; HUD "WINS %2d", FUN_140627c50):** `sc = *(exe+0x2edf628)`; byte `sc+0xbc` =
+  P1 wins, `sc+0xbd` = P2 wins. Side-correct: `my_wins = (localPlayerNum==0 ? *(sc+0xbc) : *(sc+0xbd))`. This IS
+  the game's own set score (the earlier "score @ array+0x580" lead was WRONG). **FT-target (FT10) is NOT stored —
+  social convention;** the UI applies the "first to N" cutoff.
+- **Host/players/spectators — SteamIDs:** heap `MemberInfo` record (volatile per launch → SCAN for the SteamID
+  pair): our SID `rec+0x3c` name `+0x70`; opp SID `rec+0x184` name `+0x1c0`; slot ints (1/2) `+0x260`; local IP
+  `+0x294`. Host currently INFERRED (session identity + first-in-record) — no explicit lobby-owner byte pinned
+  (2nd pass: the ISteamMatchmaking lobby object). ⚠ a clean stride-0x20 4-member array w/ pings+ready = the
+  lobby-BROWSER / friends-in-lobbies list, NOT your match.
+- **Host-picked settings (specials-allowed / stage / version / timer): NOT in game memory** — Steam lobby metadata
+  via `SetLobbyData` on the un-pinned lobby object (2nd pass). (`app_name`/`app_version` strings = Coyote telemetry,
+  a red herring.)
+- **🐛 skin-sync-in-lobbies bug:** `find_opponent_netplay` (client sync.rs) only recognizes the RANKED pairing
+  geometry (the 0x170 gap) → in a lobby the opp SteamID is in the `MemberInfo` record above (≈0x148 gap) → detector
+  returns nothing → `/peers` empty → no sync. FIX: add a lobby-opponent path that scans the MemberInfo SteamID pair.
+
 ## Functions confirmed so far
 | Steam | role | DC analog | notes |
 |---|---|---|---|
