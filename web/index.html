@@ -398,6 +398,31 @@ try{document.documentElement.setAttribute('data-theme', localStorage.getItem('me
   .cl-entry .cl-v{font-size:13px; color:var(--gold); font-weight:800; margin-bottom:6px;} .cl-entry .cl-v b{color:var(--ink); font-weight:700;}
   .cl-here{font-size:9px; background:var(--p2-soft); color:var(--p2); border:1px solid var(--p2-line); padding:1px 6px; border-radius:99px; font-weight:800; text-transform:uppercase; letter-spacing:.03em;}
   .cl-entry ul{margin:0; padding-left:18px;} .cl-entry li{font-size:12.5px; color:var(--dim); line-height:1.5; margin:3px 0;}
+  /* Result Check (match-result contest) — honest banner + 🔔 bell + panel, built from the app's tokens/.btn/.chip */
+  #rcBanner{display:none; align-items:center; gap:11px; flex-wrap:wrap; margin:0 4px 12px; padding:11px 15px;
+    border:1px solid color-mix(in srgb,var(--gold) 34%,var(--line)); border-radius:11px;
+    background:color-mix(in srgb,var(--gold) 11%,var(--panel)); font-size:13px; color:var(--ink);}
+  #rcBanner .rc-ic{font-size:17px; line-height:1; flex:none;}
+  #rcBanner .rc-msg{flex:1 1 320px; line-height:1.45;} #rcBanner .rc-msg b{color:var(--gold-ink); font-weight:800;}
+  #rcBanner .btn.ghost{background:transparent; color:var(--dim); border-color:var(--line); font-weight:700; padding:6px 12px; font-size:12px;}
+  #rcBanner .btn.ghost:hover{color:var(--ink); border-color:var(--faint);}
+  .rc-bell{position:relative; cursor:pointer;}
+  .rc-bell .rc-badge{position:absolute; top:-6px; right:-6px; min-width:16px; height:16px; padding:0 3px; border-radius:99px;
+    background:#e5484d; color:#fff; font-size:10px; font-weight:800; line-height:16px; text-align:center; display:none;}
+  .rc-bell.has .rc-badge{display:block;}
+  #rcModal .rc-row{display:flex; align-items:center; gap:10px; padding:11px 2px; border-top:1px solid var(--line-soft);}
+  #rcModal .rc-row:first-of-type{border-top:none;}
+  #rcModal .rc-main{flex:1 1 auto; min-width:0;}
+  #rcModal .rc-opp{font-weight:700; font-size:13px; color:var(--ink);}
+  #rcModal .rc-ts{font-size:11px; color:var(--dim); margin-top:2px;}
+  #rcModal .rc-st{font-size:11.5px; font-weight:700; padding:3px 9px; border-radius:99px; white-space:nowrap; flex:none;}
+  #rcModal .rc-st.pend{color:var(--gold-ink); background:var(--gold);}
+  #rcModal .rc-st.won{color:#08110a; background:#4ade80;}
+  #rcModal .rc-st.lost{color:#fff; background:#e5484d;}
+  .rc-contest{cursor:pointer; font-size:10.5px; font-weight:700; padding:3px 8px; border-radius:7px;
+    border:1px solid var(--p1-line); background:transparent; color:var(--p1); white-space:nowrap; vertical-align:middle;}
+  .rc-contest:hover{filter:brightness(1.1); border-color:var(--p1);}
+  .rc-contest:disabled{opacity:.55; cursor:default; filter:none;}
 </style>
 </head>
 <body>
@@ -414,11 +439,19 @@ try{document.documentElement.setAttribute('data-theme', localStorage.getItem('me
     </div>
     <div class="right">
       <span class="chip" id="cSync" role="button" tabindex="0" title="Live Sync — leaderboards, ranked stats, matchup intel &amp; skin sync. Click to toggle."><span class="led"></span><b id="cSyncTxt">Offline</b></span>
+      <span class="chip rc-bell" id="rcBell" role="button" tabindex="0" title="Result Check — contest a wrong win/loss and track your contests">🔔<b>Result Check</b><span class="rc-badge" id="rcBadge">0</span></span>
       <span class="chip rep-chip" id="repChip" role="button" tabindex="0" title="Where you represent — click to set or change your country / state / city"><span id="repFlag" style="font-size:15px;line-height:1">📍</span><b id="repTxt">Set where you represent</b></span>
       <span class="me" id="meProfile" style="cursor:pointer" title="View your own stats — record, team win-rates, recent matches"><span class="av"></span><span>You: <b id="meName">…</b></span></span>
       <button class="icon-btn" id="themeBtn" title="Toggle theme">◑</button>
     </div>
   </header>
+
+  <!-- Result Check honest-beta banner — in-flow (below the fixed update banner, never stacked); dismiss persists in localStorage -->
+  <div id="rcBanner">
+    <span class="rc-ic">⚠️</span>
+    <span class="rc-msg"><b>Ironing out win/loss bugs.</b> Some results land on the wrong player — it's a display glitch, <b>not lost data</b>. Every match is saved as a full replay, so records settle to the truth. See a wrong result? Open <b>🔔 Result Check</b> to contest it.</span>
+    <button class="btn ghost" id="rcBannerX">Got it</button>
+  </div>
 
   <!-- Represent CTA — shown until the player sets a location (see refreshMeBadge) -->
   <div id="repNote" role="button" tabindex="0" style="display:none; margin:0 4px 12px; padding:10px 14px; border:1px solid var(--gold-soft); background:color-mix(in srgb,var(--gold) 12%,var(--panel)); border-radius:10px; font-size:13.5px; font-weight:600; color:var(--ink); cursor:pointer; align-items:center; gap:9px;">
@@ -606,6 +639,11 @@ try{document.documentElement.setAttribute('data-theme', localStorage.getItem('me
   <div class="pf-modal" id="clModal"><div class="pf-card">
     <button class="pf-x" id="clX">✕</button>
     <div class="pf-body" id="clBody"></div>
+  </div></div>
+
+  <div class="pf-modal" id="rcModal"><div class="pf-card">
+    <button class="pf-x" id="rcX">✕</button>
+    <div class="pf-body" id="rcBody"></div>
   </div></div>
 
   <style>
@@ -821,16 +859,54 @@ let dirById={}, nameById={}, charByDir={};
 let activeSkins={};              // cid -> {sigs, palette(pal48), author, skinName}
 let myTeam=[];                   // ordered cids on your side
 let peerSkins={};                // steamid -> [{cid,sigs,palette,author,skinName}]
-// Baked skins live permanently in game_50.arc (loaded at launch). When SYNC is ON we share LIVE palettes,
-// so baked ones are disabled: any baked-but-unshared character is reverted to stock at runtime (the hook
-// paints stock over the baked palette). Covered baked chars are already overridden by their live skin via
-// capture_live. When sync is OFF, we push no reverts → baked/saved palettes apply. We only need the on-
-// screen sig of the baked palette (quantized to the game's ARGB4444 → *17 expansion) to target the revert.
-let bakedSkins={};               // cid -> { sig: <baked bank0 RGBA hex> }
+// Baked skins live permanently in game_50.arc (loaded at launch). We remember each baked character's FULL
+// palette (not just its on-screen signature) so that under SYNC we can SHARE the bake instead of hiding it:
+// the character renders natively from the baked ROM on our screen, and its full palette is PUBLISHED so the
+// opponent WPMs the same look in (for them a bake is just a live paint against our stock signature).
+// Pre-existing bakes (baked outside this app) are read straight from the ROM at startup via read_char_palette
+// and diffed against the character's stock palette. Only when NO palette is available (couldn't read it, only
+// a legacy sig stored) do we fall back to reverting the bake to stock — the old behaviour.
+let bakedSkins={};               // cid -> { sig: <baked bank0 RGBA hex>, palette: [16 x 0xRRGGBB] }
 function loadBaked(){ try{ bakedSkins=JSON.parse(localStorage.getItem('suite_baked')||'{}'); }catch(e){ bakedSkins={}; } }
+function saveBaked(){ try{ localStorage.setItem('suite_baked', JSON.stringify(bakedSkins)); }catch(e){} }
 function bakedSigHex(cols){ const q=x=>Math.round(x/17)*17; return cols.map((c,i)=>hex2(q(c[0]))+hex2(q(c[1]))+hex2(q(c[2]))+hex2(i===0?0:255)).join(''); }
-function recordBaked(cid, cols){ bakedSkins[cid]={sig:bakedSigHex(cols)}; try{ localStorage.setItem('suite_baked', JSON.stringify(bakedSkins)); }catch(e){} }
+// quantize a 16-colour palette (RGB ints) to the game's 4-bit-per-channel precision so a stock-vs-ROM diff
+// ignores sub-quantum rounding and only fires on a genuine recolour (index 0 forced transparent/0).
+function quantPalInts(ints){ const q=x=>Math.round(x/17)*17; return (ints||[]).map((v,i)=> i===0?0:(((q((v>>16)&255)<<16)|(q((v>>8)&255)<<8)|q(v&255))>>>0)); }
+// on-screen signature (128 hex, index0 transparent) of a 16-colour palette given as RGB ints
+function sigFromPalInts(ints){ return (ints||[]).map((v,i)=>hex2((v>>16)&255)+hex2((v>>8)&255)+hex2(v&255)+hex2(i===0?0:255)).join(''); }
+// record an in-session bake: store the sig AND the (quantized) full palette so future shares need no ROM re-read
+function recordBaked(cid, cols){ const pal=quantPalInts(cols.map((c,i)=> i===0?0:(((c[0]<<16)|(c[1]<<8)|c[2])>>>0))); bakedSkins[cid]={sig:bakedSigHex(cols), palette:pal}; saveBaked(); }
+// the known full baked palette (16 RGB ints) for a character, or null if we only have a legacy signature
+function bakedPalFor(cid){ const b=bakedSkins[cid]; return (b&&Array.isArray(b.palette)&&b.palette.length>=16)?b.palette:null; }
 function stockPalInts(cid){ const b=idleData[cid]?.bank0; if(!b) return null; return b.map(c=>((c[0]<<16)|(c[1]<<8)|c[2])>>>0); }
+// A baked character's effective look as a loadout entry (same shape as activeSkins[cid]), or null. sigs use
+// the STOCK signature — what a stock-ROM opponent sees on screen — so their hook matches + repaints our bake;
+// on our own screen the baked ROM renders it natively (no hook entry needed).
+function bakedLook(cid){ const p=bakedPalFor(+cid); return p?{sigs:[sigFromBank0(+cid)].filter(Boolean), palette:p, author:'baked', skinName:'Baked'}:null; }
+// Read every character's CURRENT ROM palette and diff against its stock palette; a difference = a custom bake
+// (this session or pre-existing). Record its full palette + signature so it publishes + renders; drop records
+// whose ROM has reverted to stock. Runs at startup and whenever the ROM path changes (ROM = source of truth).
+let _romScanBusy=false;
+async function detectRomBakes(){
+  if(!invoke || _romScanBusy) return;
+  let arc=''; try{ arc=await invoke('get_rom_path'); }catch(e){}
+  if(!arc) return;
+  _romScanBusy=true; let changed=false;
+  try{
+    for(const cid in idleData){
+      const stock=stockPalInts(+cid); if(!stock) continue;
+      let rom=null; try{ rom=await invoke('read_char_palette',{arcPath:arc, charId:+cid}); }catch(e){ continue; } // char not in this ARC / read failed → leave any prior record
+      if(!Array.isArray(rom)||rom.length<16) continue;
+      const qs=quantPalInts(stock), qr=quantPalInts(rom);
+      if(qr.some((v,i)=>v!==qs[i])){ const rec={sig:sigFromPalInts(rom), palette:rom.map(v=>v>>>0)};
+        if(JSON.stringify(bakedSkins[cid])!==JSON.stringify(rec)){ bakedSkins[cid]=rec; changed=true; } }
+      else if(bakedSkins[cid]){ delete bakedSkins[cid]; changed=true; }   // ROM is stock again → no live bake
+    }
+  } finally { _romScanBusy=false; }
+  if(changed) saveBaked();
+  if(changed || Object.keys(bakedSkins).length){ await writeAll(); if(syncOn) publishMine(); renderYou(); }
+}
 let oppTeam=[];                  // [{cid, name, palette, author, skinName}]
 let mySteam={}, syncOn=false, syncTimer=null, oppMeta=null;
 let matchState='detecting', prevMode='', mySide='p1', stateTimer=null, detLocalSide=0, inSessionNow=false, sideManual=null, sideConfirmed=false, userSetSide=false, curSessionId='';
@@ -907,7 +983,7 @@ function renderYou(){
   if(!myTeam.length){ host.innerHTML=`<div class="empty"><b>Waiting for a match</b><br>Your team appears automatically when you reach character select. Pick a skin per character — it applies live and re-applies every match.</div>`; return; }
   myTeam.forEach((cid,idx)=>{
     const pend=pendingSkins[cid];                                  // rolled-but-unconfirmed preview
-    const a = pend ? {palette:pend.palette, author:pend.author, skinName:pend.file||pend.author} : activeSkins[cid];
+    const a = pend ? {palette:pend.palette, author:pend.author, skinName:pend.file||pend.author} : (activeSkins[cid] || bakedLook(cid));
     const p16=pal16For(cid, a?.palette); const role= idx===0?'point':'assist';
     const el=document.createElement('div'); el.className='card editable '+role+(pend?' pending':'');
     el.innerHTML=`<span class="role">${idx===0?'Point':'Assist'}</span>
@@ -1071,7 +1147,7 @@ async function bakeRecolor(){
   if(!arc){ toast('set your Steam install / game_50.arc first (⚙ ROM on the Match tab)'); return; }
   if(!confirm(`Bake ${nameById[drawerCid]}'s palette PERMANENTLY into the game files?\n\n${arc}\n\nA .bak backup is made automatically first. ⚠ Online ranked may checksum game files.`)) return;
   const b=$('#drBake'), o=b.textContent; b.textContent='Baking…'; b.disabled=true;
-  try{ const r=await invoke('bake_palette',{arcPath:arc, charId:drawerCid, colors:recolorInts()}); recordBaked(drawerCid, drPal); toast('✓ '+r); }
+  try{ const r=await invoke('bake_palette',{arcPath:arc, charId:drawerCid, colors:recolorInts()}); recordBaked(drawerCid, drPal); await writeAll(); if(syncOn) publishMine(); renderYou(); toast('✓ '+r); }
   catch(e){ toast('⚠ bake failed: '+e); }
   b.textContent=o; b.disabled=false;
 }
@@ -1145,11 +1221,15 @@ async function writeAll(){
   const mine=Object.entries(activeSkins).filter(([cid,a])=>a.sigs&&a.sigs.length && !coll.has(+cid)).map(([cid,a])=>({sigs:a.sigs, palette:paletteToHex(a.palette)}));
   const theirs=[]; for(const pid in peerSkins){ for(const s of (peerSkins[pid]||[])){ if(s.sigs&&s.sigs.length && !coll.has(+s.cid)) theirs.push({sigs:s.sigs, palette:paletteToHex(s.palette)}); } }
   const entries = skinsAllowed() ? [...mine,...theirs] : [];
-  // SYNC ON = live palettes are authoritative → disable baked: revert any baked-but-unshared character to
-  // stock so online shows only the shared/live palettes (a covered baked char is already overridden live).
+  // SYNC ON: a baked-but-unshared character with a KNOWN full palette is SHARED, not reverted — it renders
+  // natively from the baked ROM on our screen, and publishMine puts its full palette on the wire so the
+  // opponent WPMs it in. We only fall back to painting stock over the bake when we have NO palette to share
+  // (couldn't read the ROM and only a legacy sig is stored) — that keeps online from being a mismatch.
   if(syncOn && skinsAllowed()){
     const covered=new Set([...Object.keys(activeSkins).map(Number), ...Object.values(peerSkins).flat().map(s=>+s.cid)]);
-    for(const cid in bakedSkins){ if(covered.has(+cid)) continue; const stock=stockPalInts(+cid), sig=bakedSkins[cid]&&bakedSkins[cid].sig;
+    for(const cid in bakedSkins){ if(covered.has(+cid)) continue;
+      if(bakedPalFor(+cid)) continue;                                          // have the palette → shared + shown natively, don't revert
+      const stock=stockPalInts(+cid), sig=bakedSkins[cid]&&bakedSkins[cid].sig; // no palette → last-resort revert to stock
       if(stock&&sig) entries.push({sigs:[sig], palette:stock}); }
   }
   // MIRROR MODE (hard/training): clone YOUR look onto the opponent's matching characters. Purely cosmetic
@@ -1331,6 +1411,10 @@ function setSyncStatus(t){ /* reflected in opp header */ }
 async function publishMine(){
   if(!mySteam.steamid) return;
   const skins=Object.entries(activeSkins).filter(([c,a])=>a.sigs&&a.sigs.length).map(([c,a])=>({cid:+c, sigs:a.sigs, palette:a.palette, author:a.author, skinName:a.skinName}));
+  // baked-custom skins fill every character WITHOUT a live pick (precedence: live pick > baked-custom > stock)
+  // so the opponent WPMs the bake in too — for them it's just a live paint against our stock signature.
+  const have=new Set(Object.keys(activeSkins).map(Number));
+  for(const cid in bakedSkins){ if(have.has(+cid)) continue; const b=bakedLook(+cid); if(b&&b.sigs.length) skins.push({cid:+cid, sigs:b.sigs, palette:b.palette, author:b.author, skinName:b.skinName}); }
   try{ await invoke('sync_publish',{steamid:mySteam.steamid, name:mySteam.name||'', skins, effect: fxMode?String(fxMode):null}); }catch(e){}
 }
 let oppCandidates=[];
@@ -1338,6 +1422,7 @@ async function syncTick(){
   if(!syncOn) return;
   try{
     if(!mySteam.steamid){ mySteam=await invoke('sync_self'); refreshMe(); }
+    pollResultChecks();                        // 🔔 refresh Result Check status/badge on the sync tick (fire-and-forget)
     await publishMine();
     // pollTick owns the (heavy) opponent scan and fills oppCandidates once per session; here we only
     // do the light network fetch to pull their published skins (if they run the app).
@@ -1601,6 +1686,11 @@ let _updHideT=null;
 // so it can be updated without shipping a new build. This bundled copy is the offline FALLBACK — keep it
 // roughly current, but the remote is authoritative.
 let CHANGELOG = [
+  { v:'0.1.67', t:'Lobby sync + baked skins + Result Check', items:[
+    'Skin sync now works in hosted lobby matches, not just ranked — your opponent finally sees your skins in a lobby.',
+    'Baked-in custom skins now show and sync (they were being reverted to stock under sync before).',
+    'New 🔔 Result Check — if a win/loss looks wrong, contest it right from the match and it goes to review.',
+  ]},
   { v:'0.1.66', t:'Obvious "Check for updates"', items:[
     'The chip up top now clearly reads "🔄 Check for updates" (or "⬆ Update to vX" when one is waiting) — one click, no guessing.',
   ]},
@@ -1817,7 +1907,8 @@ function showUpdBanner(mode, html){
   $('#updLater').textContent = mode==='update' ? 'Later' : 'Dismiss';
   $('#updGo').disabled=false; $('#updLater').disabled=false;
   b.style.display=''; clearTimeout(_updHideT);
-  if(mode==='ok') _updHideT=setTimeout(()=>{ b.style.display='none'; }, 5000);   // positive/neutral states clear themselves
+  if(mode==='ok') _updHideT=setTimeout(()=>{ b.style.display='none'; renderRcBanner&&renderRcBanner(); }, 5000);   // positive/neutral states clear themselves
+  renderRcBanner&&renderRcBanner();   // keep the Result Check banner from stacking under the update banner
 }
 // manual=true when the user asks (click the build tag): give clear feedback either way, never a scary "failed".
 // manual=false is the quiet launch check: show the banner ONLY if an update is actually waiting.
@@ -1833,13 +1924,13 @@ async function checkForUpdate(manual){
     } else {
       setUpdStatus('ok');
       if(manual) showUpdBanner('ok', `You're on the latest version — <b>${esc($('#buildTag').textContent)}</b>`);
-      else $('#updBanner').style.display='none';
+      else { $('#updBanner').style.display='none'; renderRcBanner&&renderRcBanner(); }
     }
   }catch(e){ setUpdStatus('err'); if(manual) showUpdBanner('ok', 'Couldn’t reach the update server — try again later.'); }
 }
 $('#updGo').onclick=async()=>{ $('#updMsg').textContent='Downloading update…'; $('#updGo').disabled=true; $('#updLater').disabled=true;
   try{ await invoke('install_update'); }catch(e){ showUpdBanner('ok', 'Update failed — '+esc(String(e).slice(0,100))); } };
-$('#updLater').onclick=()=>{ clearTimeout(_updHideT); $('#updBanner').style.display='none'; };
+$('#updLater').onclick=()=>{ clearTimeout(_updHideT); $('#updBanner').style.display='none'; renderRcBanner&&renderRcBanner(); };
 // click the version (header) to view the changelog; the pill next to it shows live update status. On launch,
 // if the running version differs from the last one we saw, pop the "What's new" changelog for this version.
 (()=>{ const t=$('#buildTag'); if(t){ t.style.cursor='pointer'; t.title='View changelog';
@@ -2312,7 +2403,8 @@ async function boot(){
   // until a live match, so idle characters no longer show up on it.
   for(let i=0;i<localStorage.length;i++){ const k=localStorage.key(i); if(k&&k.startsWith('mvcskin_')){ const cid=+k.slice(8); try{ const v=JSON.parse(localStorage.getItem(k)); activeSkins[cid]={sigs:[sigFromBank0(cid)].filter(Boolean), palette:v.palette, author:v.author, skinName:v.skinName}; }catch(e){} } }
   invoke('sync_self').then(s=>{ mySteam=s||{}; refreshMe(); }).catch(()=>{ $('#meName').textContent='(inject hook)'; });
-  invoke('get_rom_path').then(p=>{ if(p){ $('#romPath').textContent=p; } refreshRomChip(p); }).catch(()=>refreshRomChip(''));
+  invoke('get_rom_path').then(p=>{ if(p){ $('#romPath').textContent=p; } refreshRomChip(p); if(p) detectRomBakes(); }).catch(()=>refreshRomChip(''));
+  renderRcBanner(); updateRcBadge();                     // 🔔 Result Check: show honest beta banner (unless dismissed) + init bell badge
   renderYou(); renderOpp(); pollStatus(); setInterval(pollStatus,3000);
   pollTick();                                            // single serialized loop (state + on-demand capture)
   presenceTick(); setInterval(presenceTick, 20000);      // heartbeat + live online count
@@ -2537,9 +2629,14 @@ async function openProfile(sid,nm){
     const vs=vsSrc.slice(0,30).map(v=>{ const g=v.games||0, w=v.wins||0, l=v.losses||0, r=g?Math.round(100*w/g):0;
       return `<tr class="lb-click" data-sid="${esc(v.opp_id)}" data-nm="${esc(v.name||'Player')}"><td>${v.cc?flagEmoji(v.cc)+' ':''}${esc(v.name||'Player')}</td><td>${w}–${l}</td><td>${r}%</td><td>${g}</td></tr>`; }).join('');
     const eloCell=m=>{ const e=(typeof m.elo==='number')?m.elo:0; const s=e>0?'+':''; return `<td style="font-weight:700;color:${e>=0?'#4ade80':'#f87171'};font-variant-numeric:tabular-nums">${s}${e}</td>`; };
-    const recent=(p.recent||[]).slice(0,15).map(m=>`<tr class="${m.won?'w':'l'}">
+    const recent=(p.recent||[]).slice(0,15).map(m=>{
+      const mk=m.match_key||m.key||'';                                  // ⚠ not currently in /profile.recent[] — see handoff
+      const winId=m.won?String(sid):String(m.opp_id||''), loseId=m.won?String(m.opp_id||''):String(sid);
+      const cbtn=rcContestCell(mk,winId,loseId);
+      return `<tr class="${m.won?'w':'l'}">
       <td>${m.won?'W':'L'}</td><td class="lb-click" data-sid="${esc(m.opp_id||'')}" data-nm="${esc(m.opp||'')}">${esc(m.opp||'?')}</td><td>${esc(teamStr(m.my_team))}</td><td>${esc(teamStr(m.opp_team))}</td>
-      ${eloCell(m)}<td>${m.combo?('🎯'+m.combo):''}${m.ocv?' 💥':''}${m.perfect?' ✨':''}${m.comeback?' 🔄':''}</td></tr>`).join('');
+      ${eloCell(m)}<td>${m.combo?('🎯'+m.combo):''}${m.ocv?' 💥':''}${m.perfect?' ✨':''}${m.comeback?' 🔄':''}${cbtn?(' '+cbtn):''}</td></tr>`;
+    }).join('');
     const isMe = mySteam && String(mySteam.steamid)===String(sid);
     body.innerHTML=`<h3>${avatarImg(p.avatar,48)}${p.cc?flagEmoji(p.cc)+' ':''}${esc(p.name||nm||'Player')} ${repBadge(p)}</h3>
       ${isMe?`<div style="margin:0 0 8px"><button id="pfRep" style="padding:6px 12px;border-radius:8px;border:1px solid var(--line);background:transparent;color:var(--gold-soft);cursor:pointer;font-size:12px;font-weight:600">📍 ${(p.cc||p.city||p.country)?'Edit where you represent':'Set where you represent'}</button></div>`:''}
@@ -2566,7 +2663,11 @@ async function openSession(sid){
     if(!s||!s.ok||!(s.games||[]).length){ body.innerHTML='<h3>Ranked set</h3><div class="lb-empty">No games recorded for this set yet.</div>'; return; }
     const eloc=e=>`<td style="font-weight:700;color:${(e||0)>=0?'#4ade80':'#f87171'};font-variant-numeric:tabular-nums">${(e||0)>0?'+':''}${e||0}</td>`;
     const players=(s.players||[]).map(p=>`<tr class="lb-click" data-sid="${esc(p.steamid)}" data-nm="${esc(p.name||'Player')}"><td>${p.cc?flagEmoji(p.cc)+' ':''}${esc(p.name||'Player')}</td><td>${p.wins}–${p.losses}</td>${eloc(p.elo)}</tr>`).join('');
-    const games=(s.games||[]).map(m=>`<tr><td>${(m.match_index||0)+1}</td><td>${m.wcc?flagEmoji(m.wcc)+' ':''}${esc(m.wname||'?')}</td><td>${m.lcc?flagEmoji(m.lcc)+' ':''}${esc(m.lname||'?')}</td><td>${esc(teamStr(m.wteam))}</td><td>${m.combo?('🎯'+m.combo):''}${m.ocv?' 💥':''}${m.perfect?' ✨':''}${m.comeback?' 🔄':''}${m.verified?' ✓':''}</td></tr>`).join('');
+    const games=(s.games||[]).map(m=>{
+      const mk=m.match_key||m.key||'';                                  // ⚠ not currently in /session.games[] — see handoff
+      const cbtn=rcContestCell(mk,m.winner,m.loser);                    // winner/loser steamids ARE present on session games
+      return `<tr><td>${(m.match_index||0)+1}</td><td>${m.wcc?flagEmoji(m.wcc)+' ':''}${esc(m.wname||'?')}</td><td>${m.lcc?flagEmoji(m.lcc)+' ':''}${esc(m.lname||'?')}</td><td>${esc(teamStr(m.wteam))}</td><td>${m.combo?('🎯'+m.combo):''}${m.ocv?' 💥':''}${m.perfect?' ✨':''}${m.comeback?' 🔄':''}${m.verified?' ✓':''}${cbtn?(' '+cbtn):''}</td></tr>`;
+    }).join('');
     body.innerHTML=`<h3>Ranked set <span style="text-transform:none;letter-spacing:0;color:#8b90a5;font-weight:400">— ${s.count} game${s.count===1?'':'s'} · #${String(sid).slice(-4)}</span></h3>
       <h4>Players <span style="text-transform:none;letter-spacing:0;color:#8b90a5;font-weight:400">— click to open a profile</span></h4>
       <table class="pf-tbl"><tr><th>Player</th><th>Record</th><th>ELO</th></tr>${players}</table>
@@ -2637,11 +2738,77 @@ $('#regBody')?.addEventListener('click',e=>{ const rc=e.target.closest('.reg-cli
 $('#pfBody')?.addEventListener('click',e=>{ const n=e.target.closest('.lb-click'); if(n&&n.dataset.sid&&n.dataset.sid.length===17) openProfile(n.dataset.sid,n.dataset.nm); });
 $('#pfX')?.addEventListener('click',()=>$('#pfModal').classList.remove('show'));
 $('#pfModal')?.addEventListener('click',e=>{ if(e.target.id==='pfModal') e.currentTarget.classList.remove('show'); });
+
+// ── 🔔 Result Check — client of the server's contest/notifications API (contest a wrong W/L; see status) ──
+let rcState={mine:[],heads_up:[],unread:0};
+const rcInflight=new Set();                              // match_keys with an in-flight contest → blocks double-submit
+function rcBannerDismissed(){ try{ return localStorage.getItem('rc_banner_seen')==='1'; }catch(e){ return false; } }
+function updBannerVisible(){ const b=$('#updBanner'); return !!b && getComputedStyle(b).display!=='none'; }
+// Show the honest beta banner unless dismissed — and NEVER stack over the update banner (defer while that's up).
+function renderRcBanner(){ const b=$('#rcBanner'); if(!b) return; b.style.display=(!rcBannerDismissed() && !updBannerVisible())?'flex':'none'; }
+function dismissRcBanner(){ try{ localStorage.setItem('rc_banner_seen','1'); }catch(e){} const b=$('#rcBanner'); if(b) b.style.display='none'; }
+function updateRcBadge(){ const bell=$('#rcBell'); if(!bell) return; const n=rcState.unread|0; bell.classList.toggle('has',n>0); const badge=$('#rcBadge'); if(badge) badge.textContent=n>99?'99+':String(n); }
+// Poll our own contest status on the sync tick — guarded by steamid + syncOn (matches the server's auth rule).
+async function pollResultChecks(){
+  if(!invoke || !syncOn || !(mySteam&&mySteam.steamid)) return;
+  try{
+    const r=await invoke('result_notifications',{steamid:String(mySteam.steamid)});
+    if(r&&r.ok){ rcState={mine:r.mine||[], heads_up:r.heads_up||[], unread:r.unread|0}; updateRcBadge();
+      if($('#rcModal')?.classList.contains('show')) renderRcPanel(); }
+  }catch(e){}
+}
+function rcTs(ms){ if(!ms) return ''; try{ return new Date(Number(ms)).toLocaleDateString(undefined,{month:'short',day:'numeric'}); }catch(e){ return ''; } }
+function renderRcPanel(){
+  const body=$('#rcBody'); if(!body) return;
+  if(!(mySteam&&mySteam.steamid)){ body.innerHTML='<h3>🔔 Result Check</h3><div class="lb-empty">Launch the game so we know your Steam ID, then turn on Live Sync.</div>'; return; }
+  const rows=(rcState.mine||[]).map(m=>{
+    const opp=(m.opponent&&m.opponent.name)?m.opponent.name:'Opponent';
+    let st,cls; const done=(m.status==='resolved')||m.resolved;
+    if(done){ if(m.i_won){ st='✓ Resolved — you won'; cls='won'; } else { st='✓ Resolved — you lost'; cls='lost'; } }
+    else { st='⏳ Pending review'; cls='pend'; }
+    return `<div class="rc-row"><div class="rc-main"><div class="rc-opp">vs ${esc(opp)}</div><div class="rc-ts">${rcTs(m.ts)}</div></div><span class="rc-st ${cls}">${st}</span></div>`;
+  }).join('');
+  body.innerHTML=`<h3>🔔 Result Check</h3>
+    <p style="font-size:12px;color:var(--dim);line-height:1.5;margin:0 0 10px">Contest a wrong win/loss and it goes to review — every match is saved as a full replay, so records settle to the truth.</p>
+    ${rows||'<div class="lb-empty">No contested results. If a win/loss looks wrong, open a match and tap Contest.</div>'}`;
+}
+function openRcPanel(){ const m=$('#rcModal'); if(!m) return; m.classList.add('show'); renderRcPanel(); pollResultChecks(); }
+// A Contest action for a match row — rendered ONLY when we have the match_key AND the logged-in user is a
+// participant (winner/loser steamid). Returns '' otherwise (inert until the server exposes match_key on the
+// profile/session views — see the handoff note).
+function rcContestCell(matchKey,winnerId,loserId){
+  const me=(mySteam&&mySteam.steamid)?String(mySteam.steamid):'';
+  const part=me && (me===String(winnerId||'') || me===String(loserId||''));
+  if(!matchKey || !part) return '';
+  return `<button class="rc-contest" data-mk="${esc(String(matchKey))}" title="Contest this result">⚑ Contest</button>`;
+}
+async function contestMatch(matchKey,btn){
+  if(!matchKey){ toast("This match can't be contested yet."); return; }
+  if(rcInflight.has(matchKey)) return;                                  // already submitting this one
+  if(!window.confirm("Contest this result? This flags it for review — you're saying you should be the winner.")) return;
+  rcInflight.add(matchKey);
+  if(btn){ btn._t=btn.textContent; btn.disabled=true; btn.textContent='…'; }
+  try{
+    const r=await invoke('contest_match',{matchKey});
+    if(r&&r.ok){ if(btn){ btn.textContent='⚑ Contested'; btn.disabled=true; } toast('<span class="k">Contest submitted</span> — you\'ll see it under 🔔 Result Check.'); pollResultChecks(); }
+    else { if(btn){ btn.disabled=false; btn.textContent=btn._t||'⚑ Contest'; } toast("Couldn't submit the contest — try again."); }
+  }catch(e){
+    if(btn){ btn.disabled=false; btn.textContent=btn._t||'⚑ Contest'; }
+    const msg=String(e); toast(msg.includes('403')?'Only a player in that match can contest it.':"Couldn't submit the contest — try again.");
+  }finally{ rcInflight.delete(matchKey); }
+}
+// contest buttons live inside the profile / session tables (#pfBody) → one delegated handler covers both
+$('#pfBody')?.addEventListener('click',e=>{ const b=e.target.closest('.rc-contest'); if(b){ e.stopPropagation(); contestMatch(b.dataset.mk,b); } });
+$('#rcBell')&&($('#rcBell').onclick=openRcPanel);
+$('#rcBell')&&($('#rcBell').onkeydown=e=>{ if(e.key===' '||e.key==='Enter'){ e.preventDefault(); openRcPanel(); } });
+$('#rcBannerX')&&($('#rcBannerX').onclick=dismissRcBanner);
+$('#rcX')?.addEventListener('click',()=>$('#rcModal').classList.remove('show'));
+$('#rcModal')?.addEventListener('click',e=>{ if(e.target.id==='rcModal') e.currentTarget.classList.remove('show'); });
 function refreshRomChip(p){ const ok=p&&p!=='(not set)'&&p!=='(not found)'; $('#romChipTxt').textContent = ok ? (p.split(/[\\/]/).pop()||p) : 'not set'; $('#romChip').classList.toggle('set',!!ok); $('#romChip').title = ok?('ROM: '+p):'Set your Steam install / game_50.arc — required for Bake'; }
 $('#romChip').onclick=()=>$('#romModal').classList.add('show');
 $('#romModalX').onclick=()=>$('#romModal').classList.remove('show');
 $('#romModal').onclick=e=>{ if(e.target.id==='romModal') e.currentTarget.classList.remove('show'); };
-function onRomChanged(){ stFullCache={}; if(studioLoaded && stCid!=null) stTryFull(stCid); }
+function onRomChanged(){ stFullCache={}; if(studioLoaded && stCid!=null) stTryFull(stCid); detectRomBakes(); }
 async function saveRomPath(p){ if(!p) return; try{ const r=await invoke('set_rom_path',{path:p}); $('#romPath').textContent=r; $('#romInput').value=r; refreshRomChip(r); onRomChanged(); toast('ROM saved'); }catch(e){ toast('⚠ '+e); } }
 async function browseRom(directory){
   const dlg=window.__TAURI__ && window.__TAURI__.dialog;
@@ -2687,7 +2854,7 @@ $('#stBake').onclick=async()=>{
   const colors=stPal.map(c=>(c[0]<<16)|(c[1]<<8)|c[2]);
   if(!confirm(`Bake ${nameById[stCid]}'s palette PERMANENTLY into the game files?\n\n${arc}\n\nA .bak backup is made automatically first. ⚠ Online ranked may checksum game files.`)) return;
   const b=$('#stBake'); b.textContent='Baking…'; b.disabled=true;
-  try{ const r=await invoke('bake_palette',{arcPath:arc, charId:stCid, colors}); recordBaked(stCid, stPal); toast('✓ '+r); $('#stName').textContent='baked · restart game to see it'; }
+  try{ const r=await invoke('bake_palette',{arcPath:arc, charId:stCid, colors}); recordBaked(stCid, stPal); await writeAll(); if(syncOn) publishMine(); renderYou(); toast('✓ '+r); $('#stName').textContent='baked · restart game to see it'; }
   catch(e){ toast('⚠ bake failed: '+e); }
   b.textContent='⬇ Bake'; b.disabled=false;
 };

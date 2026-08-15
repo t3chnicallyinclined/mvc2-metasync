@@ -1,6 +1,6 @@
 [package]
 name = "mvc-live-skins"
-version = "0.1.66"
+version = "0.1.67"
 description = "MvC Collection Live Skins — live palette skin changer for the Steam Marvel vs Capcom Fighting Collection"
 authors = ["tristech"]
 edition = "2021"
