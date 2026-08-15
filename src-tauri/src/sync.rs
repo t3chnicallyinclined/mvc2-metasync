@@ -2525,8 +2525,9 @@ pub fn start_reader() {
             // local netplay index (0/1). Validated live: stable 16/16 within a session, while the char-based method
             // flip-flopped on point-char mis-reads and inverted the stats. It is PER-MACHINE (each app reads its own
             // user's index) and, because the game state is shared, the two players' values are complementary — so it
-            // cleanly identifies YOUR team. Map it straight to the user's parity and CONFIRM it: 0 => you are the
-            // odd/player-2 slots, 1 => even/player-1 (observed live — flip the two arms if a future build inverts).
+            // cleanly identifies YOUR team. Map it straight to the user's parity and CONFIRM it: 0 => P1/even slots,
+            // 1 => P2/odd slots (ground-truth confirmed 2026-08-14; see the mapping at the read below). ⚠ an earlier
+            // version of THIS comment said "0 => odd/P2" — that was WRONG and contradicted the code; deleted.
             // An explicit manual override (rare now) still wins; otherwise localPlayerNum decides and games record
             // immediately (no buffering, no wrong guess). NOTE: unproven case is localPlayerNum=1 (the side-flip) —
             // the next session on the other side confirms it live, and every recording carries local_pn + the frame
@@ -2550,7 +2551,11 @@ pub fn start_reader() {
                     let side = match pn { 0 => 1u8, 1 => 2u8, _ => 0u8 };
                     if side != 0 {
                         let mut s = snapshot().lock().unwrap();
-                        if s.manual_side == 0 { s.local_side = side; s.side_confirmed = true; }
+                        // ALWAYS track the raw localPlayerNum side — it's the authoritative, ground-truth-confirmed
+                        // side and now drives the W/L VERDICT directly (see the update_score caller). manual_side
+                        // still overrides the DISPLAY label via effective_side, but NEVER the recorded result — a
+                        // stale manual toggle must not be able to invert a whole set (the Duc-class failure).
+                        s.local_side = side; s.side_confirmed = true;
                     }
                 }
             }
@@ -2564,7 +2569,11 @@ pub fn start_reader() {
             let active = game.as_ref().map(|g| g.in_match == 1).unwrap_or(false) || n > 0 || in_session;
             if active { last_active = std::time::Instant::now(); }
             else if opp.is_some() && last_active.elapsed().as_secs() > OUT_TIMEOUT { opp = None; opp_addr = None; }
-            let (side_for_stats, side_ok) = { let s = snapshot().lock().unwrap(); (effective_side(&s), s.side_confirmed) };  // manual override wins; gate on confirmation
+            // VERDICT side = RAW localPlayerNum (authoritative, ground-truth mapping 0=>P1 / 1=>P2) via local_side,
+            // NOT effective_side: a stale/wrong manual override must never flip the RECORDED winner (the Duc-class
+            // inversion). manual_side still steers the on-screen label through effective_side elsewhere; the W/L
+            // result now follows the pointer only. The server (reconcile.rs) agrees via the same local_pn→side map.
+            let (side_for_stats, side_ok) = { let s = snapshot().lock().unwrap(); (s.local_side, s.side_confirmed) };
             update_score(&mut ss, &game, &opp, side_for_stats, side_ok);
             write_fighters(&game);
             let sc = (ss.p1, ss.p2);
