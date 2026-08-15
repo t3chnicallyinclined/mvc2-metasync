@@ -1333,13 +1333,13 @@ function setOpp(meta, waitMsg){
   oppMeta=meta;
   if(meta){                                        // opponent runs the app (synced skins)
     $('#oppHdName').textContent=meta.name; $('#oppHdSid').textContent=meta.steamid; $('#p2name').textContent=meta.name; $('#p2sid').textContent=meta.steamid;
-    $('#p2por').textContent=(meta.name[0]||'P').toUpperCase();
+    setPor($('#p2por'), null, meta.name);
     fetchOppRep(meta.steamid);
   } else if(oppIdentity){                           // identified from memory even without their app
     const nm=oppIdentity.name||'Opponent';
     $('#oppHdName').textContent=nm; $('#oppHdSid').textContent=oppIdentity.steamid;
     $('#p2name').textContent=nm; $('#p2sid').textContent=oppIdentity.steamid;
-    $('#p2por').textContent=(nm[0]||'P').toUpperCase();
+    setPor($('#p2por'), null, nm);
     $('#oppState').textContent = syncOn?'Facing · no app':'Facing'; $('#oppState').className='state on';
     fetchOppRep(oppIdentity.steamid);
   } else {
@@ -1582,6 +1582,10 @@ let _updHideT=null;
 // so it can be updated without shipping a new build. This bundled copy is the offline FALLBACK — keep it
 // roughly current, but the remote is authoritative.
 let CHANGELOG = [
+  { v:'0.1.62', t:'Cleaner boards + faces in the match view', items:[
+    'Leaderboards now show country flags + names only — avatars moved to your profile and the live match view, so the ranked lists stay clean and readable.',
+    'The top bar shows the live "playing MvC2" count on its own.',
+  ]},
   { v:'0.1.61', t:'Avatars, flags & a live player count', items:[
     'Every leaderboard, profile and matchup now shows player avatars and country flags (flag right next to the name). Names come straight from Steam — no more blanks or garbled handles.',
     'The top bar now shows how many people are playing MvC2 right now.',
@@ -2334,6 +2338,8 @@ const esc=s=>String(s==null?'':s).replace(/[<>&"]/g,c=>({'<':'&lt;','>':'&gt;','
 function flagEmoji(cc){ if(!cc||cc.length!==2) return '🏳️'; try{ return String.fromCodePoint(...[...cc.toUpperCase()].map(c=>0x1F1E6+c.charCodeAt(0)-65)); }catch(e){ return '🏳️'; } }
 // Small round Steam avatar. Render order everywhere is [avatar][flag][name]; empty url → nothing (no placeholder).
 function avatarImg(url,size){ return url?`<img src="${esc(url)}" width="${size}" height="${size}" style="border-radius:50%;vertical-align:middle;margin-right:6px;object-fit:cover;background:#222" loading="lazy" referrerpolicy="no-referrer">`:''; }
+// Fill a match-tab portrait circle (.por) with a player's Steam avatar; falls back to the name initial.
+function setPor(el,url,name){ if(!el) return; if(url){ el.style.backgroundImage=`url("${url}")`; el.style.backgroundSize='cover'; el.style.backgroundPosition='center'; el.textContent=''; } else { el.style.backgroundImage='none'; el.textContent=((name&&name[0])||'P').toUpperCase(); } }
 const COUNTRIES=[["US","United States"],["CA","Canada"],["MX","Mexico"],["GB","United Kingdom"],["FR","France"],["DE","Germany"],["ES","Spain"],["IT","Italy"],["PT","Portugal"],["NL","Netherlands"],["BE","Belgium"],["IE","Ireland"],["CH","Switzerland"],["AT","Austria"],["SE","Sweden"],["NO","Norway"],["DK","Denmark"],["FI","Finland"],["PL","Poland"],["CZ","Czechia"],["SK","Slovakia"],["HU","Hungary"],["RO","Romania"],["BG","Bulgaria"],["GR","Greece"],["HR","Croatia"],["RS","Serbia"],["SI","Slovenia"],["UA","Ukraine"],["RU","Russia"],["TR","Turkey"],["JP","Japan"],["KR","South Korea"],["CN","China"],["TW","Taiwan"],["HK","Hong Kong"],["SG","Singapore"],["MY","Malaysia"],["TH","Thailand"],["VN","Vietnam"],["PH","Philippines"],["ID","Indonesia"],["IN","India"],["PK","Pakistan"],["BD","Bangladesh"],["AU","Australia"],["NZ","New Zealand"],["BR","Brazil"],["AR","Argentina"],["CL","Chile"],["CO","Colombia"],["PE","Peru"],["VE","Venezuela"],["EC","Ecuador"],["BO","Bolivia"],["PY","Paraguay"],["UY","Uruguay"],["CR","Costa Rica"],["PA","Panama"],["GT","Guatemala"],["HN","Honduras"],["SV","El Salvador"],["NI","Nicaragua"],["DO","Dominican Republic"],["PR","Puerto Rico"],["CU","Cuba"],["JM","Jamaica"],["TT","Trinidad & Tobago"],["ZA","South Africa"],["NG","Nigeria"],["EG","Egypt"],["MA","Morocco"],["DZ","Algeria"],["TN","Tunisia"],["KE","Kenya"],["GH","Ghana"],["ET","Ethiopia"],["SA","Saudi Arabia"],["AE","United Arab Emirates"],["QA","Qatar"],["KW","Kuwait"],["IL","Israel"],["JO","Jordan"],["LB","Lebanon"],["IQ","Iraq"],["IR","Iran"],["IS","Iceland"],["LU","Luxembourg"],["EE","Estonia"],["LV","Latvia"],["LT","Lithuania"],["BY","Belarus"],["MD","Moldova"],["GE","Georgia"],["AM","Armenia"],["AZ","Azerbaijan"],["KZ","Kazakhstan"],["UZ","Uzbekistan"],["MN","Mongolia"],["NP","Nepal"],["LK","Sri Lanka"],["MM","Myanmar"],["KH","Cambodia"],["LA","Laos"],["MO","Macau"],["FJ","Fiji"],["CY","Cyprus"],["MT","Malta"],["AL","Albania"],["MK","North Macedonia"],["BA","Bosnia & Herzegovina"],["ME","Montenegro"],["XK","Kosovo"],["AD","Andorra"],["MC","Monaco"],["LI","Liechtenstein"],["SM","San Marino"],["BZ","Belize"],["BS","Bahamas"],["BB","Barbados"],["GY","Guyana"],["SR","Suriname"],["AO","Angola"],["MZ","Mozambique"],["ZW","Zimbabwe"],["ZM","Zambia"],["UG","Uganda"],["TZ","Tanzania"],["CM","Cameroon"],["CI","Côte d'Ivoire"],["SN","Senegal"],["RW","Rwanda"],["BW","Botswana"],["NA","Namibia"],["LY","Libya"],["SD","Sudan"],["OM","Oman"],["BH","Bahrain"],["YE","Yemen"],["SY","Syria"],["AF","Afghanistan"],["BT","Bhutan"],["MV","Maldives"],["BN","Brunei"],["PG","Papua New Guinea"],["NC","New Caledonia"],["PF","French Polynesia"],["GU","Guam"]];
 // US FGC / MvC2 "scenes" — repped instead of a plain state when country is USA.
 const US_REGIONS=["SoCal","NorCal","Pacific Northwest","Southwest","Texas","Midwest","Great Lakes","Southeast","Florida","Mid-Atlantic","Tri-State (NYC)","New England","Hawaii"];
@@ -2389,9 +2395,9 @@ async function saveLoc(sid){
 let myLoc={cc:'',country:'',region:'',city:''};
 let onlineCount=0, gamePlayers=0, _oppRepId=null;
 function repLine(cc,city,region){ const f=cc?flagEmoji(cc):''; const t=[city,region].filter(Boolean)[0]||''; return `${f} ${esc(t)}`.trim(); }
-function updateSyncChip(){ const c=$('#cSync'); if(!c) return; c.classList.toggle('on',!!syncOn); const t=$('#cSyncTxt'); if(t) t.textContent = syncOn ? ('Live'+(onlineCount>0?' · '+onlineCount+' on':'')+(gamePlayers>0?' · 🎮 '+gamePlayers+' in MvC2':'')) : 'Offline'; }
+function updateSyncChip(){ const c=$('#cSync'); if(!c) return; c.classList.toggle('on',!!syncOn); const t=$('#cSyncTxt'); if(t) t.textContent = syncOn ? (gamePlayers>0 ? ('🎮 '+gamePlayers+' playing MvC2') : 'Live') : 'Offline'; }
 async function refreshMeBadge(){
-  if(invoke && mySteam && mySteam.steamid){ try{ const p=await invoke('profile',{steamid:String(mySteam.steamid)}); if(p&&p.found){ myLoc={cc:p.cc||'',country:p.country||'',region:p.region||'',city:p.city||''}; } }catch(e){} }
+  if(invoke && mySteam && mySteam.steamid){ try{ const p=await invoke('profile',{steamid:String(mySteam.steamid)}); if(p&&p.found){ myLoc={cc:p.cc||'',country:p.country||'',region:p.region||'',city:p.city||''}; setPor($('#p1por'), p.avatar, p.name||mySteam.name); } }catch(e){} }
   const set=!!(myLoc.cc||myLoc.city||myLoc.region);
   const rf=$('#repFlag'); if(rf) rf.textContent = (set&&myLoc.cc)?flagEmoji(myLoc.cc):'📍';
   const rt=$('#repTxt'); if(rt) rt.textContent = set ? ([myLoc.city,myLoc.region].filter(Boolean).join(', ')||myLoc.country||'Representing') : 'Set where you represent';
@@ -2403,7 +2409,7 @@ async function fetchOppRep(sid){
   const pr=$('#p2rep');
   if(!sid){ _oppRepId=null; if(pr) pr.textContent=''; return; }
   if(sid===_oppRepId) return; _oppRepId=sid; if(pr) pr.textContent='';
-  try{ const p=await invoke('profile',{steamid:String(sid)}); const t=(p&&p.found&&(p.cc||p.city))?repLine(p.cc,p.city,p.region):''; if(pr && _oppRepId===sid) pr.textContent=t; }catch(e){}
+  try{ const p=await invoke('profile',{steamid:String(sid)}); if(p&&p.found && _oppRepId===sid) setPor($('#p2por'), p.avatar, p.name); const t=(p&&p.found&&(p.cc||p.city))?repLine(p.cc,p.city,p.region):''; if(pr && _oppRepId===sid) pr.textContent=t; }catch(e){}
 }
 async function renderLeaderboard(tab){
   lbTab=tab||lbTab;
@@ -2445,7 +2451,7 @@ async function renderLeaderboard(tab){
       const rank=i===0?'👑':(i+1);
       return `<div class="lb-row ${i===0?'r1':''} ${isMe?'me':''}">
         <div class="lb-rank">${rank}</div>
-        <div class="lb-name lb-click" data-sid="${esc(p.steamid)}" data-nm="${esc(p.name||'Player')}">${avatarImg(p.avatar,22)}${p.cc?`<span title="${esc(p.city||p.region||'')}">${flagEmoji(p.cc)}</span> `:''}${esc(p.name||'Player')}${isMe?'<span class="me-tag">YOU</span>':''}</div>
+        <div class="lb-name lb-click" data-sid="${esc(p.steamid)}" data-nm="${esc(p.name||'Player')}">${p.cc?`<span title="${esc(p.city||p.region||'')}">${flagEmoji(p.cc)}</span> `:''}${esc(p.name||'Player')}${isMe?'<span class="me-tag">YOU</span>':''}</div>
         <div class="lb-wl">${p.wins||0}W · ${p.losses||0}L</div>
         <div class="lb-stat">${p.stat||0} ${lab}</div>
       </div>`;
@@ -2492,13 +2498,13 @@ async function openProfile(sid,nm){
     // recent form (last 10, newest first)
     const form=(ps.form||[]).map(w=>`<span class="fmw" style="display:inline-block;width:16px;height:16px;line-height:16px;text-align:center;border-radius:3px;font-size:10px;font-weight:700;margin-right:2px;color:#0b0d12;background:${w?'#4ade80':'#f87171'}">${w?'W':'L'}</span>`).join('');
     // nemesis / favourite victim (clickable → their profile)
-    const badge=(o,ico,lbl,col)=> o?`<span class="lb-click" data-sid="${esc(o.opp_id)}" data-nm="${esc(o.name||'Player')}" style="cursor:pointer;background:#161a24;border:1px solid ${col}55;border-radius:8px;padding:4px 10px;font-size:12px">${ico} ${lbl}: ${avatarImg(o.avatar,18)}${o.cc?flagEmoji(o.cc)+' ':''}<b>${esc(o.name||'Player')}</b> ${o.wins}–${o.losses}</span>`:'';
+    const badge=(o,ico,lbl,col)=> o?`<span class="lb-click" data-sid="${esc(o.opp_id)}" data-nm="${esc(o.name||'Player')}" style="cursor:pointer;background:#161a24;border:1px solid ${col}55;border-radius:8px;padding:4px 10px;font-size:12px">${ico} ${lbl}: ${o.cc?flagEmoji(o.cc)+' ':''}<b>${esc(o.name||'Player')}</b> ${o.wins}–${o.losses}</span>`:'';
     const badges=[badge(ps.nemesis,'😈','Nemesis','#f87171'),badge(ps.victim,'🎯','Favourite victim','#4ade80')].filter(Boolean).join(' ');
     const teams=(p.teams||[]).slice(0,10).map(t=>{ const cids=String(t.team).split(',').map(Number); const tw=t.games?Math.round(100*t.wins/t.games):0;
       return `<tr><td>${esc(teamStr(cids))}</td><td>${t.games}</td><td>${t.wins}</td><td>${tw}%</td></tr>`; }).join('');
     const vsSrc=(ps.vs&&ps.vs.length)?ps.vs:(p.vs||[]);
     const vs=vsSrc.slice(0,30).map(v=>{ const g=v.games||0, w=v.wins||0, l=v.losses||0, r=g?Math.round(100*w/g):0;
-      return `<tr class="lb-click" data-sid="${esc(v.opp_id)}" data-nm="${esc(v.name||'Player')}"><td>${avatarImg(v.avatar,20)}${v.cc?flagEmoji(v.cc)+' ':''}${esc(v.name||'Player')}</td><td>${w}–${l}</td><td>${r}%</td><td>${g}</td></tr>`; }).join('');
+      return `<tr class="lb-click" data-sid="${esc(v.opp_id)}" data-nm="${esc(v.name||'Player')}"><td>${v.cc?flagEmoji(v.cc)+' ':''}${esc(v.name||'Player')}</td><td>${w}–${l}</td><td>${r}%</td><td>${g}</td></tr>`; }).join('');
     const eloCell=m=>{ const e=(typeof m.elo==='number')?m.elo:0; const s=e>0?'+':''; return `<td style="font-weight:700;color:${e>=0?'#4ade80':'#f87171'};font-variant-numeric:tabular-nums">${s}${e}</td>`; };
     const recent=(p.recent||[]).slice(0,15).map(m=>`<tr class="${m.won?'w':'l'}">
       <td>${m.won?'W':'L'}</td><td class="lb-click" data-sid="${esc(m.opp_id||'')}" data-nm="${esc(m.opp||'')}">${esc(m.opp||'?')}</td><td>${esc(teamStr(m.my_team))}</td><td>${esc(teamStr(m.opp_team))}</td>
@@ -2528,8 +2534,8 @@ async function openSession(sid){
     const s=await invoke('session_stats',{id:String(sid)});
     if(!s||!s.ok||!(s.games||[]).length){ body.innerHTML='<h3>Ranked set</h3><div class="lb-empty">No games recorded for this set yet.</div>'; return; }
     const eloc=e=>`<td style="font-weight:700;color:${(e||0)>=0?'#4ade80':'#f87171'};font-variant-numeric:tabular-nums">${(e||0)>0?'+':''}${e||0}</td>`;
-    const players=(s.players||[]).map(p=>`<tr class="lb-click" data-sid="${esc(p.steamid)}" data-nm="${esc(p.name||'Player')}"><td>${avatarImg(p.avatar,20)}${p.cc?flagEmoji(p.cc)+' ':''}${esc(p.name||'Player')}</td><td>${p.wins}–${p.losses}</td>${eloc(p.elo)}</tr>`).join('');
-    const games=(s.games||[]).map(m=>`<tr><td>${(m.match_index||0)+1}</td><td>${avatarImg(m.wavatar,18)}${m.wcc?flagEmoji(m.wcc)+' ':''}${esc(m.wname||'?')}</td><td>${avatarImg(m.lavatar,18)}${m.lcc?flagEmoji(m.lcc)+' ':''}${esc(m.lname||'?')}</td><td>${esc(teamStr(m.wteam))}</td><td>${m.combo?('🎯'+m.combo):''}${m.ocv?' 💥':''}${m.perfect?' ✨':''}${m.comeback?' 🔄':''}${m.verified?' ✓':''}</td></tr>`).join('');
+    const players=(s.players||[]).map(p=>`<tr class="lb-click" data-sid="${esc(p.steamid)}" data-nm="${esc(p.name||'Player')}"><td>${p.cc?flagEmoji(p.cc)+' ':''}${esc(p.name||'Player')}</td><td>${p.wins}–${p.losses}</td>${eloc(p.elo)}</tr>`).join('');
+    const games=(s.games||[]).map(m=>`<tr><td>${(m.match_index||0)+1}</td><td>${m.wcc?flagEmoji(m.wcc)+' ':''}${esc(m.wname||'?')}</td><td>${m.lcc?flagEmoji(m.lcc)+' ':''}${esc(m.lname||'?')}</td><td>${esc(teamStr(m.wteam))}</td><td>${m.combo?('🎯'+m.combo):''}${m.ocv?' 💥':''}${m.perfect?' ✨':''}${m.comeback?' 🔄':''}${m.verified?' ✓':''}</td></tr>`).join('');
     body.innerHTML=`<h3>Ranked set <span style="text-transform:none;letter-spacing:0;color:#8b90a5;font-weight:400">— ${s.count} game${s.count===1?'':'s'} · #${String(sid).slice(-4)}</span></h3>
       <h4>Players <span style="text-transform:none;letter-spacing:0;color:#8b90a5;font-weight:400">— click to open a profile</span></h4>
       <table class="pf-tbl"><tr><th>Player</th><th>Record</th><th>ELO</th></tr>${players}</table>
@@ -2555,7 +2561,7 @@ async function renderRegions(){
       const loc=regLevel==='city'?`${flagEmoji(x.cc)} ${esc(x.name)}${x.region?`<span style="color:var(--dim)"> · ${esc(x.region)}</span>`:''}`:`${flagEmoji(x.cc)} ${esc(x.name)}`;
       return `<div class="lb-row ${i===0?'r1':''} reg-click" data-cc="${esc(x.cc)}" data-city="${regLevel==='city'?esc(x.name):''}" data-nm="${esc(x.name)}" style="cursor:pointer">
         <div class="lb-rank">${i===0?'👑':(i+1)}</div>
-        <div class="lb-name">${loc}${x.top?`<span style="color:var(--dim);font-size:11px"> — top: ${avatarImg(x.top.avatar,16)}${x.top.cc?flagEmoji(x.top.cc)+' ':''}${esc(x.top.name||'')}</span>`:''}</div>
+        <div class="lb-name">${loc}${x.top?`<span style="color:var(--dim);font-size:11px"> — top: ${x.top.cc?flagEmoji(x.top.cc)+' ':''}${esc(x.top.name||'')}</span>`:''}</div>
         <div class="lb-wl">${x.players} player${x.players===1?'':'s'} · ${x.wins}W</div>
         <div class="lb-stat">${x.avg_rating} ELO</div></div>`;
     }).join('');
@@ -2572,7 +2578,7 @@ async function openRegion(cc, city, nm){
     const players=(lb&&lb.players)||[]; const teams=((tl&&tl.teams)||[]).slice(0,8);
     const plHtml = players.length ? players.map((p,i)=>`<div class="lb-row ${i===0?'r1':''}">
       <div class="lb-rank">${i===0?'👑':(i+1)}</div>
-      <div class="lb-name lb-click" data-sid="${esc(p.steamid)}" data-nm="${esc(p.name||'Player')}">${avatarImg(p.avatar,22)}${p.cc?flagEmoji(p.cc)+' ':''}${esc(p.name||'Player')}</div>
+      <div class="lb-name lb-click" data-sid="${esc(p.steamid)}" data-nm="${esc(p.name||'Player')}">${p.cc?flagEmoji(p.cc)+' ':''}${esc(p.name||'Player')}</div>
       <div class="lb-wl">${p.wins||0}W · ${p.losses||0}L</div><div class="lb-stat">${p.rating||1000} ELO</div></div>`).join('') : '<div class="lb-empty">no players here yet</div>';
     const tlHtml = teams.length ? `<table class="pf-tbl"><tr><th>Team</th><th>GP</th><th>W</th><th>WR</th></tr>`+teams.map(t=>{const cids=String(t.team).split(',').map(Number);return `<tr><td>${esc(teamStr(cids))}</td><td>${t.games}</td><td>${t.wins}</td><td>${t.winrate}%</td></tr>`}).join('')+'</table>' : '<div class="lb-empty" style="padding:8px">not enough games yet</div>';
     body.innerHTML=`<button id="regBack" style="margin-bottom:10px;padding:6px 12px;border-radius:8px;border:1px solid var(--line);background:transparent;color:var(--dim);cursor:pointer">← Back</button>
