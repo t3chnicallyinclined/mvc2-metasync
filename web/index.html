@@ -55,6 +55,10 @@ try{document.documentElement.setAttribute('data-theme', localStorage.getItem('me
   .chip{display:inline-flex; align-items:center; gap:7px; font-size:12px; padding:6px 11px; border-radius:999px; border:1px solid var(--line); background:var(--panel); color:var(--dim); white-space:nowrap;}
   .chip .led{width:8px; height:8px; border-radius:50%; background:var(--faint);}
   .chip.on .led{background:var(--good); box-shadow:0 0 9px var(--good);}
+  .rep-chip{cursor:pointer; gap:6px; font-size:12.5px; transition:all .15s;}
+  .rep-chip:hover{color:var(--ink); border-color:var(--gold-soft);}
+  .rep-chip.set{color:var(--ink); border-color:var(--gold-soft); background:color-mix(in srgb,var(--gold) 9%,var(--panel));}
+  .rep-chip b{font-weight:700;}
   .me{display:inline-flex; align-items:center; gap:8px; font-size:12.5px; padding:5px 11px 5px 6px; border-radius:999px; border:1px solid var(--line); background:var(--panel);}
   .me .av{width:22px; height:22px; border-radius:50%; background:conic-gradient(from 210deg,var(--p1),var(--gold),var(--p1));}
   .me b{font-weight:700;}
@@ -407,11 +411,17 @@ try{document.documentElement.setAttribute('data-theme', localStorage.getItem('me
       <div><h1>Meta<span>Sync</span></h1><span class="tag">live · library · studio · <b id="buildTag" style="color:var(--gold)">v0.1.9</b> <span id="updStatus" class="upd-status"></span></span></div>
     </div>
     <div class="right">
-      <span class="chip" id="cGame"><span class="led"></span>Game</span>
+      <span class="chip" id="cSync" role="button" tabindex="0" title="Live Sync — leaderboards, ranked stats, matchup intel &amp; skin sync. Click to toggle."><span class="led"></span><b id="cSyncTxt">Offline</b></span>
+      <span class="chip rep-chip" id="repChip" role="button" tabindex="0" title="Where you represent — click to set or change your country / state / city"><span id="repFlag" style="font-size:15px;line-height:1">📍</span><b id="repTxt">Set where you represent</b></span>
       <span class="me" id="meProfile" style="cursor:pointer" title="View your own stats — record, team win-rates, recent matches"><span class="av"></span><span>You: <b id="meName">…</b></span></span>
       <button class="icon-btn" id="themeBtn" title="Toggle theme">◑</button>
     </div>
   </header>
+
+  <!-- Represent CTA — shown until the player sets a location (see refreshMeBadge) -->
+  <div id="repNote" role="button" tabindex="0" style="display:none; margin:0 4px 12px; padding:10px 14px; border:1px solid var(--gold-soft); background:color-mix(in srgb,var(--gold) 12%,var(--panel)); border-radius:10px; font-size:13.5px; font-weight:600; color:var(--ink); cursor:pointer; align-items:center; gap:9px;">
+    <span style="font-size:17px">📍</span><span>Represent your city! <span style="color:var(--gold-soft);font-weight:700">Click here to set where you're from →</span></span>
+  </div>
 
   <!-- Live-Sync consent — shown once on first Go Live -->
   <div id="consentModal" style="display:none; position:fixed; inset:0; z-index:9999; background:rgba(0,0,0,.62); align-items:center; justify-content:center;">
@@ -451,6 +461,7 @@ try{document.documentElement.setAttribute('data-theme', localStorage.getItem('me
       <button data-t="library">▦ Library</button>
       <button data-t="studio" style="display:none">✎ Studio</button>
       <button data-t="ranks">🏆 Ranks</button>
+      <button data-t="regions">🌍 Regions</button>
     </div>
     <div class="hspace"></div>
     <button class="target" id="romChip" title="Your Steam install / game_50.arc — required for Bake"><span class="tdot" id="romDot"></span>ROM: <b id="romChipTxt">not set</b></button>
@@ -459,8 +470,8 @@ try{document.documentElement.setAttribute('data-theme', localStorage.getItem('me
   <section class="panel on" id="p-match">
   <section class="link" id="link">
     <div class="node p1">
-      <div class="por" id="p1por">P1</div>
-      <div class="who"><div class="sidetag">Your side</div><div class="nm" id="p1name">You</div><div class="sid mono" id="p1sid">—</div></div>
+      <div class="por" id="p1por"></div>
+      <div class="who"><div class="sidetag">Your side</div><div class="nm" id="p1name">You</div><div class="sid mono" id="p1sid">—</div><div class="rep" id="p1rep" style="font-size:11px;color:var(--dim);margin-top:2px;min-height:14px"></div></div>
     </div>
     <div class="center">
       <div class="wire"><i></i><b>VS</b></div>
@@ -477,15 +488,19 @@ try{document.documentElement.setAttribute('data-theme', localStorage.getItem('me
       </div>
     </div>
     <div class="node p2">
-      <div class="who"><div class="sidetag">Opponent</div><div class="nm" id="p2name">—</div><div class="sid mono" id="p2sid">not synced</div></div>
-      <div class="por" id="p2por">P2</div>
+      <div class="who"><div class="sidetag">Opponent</div><div class="nm" id="p2name">—</div><div class="sid mono" id="p2sid">not synced</div><div class="rep" id="p2rep" style="font-size:11px;color:var(--dim);margin-top:2px;min-height:14px"></div></div>
+      <div class="por" id="p2por"></div>
     </div>
   </section>
+
+  <div class="beta-note" style="margin:0 14px 10px; padding:8px 12px; border:1px solid color-mix(in srgb,var(--gold) 40%,var(--line)); background:color-mix(in srgb,var(--gold) 9%,var(--panel)); border-radius:8px; font-size:11.5px; color:var(--dim); line-height:1.5;">
+    <b style="color:var(--gold)">Beta — stats are still being tuned.</b> While we lock down reading the game’s memory, a win/loss or a character can occasionally be credited to the wrong player. Leaderboards will be <b>reset periodically</b> until the stable release. Thanks for testing!
+  </div>
 
   <main class="board">
     <section class="team you" id="teamYou">
       <div class="team-hd">
-        <div class="side">P1</div>
+        <div class="side"></div>
         <div class="pl"><div class="nm" id="youHdName">Your team</div><div class="sid mono" id="youHdSid">—</div><div class="sid mono" id="youRank" style="color:var(--gold)"></div><span id="mirrorTag" class="mirror-tag" style="display:none">🪞 mirror · your side</span></div>
         <div class="state wait" id="youState">Auto</div>
       </div>
@@ -496,7 +511,7 @@ try{document.documentElement.setAttribute('data-theme', localStorage.getItem('me
 
     <section class="team opp" id="teamOpp">
       <div class="team-hd">
-        <div class="side">P2</div>
+        <div class="side"></div>
         <div class="pl"><div class="nm" id="oppHdName">Opponent</div><div class="sid mono" id="oppHdSid">—</div><div class="sid mono" id="oppRecord" style="color:var(--gold)"></div><div class="sid mono" id="oppRank" style="color:var(--p2)"></div></div>
         <div class="state wait" id="oppState">Sync off</div>
       </div>
@@ -549,7 +564,9 @@ try{document.documentElement.setAttribute('data-theme', localStorage.getItem('me
         <button data-lt="perfect">✨ Perfect</button>
         <button data-lt="comeback">🔄 Comeback</button>
         <button data-lt="combo">🎯 Combo</button>
+        <button data-lt="deficit">🛡️ Clutch</button>
         <button data-lt="rating">⚔️ Ranked</button>
+        <button data-lt="tierlist">📊 Tier List</button>
         <button class="lb-suggest" id="lbSuggest" title="Suggest a stat for the leaderboards">💡 Suggest a stat</button>
       </div>
       <div class="lb-period" id="lbPeriod">
@@ -588,6 +605,15 @@ try{document.documentElement.setAttribute('data-theme', localStorage.getItem('me
     <button class="pf-x" id="clX">✕</button>
     <div class="pf-body" id="clBody"></div>
   </div></div>
+
+  <section class="panel" id="p-regions">
+    <div class="lb-tabs" id="regTabs">
+      <button data-rl="city" class="on">🏙️ Top Cities</button>
+      <button data-rl="country">🌎 Top Countries</button>
+    </div>
+    <div id="regExplain" class="lb-explain" style="margin-bottom:10px;color:var(--dim);font-size:12.5px"></div>
+    <div id="regBody"><div class="lb-empty">LOADING…</div></div>
+  </section>
 
   <section class="panel" id="p-library">
     <div class="libbar">
@@ -788,6 +814,21 @@ function stockPalInts(cid){ const b=idleData[cid]?.bank0; if(!b) return null; re
 let oppTeam=[];                  // [{cid, name, palette, author, skinName}]
 let mySteam={}, syncOn=false, syncTimer=null, oppMeta=null;
 let matchState='detecting', prevMode='', mySide='p1', stateTimer=null, detLocalSide=0, inSessionNow=false, sideManual=null, sideConfirmed=false, userSetSide=false, curSessionId='';
+let sessRecon=null;   // reconcile-after: {sid, me, them, count} — the server's RECORDED set score, polled every 5s
+// Reconcile the live set score to the SERVER's recorded games for the current set (single source of truth), so
+// the in-match chip can never disagree with the session breakdown / profiles. Instant KO count shows first.
+async function reconcileScore(){
+  if(!invoke || !curSessionId || !(mySteam&&mySteam.steamid)){ if(!curSessionId) sessRecon=null; return; }
+  try{
+    const s=await invoke('session_stats',{id:String(curSessionId)});
+    if(!s||!s.ok){ return; }
+    const mine=String(mySteam.steamid);
+    const meP=(s.players||[]).find(p=>String(p.steamid)===mine);
+    const oppP=(s.players||[]).find(p=>String(p.steamid)!==mine);
+    sessRecon={ sid:curSessionId, me:(meP?meP.wins:0), them:(oppP?oppP.wins:0), count:(s.count||0) };
+  }catch(e){}
+}
+setInterval(reconcileScore, 5000);
 let detTeams={p1:[],p2:[]};       // last detect_state rosters, each [{cid,name,addr}]
 let detSlots=[];                  // last detect_state per-fighter slots [{player,cid,datpal,...}] (real array)
 let perSideCids=new Set();        // cids Live Paint is confidently painting per-side THIS tick — the hook skips exactly these
@@ -1292,18 +1333,21 @@ function setOpp(meta, waitMsg){
   if(meta){                                        // opponent runs the app (synced skins)
     $('#oppHdName').textContent=meta.name; $('#oppHdSid').textContent=meta.steamid; $('#p2name').textContent=meta.name; $('#p2sid').textContent=meta.steamid;
     $('#p2por').textContent=(meta.name[0]||'P').toUpperCase();
+    fetchOppRep(meta.steamid);
   } else if(oppIdentity){                           // identified from memory even without their app
     const nm=oppIdentity.name||'Opponent';
     $('#oppHdName').textContent=nm; $('#oppHdSid').textContent=oppIdentity.steamid;
     $('#p2name').textContent=nm; $('#p2sid').textContent=oppIdentity.steamid;
     $('#p2por').textContent=(nm[0]||'P').toUpperCase();
     $('#oppState').textContent = syncOn?'Facing · no app':'Facing'; $('#oppState').className='state on';
+    fetchOppRep(oppIdentity.steamid);
   } else {
+    fetchOppRep(null);
     const detOpp=oppDetected.length;
     $('#oppHdName').textContent='Opponent'; $('#oppHdSid').textContent = detOpp?'in match':(syncOn?'scanning…':'—');
     $('#p2name').textContent = detOpp?'Opponent':(syncOn?'scanning…':'—'); $('#p2sid').textContent= waitMsg|| (detOpp?'identifying…':(syncOn?'looking for opponent':'not synced'));
     $('#oppState').textContent = syncOn?'Scanning':'Sync off'; $('#oppState').className='state wait';
-    $('#p2por').textContent='P2';
+    $('#p2por').textContent='';   // no "P2" placeholder — becomes the opponent's name initial once known
   }
   rebuildOpp();
 }
@@ -1315,12 +1359,13 @@ async function toggleSync(){
 }
 async function doGoLive(on){
   syncOn=on; $('#link').classList.toggle('synced',syncOn); $('#syncToggle').setAttribute('aria-checked',syncOn);
+  updateSyncChip();
   try{ localStorage.setItem('suite_sync', syncOn?'on':'off'); }catch(e){}
   try{ invoke('set_share_gameplay',{on:syncOn}); }catch(e){}   // match-data sync follows Live Sync
   document.body.classList.toggle('offline', !syncOn);
   $$('#tabs button[data-t="ranks"]').forEach(b=>b.classList.toggle('lb-off', !syncOn));   // dim the Ranks tab when offline
   if($('#p-ranks')?.classList.contains('on')) renderLeaderboard();                          // refresh the board if it's showing
-  if(syncOn){ if(!mySteam.steamid){ try{ mySteam=await invoke('sync_self'); refreshMe(); }catch(e){} } setOpp(null); syncTick(); syncTimer=setInterval(syncTick,4000); toast('<span class="k">Live sync on</span> — connected'); }
+  if(syncOn){ if(!mySteam.steamid){ try{ mySteam=await invoke('sync_self'); refreshMe(); }catch(e){} } setOpp(null); syncTick(); syncTimer=setInterval(syncTick,4000); refreshMeBadge(); toast('<span class="k">Live sync on</span> — connected'); }
   else { clearInterval(syncTimer); syncTimer=null; if(mySteam.steamid) invoke('sync_unpublish',{steamid:mySteam.steamid}).catch(()=>{}); peerSkins={}; setOpp(null); await writeAll(); toast('Offline — leaderboards, player sync & stats are off'); }
 }
 // Live-Sync consent modal wiring
@@ -1344,7 +1389,7 @@ async function updateRecord(){
       : '<span style="opacity:.5">first meeting</span>';
     _recFor=id; }catch(e){}
 }
-function refreshMe(){ if(mySteam.name){ $('#meName').textContent=mySteam.name; $('#p1name').textContent=mySteam.name; $('#youHdName').textContent=mySteam.name+' · You'; } if(mySteam.steamid){ $('#p1sid').textContent=mySteam.steamid; $('#youHdSid').textContent=mySteam.steamid; $('#p1por').textContent=(mySteam.name?.[0]||'P').toUpperCase(); refreshMyRank(); invoke&&invoke('ensure_registered',{steamid:String(mySteam.steamid)}).catch(()=>{}); } }
+function refreshMe(){ if(mySteam.name){ $('#meName').textContent=mySteam.name; $('#p1name').textContent=mySteam.name; $('#youHdName').textContent=mySteam.name+' · You'; } if(mySteam.steamid){ $('#p1sid').textContent=mySteam.steamid; $('#youHdSid').textContent=mySteam.steamid; $('#p1por').textContent=(mySteam.name?.[0]||'P').toUpperCase(); refreshMyRank(); invoke&&invoke('ensure_registered',{steamid:String(mySteam.steamid)}).catch(()=>{}); refreshMeBadge(); } }
 // ── ELO / rank + matchup intel (blended win chance, your best team vs them, the comp they lose to most) ──
 function teamNames(str){ const s=String(str||'').split(',').filter(x=>x!==''); return s.length? s.map(c=>nameById[+c]||('#'+c)).join(' / ') : '—'; }
 async function refreshMyRank(){
@@ -1390,15 +1435,13 @@ function pickMySide(p1,p2){
   // we return P1 and DON'T auto-detect (this is what was wrongly swapping in Training).
   if(!oppIdentity || !oppIdentity.steamid) return 'p1';
   if(sideManual) return sideManual;                          // manual override still wins if ever set
-  // ★ localPlayerNum (detLocalSide) is now the PRIMARY, deterministic side — the game's own local netplay index,
-  // validated live as stable within a session (the char-based guess flip-flopped on mis-reads and inverted stats).
-  // 1 = you're the even/p1 team, 2 = you're the odd/p2 team.
+  // localPlayerNum (detLocalSide) is the PRIMARY, deterministic side — the game's own local netplay index.
+  // Re-validated 13/13 against clean pad-correlation on recorded games (0→P2, 1→P1); an earlier "unreliable"
+  // reading was traced to mis-recorded team data + one corrupt recording (p1_in stuck at 0xFFFF).
   if(detLocalSide===1) return 'p1';
   if(detLocalSide===2) return 'p2';
-  // FALLBACK only if localPlayerNum is unreadable: which team holds YOUR characters.
-  const mine=new Set(Object.keys(activeSkins).map(Number));
-  if(mine.size){ const o1=p1.filter(x=>mine.has(x.cid)).length, o2=p2.filter(x=>mine.has(x.cid)).length; if(o1!==o2) return o1>o2?'p1':'p2'; }
-  return mySide;
+  return mySide;   // ★ SOLE source = localPlayerNum. No char-based guess allowed to trump it (that was one of the
+                   // competing layers). If localPlayerNum is briefly unreadable we hold the last side, never guess.
 }
 let inMatch=null, gameScreen=null, matchStateRaw=null;   // null = hook not feeding real state
 async function stateTick(){
@@ -1417,6 +1460,14 @@ async function stateTick(){
   sideConfirmed = !!st.side_confirmed;
   if((st.manual_side===1||st.manual_side===2) && !sideManual){ sideManual = st.manual_side===2?'p2':'p1'; }   // reconcile w/ backend
   if(st.manual_side===0 && sideManual){ sideManual=null; userSetSide=false; }                                 // backend cleared it (new set) → re-detect
+  // gs-100: CHAR-SELECT live picks — your LOCKED characters (game_state+0x758) appear in your card the instant
+  // you confirm each one, BEFORE the fighter array exists. Side-independent: picks are always your own team.
+  // Preload skins.dat on change so your skin is applied the moment the fight loads (no more delay).
+  const cselPicks = (!st.has_game && Array.isArray(st.picks) && st.picks.length) ? st.picks.slice(0,3) : null;
+  if(cselPicks){
+    setMode('select');
+    if(cselPicks.join(',')!==myTeam.join(',')){ myTeam=cselPicks; renderYou(); if(syncOn){ publishMine(); writeAll(); } }
+  }
   let p1, p2;
   if(st.has_game){
     // Real player array located → authoritative teams (true P1/P2 side by slot parity, from RPM).
@@ -1448,15 +1499,8 @@ async function stateTick(){
   const cnt=p1.length+p2.length, curScreen=(st.has_game?st.screen:st.state);
   if(cnt>0){
     const side=pickMySide(p1,p2); mySide=side;
-    // gs-94: side is now AUTHORITATIVE from the game's own localPlayerNum (the backend sets local_side +
-    // side_confirmed from it). The old CHARACTER-BASED push is DISABLED — it clobbered localPlayerNum with a
-    // mis-read-prone guess (manual_side wins over local_side), which is what inverted the records. Left here,
-    // commented, as the documented fallback path.
-    // if(!userSetSide && oppIdentity && oppIdentity.steamid && invoke){
-    //   const mineC=new Set(Object.keys(activeSkins).map(Number));
-    //   if(mineC.size){ const c1=p1.filter(x=>mineC.has(x.cid)).length, c2=p2.filter(x=>mineC.has(x.cid)).length;
-    //     if(c1!==c2){ const cs=c1>c2?1:2; if(st.manual_side!==cs) invoke('set_manual_side',{side:cs}).catch(()=>{}); } }
-    // }
+    // side is AUTHORITATIVE from the game's own localPlayerNum (backend sets local_side + side_confirmed from it,
+    // re-validated 13/13 vs pad-correlation). The character-based push stays disabled — it's only the fallback.
     // Side shows only once actually resolved (localPlayerNum); never assert P1 by default.
     $('#sideTxt').textContent = sideConfirmed ? side.toUpperCase() : '—';
     $('#sideSwap').classList.toggle('p2', sideConfirmed && side==='p2');
@@ -1473,8 +1517,12 @@ async function stateTick(){
     // characters in your card, then swap. With deterministic localPlayerNum this resolves in ~1s, so we just hold
     // "detecting" briefly and then paint the correct teams once, no swap.
     if(sideConfirmed){
+      // Display team-pick derives from `side` (localPlayerNum). VERIFIED live 2026-08-13 against the user's OWN
+      // ground truth: lpn=1 → user on EVEN/P1 (they lost to King Kells), lpn=0 → user on ODD/P2 (Mag/Storm/Colossus).
+      // mine=p1 for P1 / p2 for P2 matches the user's actual team BOTH ways. The earlier inversion here was a
+      // MISDIAGNOSIS of the stale-side bug and is reverted — do NOT flip these again.
       const mine = side==='p1'?p1:p2, opp = side==='p1'?p2:p1;
-      if(mine.map(x=>x.cid).join(',')!==myTeam.join(',')){ myTeam=mine.map(x=>x.cid); renderYou(); if(syncOn) publishMine(); }
+      if(!cselPicks && mine.map(x=>x.cid).join(',')!==myTeam.join(',')){ myTeam=mine.map(x=>x.cid); renderYou(); if(syncOn) publishMine(); }
       const newOpp=opp.map(x=>({cid:x.cid,name:x.name}));
       if(JSON.stringify(newOpp)!==JSON.stringify(oppDetected)){ oppDetected=newOpp; if(!oppMeta) setOpp(null); else rebuildOpp(); }
     }
@@ -1492,10 +1540,14 @@ async function stateTick(){
     if(mk!==lastMirrorKey){ lastMirrorKey=mk; writeAll(); } } else lastMirrorKey='';
   // set score (computed from KO events, keyed to the sticky opponent) → "set You – Opp"
   const sc=st.score||{p1:0,p2:0}, scEl=$('#scoreChip');
-  if(scEl){ if(sc.p1||sc.p2){ const me=mySide==='p2'?sc.p2:sc.p1, them=mySide==='p2'?sc.p1:sc.p2;
+  if(scEl){ if(sc.p1||sc.p2||(sessRecon&&sessRecon.count)){ let me=mySide==='p2'?sc.p2:sc.p1, them=mySide==='p2'?sc.p1:sc.p2;
       // session chip: game X/10 + a clickable short id → opens the set's full breakdown (per-session stats)
-      const sid=st.session_id||''; const mi=Math.min((st.match_index||0)+1,10);
+      const sid=st.session_id||''; let mi=Math.min((st.match_index||0)+1,10);
       curSessionId = sid;
+      // reconcile-after: prefer the SERVER's RECORDED count for this exact set, so the live chip always matches
+      // the session breakdown + profiles (the single source of truth). The instant KO count shows first, then
+      // this hard-syncs within a few seconds. (sessRecon refreshed on a 5s timer while in a set.)
+      if(sessRecon && sessRecon.sid===sid){ me=sessRecon.me; them=sessRecon.them; if(sessRecon.count) mi=Math.min(sessRecon.count+1,10); }
       const sess = sid ? ` · <span style="color:var(--dim)">game ${mi}/10</span> · <a href="#" id="sessLink" style="color:var(--gold);text-decoration:none" title="View this set's full breakdown">#${sid.slice(-4)}</a>` : '';
       scEl.style.display=''; scEl.innerHTML=`set <b>${me}</b> – ${them}${sess}`;
       const sl=$('#sessLink'); if(sl) sl.onclick=(e)=>{ e.preventDefault(); openSession(sid); };
@@ -1529,6 +1581,84 @@ let _updHideT=null;
 // so it can be updated without shipping a new build. This bundled copy is the offline FALLBACK — keep it
 // roughly current, but the remote is authoritative.
 let CHANGELOG = [
+  { v:'0.1.59', t:'Regions — represent your city on the boards', items:[
+    'New 🌍 Regions tab: top cities &amp; countries by wins — tap one for its players and the exact teams that city runs. USA players pick their FGC scene (SoCal, NorCal, PNW, Texas, Midwest, Florida…), and a "represent your city" prompt up top makes it one click. Your flag shows everywhere. (The damage &amp; chip boards were pulled while we rebuild them accurately — chip is coming back measured properly.)',
+  ]},
+  { v:'0.1.58', t:'Represent, front and center', items:[
+    'Your "Representing" badge now sits right in the top bar — a clear prompt to set your country/state/city when it\'s empty, and your flag + city once you do (click it to change anytime). No more hunting through your profile. Also: leaderboards were reset to zero while we make win/loss detection rock-solid — thanks for bearing with the beta.',
+  ]},
+  { v:'0.1.57', t:'Represent front-and-center + Live Sync in the header', items:[
+    'Your country flag + city now sit right in the top bar — click ✍️ to set or change it, no more digging into your profile. Live Sync moved up there too, with a live online count. And on the match screen, both you and your opponent show where you represent (flag + city) so you can see who you\'re really facing. Player names are now consistent on every page too.',
+  ]},
+  { v:'0.1.56', t:'City picker — real cities only', items:[
+    'The “represent” city field is now a live search of real cities — type to find yours, and picking one auto-fills your state/region. Keeps the boards honest: everyone reps a real place. Backed by a 69,000-city lookup on the server.',
+  ]},
+  { v:'0.1.55', t:'Represent your city — flags on the boards', items:[
+    'Set where you represent — country (with flag), state/region and city — from your profile (the 📍 button). Your flag now shows next to your name on every leaderboard and profile. Player names were also cleaned up to real Steam handles, with a name history so a rename or a bad in-game read never loses track of who someone is.',
+  ]},
+  { v:'0.1.54', t:'Special-character opponent names + new stat boards', items:[
+    'Opponents whose Steam name uses stars, emoji, accents or non-English characters now detect and record correctly — before, an unusual name could stop a match from saving. Added three new leaderboards: 🗡️ Most Damage, 🩸 Most Chip, and 🛡️ Biggest Clutch (largest comeback overcome). Leaderboard records were also rebuilt from verified game recordings, so win/loss counts are accurate.',
+  ]},
+  { v:'0.1.53', t:'Tier list is now a TEAM tier list', items:[
+    'MvC2 is a 3-man team game, so per-character win rates were misleading (a character “wins” just by being on a winning team). The Tier List now ranks 3-character TEAM COMPOSITIONS, and profiles focus on your team compositions rather than separate character stats.',
+  ]},
+  { v:'0.1.52', t:'New stats — per-character, nemesis, form, tier list', items:[
+    'Your profile now shows a lot more: your record with EACH character, your nemesis (who beats you most) + favourite victim, and your recent form — plus a new global character Tier List tab on the leaderboards. The in-match set score now reconciles to the actually-recorded games, so it always matches the session breakdown and profiles. Also hardened networking (request timeouts) so a slow server can never freeze the app.',
+  ]},
+  { v:'0.1.51', t:'Char-select detection fixed on first load (locked teams too)', items:[
+    'Your characters now appear during character select even on the FIRST match and even after you’ve locked your full team (a fully-locked team was being rejected before). Detection is now gated on the game’s screen-state, so it’s reliable and instant, and your skins preload during selection so they apply the moment the fight starts.',
+  ]},
+  { v:'0.1.50', t:'Zero memory scans while you play — pure pointer-follow', items:[
+    'Removed the last memory scan from the in-match path entirely. The app now locates your match data purely by following the game’s own pointer (O(1)), and — because we read the game’s screen-state — it does that with no liveness delay while you’re fighting. Combined with the screen-state guard: literally zero scanning during gameplay. Lighter, faster, and no possibility of a frame hitch.',
+  ]},
+  { v:'0.1.49', t:'Performance: zero heavy work during a live match', items:[
+    'The app now reads the game’s own screen-state and BLOCKS every heavy memory scan while you’re actively fighting — during a match it does only tiny per-frame reads (health/state), so there is no possibility of a frame hitch during gameplay. Heavy work (locating data, finding your opponent) only runs on menus / character select, never mid-fight.',
+  ]},
+  { v:'0.1.48', t:'Char-select detection now instant on the FIRST match too', items:[
+    'Fixed the delay where your picks only started popping up after the first match — the detection no longer waits on the netplay pairing, so your characters appear the instant you lock each one, match 1 included. Also polls faster during selection so it feels more live.',
+  ]},
+  { v:'0.1.47', t:'Characters pop up instantly as you pick them', items:[
+    'Your characters now appear in your card the MOMENT you lock each one at character select — no more waiting for the match to load. We reverse-engineered the game’s character-select picks array (via the exact pointer), so the app reads your locked picks live. Your skin also preloads right then, so it’s applied the instant the fight starts. (Cursor hovering doesn’t show — only locked picks, which is correct.)',
+  ]},
+  { v:'0.1.46', t:'Fixed side detection — characters, W/L, and skins were mirrored', items:[
+    'The game’s player-index mapping was backwards, so your characters, your win/loss, and your custom skin were all being applied to the WRONG player. Corrected against a clean live read (verified: the side you’re actually on now drives everything). This fixes the swapped characters and the reversed win/loss in one shot.',
+  ]},
+  { v:'0.1.45', t:'Full data overhaul — ground-truth everything', items:[
+    'Everything the app reads is now taken directly from the game’s own memory via the exact pointers we reverse-engineered and confirmed: your fighters are located by the game’s own match pointer (no scanning), win/loss comes from the game’s own win flag, and the game’s own match state (round phase, round number, timer) is read directly. Corrected the recoverable-health field too. This is the complete, verified data pipeline — the culmination of 0.1.43 + 0.1.44.',
+  ]},
+  { v:'0.1.44', t:'Win/loss now reads the game’s OWN win flag', items:[
+    'Your win/loss is now taken from the game’s own internal win result (latched when a round ends) instead of being inferred from health — it’s more reliable, fixes the last stray inversions, and stops the set from ever opening at 0-1/1-0. Built on the pointer-follow foundation from 0.1.43.',
+  ]},
+  { v:'0.1.43', t:'Win/loss inversion fixed at the root (pointer-follow)', items:[
+    'The app now finds your fighters by following the game’s own match pointer instead of scanning memory — the scan could lock onto a copy of the fighter list shifted by one slot, which swapped your side and inverted your win/loss. Following the pointer lands on the exact right data every match. The same fix makes skins apply reliably (no more flicker from stale copies).',
+  ]},
+  { v:'0.1.42', t:'Opponent name no longer sticks to the previous player', items:[
+    'If your opponent left mid-set and you went into a new match, the app could keep showing the previous player’s name. It now detects the change and resolves the new opponent correctly.',
+  ]},
+  { v:'0.1.41', t:'Characters show on the right card again', items:[
+    'Your team now displays on your card correctly — an earlier change had flipped it the wrong way. Verified against live matches (your side from the game’s netplay index was actually right; only the display was inverted).',
+  ]},
+  { v:'0.1.40', t:'Removed the P1/P2 side labels from the match cards', items:[
+    'The cards no longer flash a “P1/P2” tag while your side is resolving — your card is always yours (left), the opponent’s is right, so the label was noise. Cleaner and no more early mislabel.',
+  ]},
+  { v:'0.1.39', t:'Win/loss no longer inverts from an early side read', items:[
+    'The app could read your P1/P2 side during ranked matchmaking — before the match actually assigned it — and lock in the previous session’s value, inverting your win/loss. It now reads your side only once the match is live, so it’s always this match’s real value.',
+  ]},
+  { v:'0.1.38', t:'One source of truth for your side', items:[
+    'Your P1/P2 side now comes from a single signal — the game’s own netplay index — and your characters, name, and win/loss all derive from that one thing instead of several detectors overriding each other. Fixes characters showing on the wrong card while the name was right (or vice-versa).',
+  ]},
+  { v:'0.1.37', t:'Correct side at the start of every set', items:[
+    'Your side (P1/P2) is now locked from the game’s own netplay index the moment a ranked session connects — before game 1 — instead of a second into the first match, and the P1/P2 direction was corrected (characters were landing on the wrong side for some sessions). If your characters still show swapped, tell me — it’s now a one-line flip.',
+  ]},
+  { v:'0.1.36', t:'Hotfix: match-finder crash from 0.1.35', items:[
+    'Fixed a crash in the live-match finder introduced by 0.1.35’s health fix: it could read past the end of memory and fail to lock the match, which showed the wrong characters/sides on the cards. The finder is corrected — characters, sides, and win/loss now read from the real live match again.',
+  ]},
+  { v:'0.1.35', t:'THE win/loss inversion fix', items:[
+    'Found and fixed the root cause of wins recording as losses: the app was reading each fighter’s health from one slot over, so it saw the opponent’s health on your side and flipped the result. Health now reads from the correct spot, so win/loss matches what actually happened on screen. Past records will be corrected too.',
+  ]},
+  { v:'0.1.34', t:'Phantom-Ryu fix (for real this time) + beta note', items:[
+    'Root-caused the recurring “Ryu” showing up on teams that don’t run him: the app had been reading each character from a field the game briefly blanks (which reads as Ryu). It now reads every character by its loaded-data fingerprint again — the reliable source — so the correct team shows. Also added a heads-up on the match screen that stats are still being tuned during beta.',
+  ]},
   { v:'0.1.33', t:'Records now tagged with the app version', items:[
     'Each recorded match now stores which app version logged it — so any win/loss issue can be traced to the exact build. (Plus the live-copy fix from 0.1.32 that stops reading stale rollback data.)',
   ]},
@@ -1758,8 +1888,8 @@ function clientId(){
 }
 async function presenceTick(){
   if(!invoke) return;
-  // Heartbeat keeps SERVER-SIDE presence (monitored via /health) alive; the online count is no longer shown in-app.
-  try{ await invoke('sync_heartbeat',{id:clientId(), name:mySteam.name||'Player'}); }catch(e){}
+  // Heartbeat keeps SERVER-SIDE presence alive; the returned count feeds the Live Sync pill ("Live · N on").
+  try{ const r=await invoke('sync_heartbeat',{id:clientId(), name:mySteam.name||'Player'}); if(r&&typeof r.online==='number'){ onlineCount=r.online; updateSyncChip(); } }catch(e){}
 }
 
 // ── effects ──
@@ -1771,7 +1901,7 @@ function setEffect(mode){ fxMode=mode; $$('.fx').forEach(b=>b.classList.toggle('
 // skins show at ROUND START. The BACKEND reader auto-injects it ONCE per game session the moment it detects the
 // game pid (embedded via include_bytes! → staged to temp → CreateRemoteThread+LoadLibraryW; see sync.rs). The
 // RPM paint_live loop stays on as the FALLBACK. So the frontend just reflects game status here.
-async function pollStatus(){ try{ const s=await invoke('detect_state'); const on=!!(s&&s.state&&s.state!=='game_off'); $('#cGame').classList.toggle('on',on);
+async function pollStatus(){ try{ const s=await invoke('detect_state'); const on=!!(s&&s.state&&s.state!=='game_off');
   const b=$('#banner');
   if(!on){ b.textContent='Launch the Marvel vs Capcom Fighting Collection — skins apply automatically.'; b.classList.add('show'); }
   else b.classList.remove('show'); }catch(e){} }
@@ -1787,6 +1917,7 @@ function switchTab(t){
   else { stAnimStop(); }                                            // leaving Studio → stop the anim timer
   if(t==='library') renderLibrary();
   if(t==='ranks') renderLeaderboard();
+  if(t==='regions') renderRegions();
   window.scrollTo({top:0,behavior:'smooth'});
 }
 function renderLibrary(){
@@ -2154,6 +2285,13 @@ async function boot(){
 
 // wire
 $('#syncToggle').onclick=toggleSync;
+$('#cSync')&&($('#cSync').onclick=toggleSync);
+$('#cSync')&&($('#cSync').onkeydown=e=>{ if(e.key===' '||e.key==='Enter'){ e.preventDefault(); toggleSync(); } });
+function openRepPicker(){ if(!(mySteam&&mySteam.steamid)){ toast('launch the game first so we know your Steam ID'); return; } $('#pfModal').classList.add('show'); showLocationEditor(mySteam.steamid, myLoc); }
+$('#repChip')&&($('#repChip').onclick=openRepPicker);
+$('#repChip')&&($('#repChip').onkeydown=e=>{ if(e.key===' '||e.key==='Enter'){ e.preventDefault(); openRepPicker(); } });
+$('#repNote')&&($('#repNote').onclick=openRepPicker);
+$('#repNote')&&($('#repNote').onkeydown=e=>{ if(e.key===' '||e.key==='Enter'){ e.preventDefault(); openRepPicker(); } });
 $('#syncToggle').onkeydown=e=>{ if(e.key===' '||e.key==='Enter'){ e.preventDefault(); toggleSync(); } };
 $('#paintToggle').onclick=toggleLivePaint;
 $('#dClose').onclick=closeDrawer; $('#scrim').onclick=closeDrawer;
@@ -2167,7 +2305,7 @@ $('#btnReset').onclick=async()=>{ activeSkins={}; myTeam=[]; for(let i=localStor
 // ── Leaderboard (Ranks tab) — global Hall of Fame from the skinsync server ──
 let lbTab='streak', lbPeriod='all', lbLoading=false;
 const LB_PERIOD_LABEL={all:'all-time',day:'today',week:'this week',month:'this month'};
-const LB_STAT_LABEL={streak:'streak',wins:'wins',ocv:'OCVs',perfect:'perfects',comeback:'comebacks',combo:'max combo',rating:'ELO'};
+const LB_STAT_LABEL={streak:'streak',wins:'wins',ocv:'OCVs',perfect:'perfects',comeback:'comebacks',combo:'max combo',damage:'dmg dealt',chip:'chip dealt',deficit:'deficit',rating:'ELO'};
 // What each leaderboard stat means + which match data decides it (shown under the tabs).
 const LB_STAT_INFO={
   streak:{t:'🔥 Win Streak',d:'Your longest run of consecutive match wins with no loss in between.',h:'Counted from the win/loss result of each synced match, reset on your first loss.'},
@@ -2176,14 +2314,91 @@ const LB_STAT_INFO={
   perfect:{t:'✨ Perfect',d:'Winning a game without your team\'s health ever being touched.',h:'Flagged when your side\'s health reads full for the entire game at the win.'},
   comeback:{t:'🔄 Comeback',d:'Winning after being reduced to your last character while the opponent still had two or more.',h:'Detected from character-count + health when the round turns: down to your anchor, then closing it out.'},
   combo:{t:'🎯 Max Combo',d:'The highest single-combo hit count you\'ve landed.',h:'Read live from the game\'s combo counter, per hit-string, and the peak is kept.'},
+  damage:{t:'🗡️ Most Damage',d:'The most total vitality you\'ve chunked off an opponent\'s team in a single game you won.',h:'Summed frame-by-frame from every drop in the opponent\'s health across the game — the peak game is kept.'},
+  chip:{t:'🩸 Most Chip',d:'The most chip (recoverable) damage you\'ve dealt in a single game — pressure through their block.',h:'Summed from every rise in the opponent\'s red-health bar frame-by-frame; the peak game is kept.'},
+  deficit:{t:'🛡️ Biggest Clutch',d:'The largest character deficit you\'ve overcome to win — down to your last while they still had a full team.',h:'The max gap between their living characters and yours at any point in a game you went on to win.'},
   rating:{t:'⚔️ Ranked (ELO)',d:'A skill rating that rises when you beat stronger players and dips on losses — Rookie → Legend.',h:'Computed from match results weighted by each opponent\'s current rating.'},
 };
 const esc=s=>String(s==null?'':s).replace(/[<>&"]/g,c=>({'<':'&lt;','>':'&gt;','&':'&amp;','"':'&quot;'}[c]));
+
+// ── "Represent" location: flag emoji from ISO country code + a searchable country picker ──────────
+function flagEmoji(cc){ if(!cc||cc.length!==2) return '🏳️'; try{ return String.fromCodePoint(...[...cc.toUpperCase()].map(c=>0x1F1E6+c.charCodeAt(0)-65)); }catch(e){ return '🏳️'; } }
+const COUNTRIES=[["US","United States"],["CA","Canada"],["MX","Mexico"],["GB","United Kingdom"],["FR","France"],["DE","Germany"],["ES","Spain"],["IT","Italy"],["PT","Portugal"],["NL","Netherlands"],["BE","Belgium"],["IE","Ireland"],["CH","Switzerland"],["AT","Austria"],["SE","Sweden"],["NO","Norway"],["DK","Denmark"],["FI","Finland"],["PL","Poland"],["CZ","Czechia"],["SK","Slovakia"],["HU","Hungary"],["RO","Romania"],["BG","Bulgaria"],["GR","Greece"],["HR","Croatia"],["RS","Serbia"],["SI","Slovenia"],["UA","Ukraine"],["RU","Russia"],["TR","Turkey"],["JP","Japan"],["KR","South Korea"],["CN","China"],["TW","Taiwan"],["HK","Hong Kong"],["SG","Singapore"],["MY","Malaysia"],["TH","Thailand"],["VN","Vietnam"],["PH","Philippines"],["ID","Indonesia"],["IN","India"],["PK","Pakistan"],["BD","Bangladesh"],["AU","Australia"],["NZ","New Zealand"],["BR","Brazil"],["AR","Argentina"],["CL","Chile"],["CO","Colombia"],["PE","Peru"],["VE","Venezuela"],["EC","Ecuador"],["BO","Bolivia"],["PY","Paraguay"],["UY","Uruguay"],["CR","Costa Rica"],["PA","Panama"],["GT","Guatemala"],["HN","Honduras"],["SV","El Salvador"],["NI","Nicaragua"],["DO","Dominican Republic"],["PR","Puerto Rico"],["CU","Cuba"],["JM","Jamaica"],["TT","Trinidad & Tobago"],["ZA","South Africa"],["NG","Nigeria"],["EG","Egypt"],["MA","Morocco"],["DZ","Algeria"],["TN","Tunisia"],["KE","Kenya"],["GH","Ghana"],["ET","Ethiopia"],["SA","Saudi Arabia"],["AE","United Arab Emirates"],["QA","Qatar"],["KW","Kuwait"],["IL","Israel"],["JO","Jordan"],["LB","Lebanon"],["IQ","Iraq"],["IR","Iran"],["IS","Iceland"],["LU","Luxembourg"],["EE","Estonia"],["LV","Latvia"],["LT","Lithuania"],["BY","Belarus"],["MD","Moldova"],["GE","Georgia"],["AM","Armenia"],["AZ","Azerbaijan"],["KZ","Kazakhstan"],["UZ","Uzbekistan"],["MN","Mongolia"],["NP","Nepal"],["LK","Sri Lanka"],["MM","Myanmar"],["KH","Cambodia"],["LA","Laos"],["MO","Macau"],["FJ","Fiji"],["CY","Cyprus"],["MT","Malta"],["AL","Albania"],["MK","North Macedonia"],["BA","Bosnia & Herzegovina"],["ME","Montenegro"],["XK","Kosovo"],["AD","Andorra"],["MC","Monaco"],["LI","Liechtenstein"],["SM","San Marino"],["BZ","Belize"],["BS","Bahamas"],["BB","Barbados"],["GY","Guyana"],["SR","Suriname"],["AO","Angola"],["MZ","Mozambique"],["ZW","Zimbabwe"],["ZM","Zambia"],["UG","Uganda"],["TZ","Tanzania"],["CM","Cameroon"],["CI","Côte d'Ivoire"],["SN","Senegal"],["RW","Rwanda"],["BW","Botswana"],["NA","Namibia"],["LY","Libya"],["SD","Sudan"],["OM","Oman"],["BH","Bahrain"],["YE","Yemen"],["SY","Syria"],["AF","Afghanistan"],["BT","Bhutan"],["MV","Maldives"],["BN","Brunei"],["PG","Papua New Guinea"],["NC","New Caledonia"],["PF","French Polynesia"],["GU","Guam"]];
+// US FGC / MvC2 "scenes" — repped instead of a plain state when country is USA.
+const US_REGIONS=["SoCal","NorCal","Pacific Northwest","Southwest","Texas","Midwest","Great Lakes","Southeast","Florida","Mid-Atlantic","Tri-State (NYC)","New England","Hawaii"];
+function repText(p){ if(!p) return ''; const parts=[p.city,p.region].filter(Boolean); return parts.join(', ')||p.country||''; }
+function repBadge(p){ if(!p||!(p.cc||p.country||p.city||p.region)) return ''; const t=repText(p);
+  return `<span title="Represents ${esc([p.city,p.region,p.country].filter(Boolean).join(', '))}" style="display:inline-flex;align-items:center;gap:5px;background:#161a24;border:1px solid var(--line);border-radius:999px;padding:2px 10px;font-size:12px;font-weight:600;vertical-align:middle">${p.cc?flagEmoji(p.cc):'📍'} ${esc(t)}</span>`; }
+let _loc={cc:'',country:'',region:'',city:''};
+function showLocationEditor(sid, cur){
+  const body=$('#pfBody'); if(!body) return;
+  _loc={cc:(cur&&cur.cc)||'',country:(cur&&cur.country)||'',region:(cur&&cur.region)||'',city:(cur&&cur.city)||''};
+  const inp='padding:9px 11px;border-radius:8px;border:1px solid var(--line);background:var(--panel);color:var(--ink);font-size:14px';
+  const render=(filter='')=>{ const f=(filter||'').trim().toLowerCase();
+    return COUNTRIES.filter(c=>!f||c[1].toLowerCase().includes(f)||c[0].toLowerCase()===f).slice(0,80)
+      .map(c=>`<button type="button" class="loc-c" data-cc="${c[0]}" data-nm="${esc(c[1])}" style="display:flex;align-items:center;gap:8px;width:100%;text-align:left;padding:7px 10px;border:0;border-bottom:1px solid var(--line);background:${c[0]===_loc.cc?'#1e2636':'transparent'};color:var(--ink);cursor:pointer;font-size:13px">${flagEmoji(c[0])} ${esc(c[1])}</button>`).join(''); };
+  body.innerHTML=`<h3>📍 Where do you represent?</h3>
+    <div style="color:var(--dim);font-size:12px;margin-bottom:10px">Shows as a flag by your name on the boards &amp; profile. All optional.</div>
+    <input id="locSearch" placeholder="Search country…" autocomplete="off" style="width:100%;margin-bottom:8px;${inp}">
+    <div id="locList" style="max-height:210px;overflow-y:auto;border:1px solid var(--line);border-radius:8px;margin-bottom:10px">${render(_loc.country)}</div>
+    <input id="locCity" placeholder="City — type to search real cities" value="${esc(_loc.city)}" autocomplete="off" style="width:100%;margin-bottom:4px;${inp}">
+    <div id="locCityList" style="max-height:150px;overflow-y:auto;border-radius:8px;margin-bottom:6px"></div>
+    <div id="locRegionRow" style="margin-bottom:10px"></div>
+    <div id="locSel" style="font-size:13px;color:var(--dim);margin-bottom:12px">${_loc.cc?('Selected: '+flagEmoji(_loc.cc)+' '+esc(_loc.country)):'No country selected'}</div>
+    <div style="display:flex;gap:8px"><button id="locSave" style="flex:1;padding:10px;border-radius:8px;border:0;background:var(--gold);color:var(--gold-ink);font-weight:700;cursor:pointer">Save</button><button id="locClear" style="padding:10px 14px;border-radius:8px;border:1px solid var(--line);background:transparent;color:var(--dim);cursor:pointer">Clear</button><button id="locCancel" style="padding:10px 14px;border-radius:8px;border:1px solid var(--line);background:transparent;color:var(--dim);cursor:pointer">Cancel</button></div>`;
+  // region control adapts to country: US -> pick your FGC "scene"; else -> state/province (auto from city).
+  const regionRow=()=>{ const el=$('#locRegionRow'); if(!el) return;
+    if(_loc.cc==='US'){ el.innerHTML=`<label style="font-size:11px;color:var(--dim);text-transform:uppercase;letter-spacing:.05em">Your scene</label><select id="locScene" style="width:100%;margin-top:3px;${inp}"><option value="">— pick your scene —</option>`+US_REGIONS.map(r=>`<option value="${esc(r)}"${_loc.region===r?' selected':''}>${esc(r)}</option>`).join('')+`</select>`;
+      const s=$('#locScene'); if(s) s.onchange=()=>{ _loc.region=s.value; }; }
+    else { el.innerHTML=`<input id="locRegion" placeholder="State / region (auto-fills when you pick a city)" value="${esc(_loc.region)}" style="width:100%;${inp}">`; } };
+  regionRow();
+  const search=$('#locSearch'), listEl=$('#locList'), selEl=$('#locSel');
+  search&&search.addEventListener('input',()=>{ listEl.innerHTML=render(search.value); });
+  listEl&&listEl.addEventListener('click',e=>{ const b=e.target.closest('.loc-c'); if(!b) return; _loc.cc=b.dataset.cc; _loc.country=b.dataset.nm; listEl.innerHTML=render(search.value); selEl.innerHTML='Selected: '+flagEmoji(_loc.cc)+' '+esc(_loc.country); const cl=$('#locCityList'); if(cl) cl.innerHTML=''; regionRow(); });
+  // city typeahead against the server's real-cities lookup (validated). Non-US: auto-fills the state.
+  let cityTimer=null; const cityInp=$('#locCity'), cityList=$('#locCityList');
+  cityInp&&cityInp.addEventListener('input',()=>{ _loc.city=cityInp.value.trim(); clearTimeout(cityTimer); const qv=cityInp.value.trim();
+    if(qv.length<2){ cityList.innerHTML=''; return; }
+    cityTimer=setTimeout(async()=>{ try{ const r=await invoke('search_cities',{country:_loc.cc||'',q:qv}); const cs=(r&&r.cities)||[];
+      cityList.innerHTML=cs.map(c=>`<button type="button" class="loc-city" data-n="${esc(c.name)}" data-r="${esc(c.region||'')}" style="display:flex;justify-content:space-between;gap:8px;width:100%;text-align:left;padding:6px 10px;border:0;border-bottom:1px solid var(--line);background:transparent;color:var(--ink);cursor:pointer;font-size:13px"><span>${esc(c.name)}</span><span style="color:var(--dim);font-size:11px">${esc(c.region||'')} ${flagEmoji(c.cc)}</span></button>`).join('')||'<div style="padding:6px 10px;color:var(--dim);font-size:12px">no match — keep typing</div>';
+    }catch(e){ cityList.innerHTML=''; } },250); });
+  cityList&&cityList.addEventListener('click',e=>{ const b=e.target.closest('.loc-city'); if(!b) return; _loc.city=b.dataset.n; if(cityInp) cityInp.value=b.dataset.n; if(_loc.cc!=='US'){ _loc.region=b.dataset.r; const ri=$('#locRegion'); if(ri) ri.value=b.dataset.r; } cityList.innerHTML=''; });
+  const cancel=$('#locCancel'); if(cancel) cancel.onclick=()=>openProfile(sid,_loc.country);
+  const clear=$('#locClear'); if(clear) clear.onclick=()=>{ _loc={cc:'',country:'',region:'',city:''}; saveLoc(sid); };
+  const save=$('#locSave'); if(save) save.onclick=()=>{ if(_loc.cc==='US'){ const s=$('#locScene'); if(s) _loc.region=s.value; } else { const ri=$('#locRegion'); if(ri) _loc.region=ri.value; } _loc.city=($('#locCity')||{}).value||''; saveLoc(sid); };
+}
+async function saveLoc(sid){
+  try{ await invoke('set_location',{steamid:String(sid),cc:_loc.cc||'',country:_loc.country||'',region:_loc.region||'',city:_loc.city||''}); toast('📍 Location saved'); }
+  catch(e){ toast('couldn\'t save location'); }
+  if(mySteam&&String(mySteam.steamid)===String(sid)){ myLoc={..._loc}; refreshMeBadge(); }
+  openProfile(sid,_loc.country);
+}
+
+// ── header "represent" badge (your flag/city, top banner) + Live Sync pill + match-node reps ──
+let myLoc={cc:'',country:'',region:'',city:''};
+let onlineCount=0, _oppRepId=null;
+function repLine(cc,city,region){ const f=cc?flagEmoji(cc):''; const t=[city,region].filter(Boolean)[0]||''; return `${f} ${esc(t)}`.trim(); }
+function updateSyncChip(){ const c=$('#cSync'); if(!c) return; c.classList.toggle('on',!!syncOn); const t=$('#cSyncTxt'); if(t) t.textContent = syncOn ? ('Live'+(onlineCount>0?' · '+onlineCount+' on':'')) : 'Offline'; }
+async function refreshMeBadge(){
+  if(invoke && mySteam && mySteam.steamid){ try{ const p=await invoke('profile',{steamid:String(mySteam.steamid)}); if(p&&p.found){ myLoc={cc:p.cc||'',country:p.country||'',region:p.region||'',city:p.city||''}; } }catch(e){} }
+  const set=!!(myLoc.cc||myLoc.city||myLoc.region);
+  const rf=$('#repFlag'); if(rf) rf.textContent = (set&&myLoc.cc)?flagEmoji(myLoc.cc):'📍';
+  const rt=$('#repTxt'); if(rt) rt.textContent = set ? ([myLoc.city,myLoc.region].filter(Boolean).join(', ')||myLoc.country||'Representing') : 'Set where you represent';
+  const rc=$('#repChip'); if(rc) rc.classList.toggle('set',set);
+  const pr=$('#p1rep'); if(pr) pr.textContent = set ? repLine(myLoc.cc,myLoc.city,myLoc.region) : '';
+  const nt=$('#repNote'); if(nt) nt.style.display = set ? 'none' : 'flex';   // CTA until they set a location
+}
+async function fetchOppRep(sid){
+  const pr=$('#p2rep');
+  if(!sid){ _oppRepId=null; if(pr) pr.textContent=''; return; }
+  if(sid===_oppRepId) return; _oppRepId=sid; if(pr) pr.textContent='';
+  try{ const p=await invoke('profile',{steamid:String(sid)}); const t=(p&&p.found&&(p.cc||p.city))?repLine(p.cc,p.city,p.region):''; if(pr && _oppRepId===sid) pr.textContent=t; }catch(e){}
+}
 async function renderLeaderboard(tab){
   lbTab=tab||lbTab;
   $$('#lbTabs button').forEach(b=>b.classList.toggle('on',b.dataset.lt===lbTab));
-  // Ranked (ELO) is cumulative skill → always all-time; grey out the period switch for it.
-  const ranked=lbTab==='rating';
+  // Ranked (ELO) is cumulative skill → always all-time; grey out the period switch for it (and the tier list).
+  const ranked=lbTab==='rating'||lbTab==='tierlist';
   if(ranked) lbPeriod='all';
   $('#lbPeriod')?.classList.toggle('off',ranked);
   $$('#lbPeriod button').forEach(b=>b.classList.toggle('on',b.dataset.lp===lbPeriod));
@@ -2194,6 +2409,20 @@ async function renderLeaderboard(tab){
   if(!syncOn){ list.innerHTML='<div class="lb-empty">🔒 Live Sync is off — turn it on (top-right) to see leaderboards, ranks &amp; matchup stats.</div>'; return; }
   if(lbLoading) return; lbLoading=true;
   if(!list.children.length||list.querySelector('.lb-empty')) list.innerHTML='<div class="lb-empty">LOADING…</div>';
+  // ── Tier List: per-CHARACTER win rates (different shape from the player boards) ──
+  if(lbTab==='tierlist'){
+    if(ex) ex.innerHTML=`<b>Team tier list</b> — win rate of each 3-character team composition across all recorded games (min 4 games). MvC2 is a 3-man game, so the team is the unit.`;
+    try{
+      const res=await invoke('tierlist'); const teams=(res&&res.teams)||[];
+      if(!teams.length){ list.innerHTML='<div class="lb-empty">NOT ENOUGH GAMES YET</div>'; return; }
+      const tcol=wr=> wr>=60?'#4ade80': wr>=52?'#a3e635': wr>=48?'#fbbf24': wr>=40?'#fb923c':'#f87171';
+      list.innerHTML='<table class="pf-tbl" style="width:100%"><tr><th>#</th><th>Team</th><th>Win rate</th><th>Record</th><th>GP</th></tr>'+
+        teams.map((t,i)=>{ const cids=String(t.team).split(',').map(Number); const tn=teamStr(cids);
+          return `<tr><td>${i+1}</td><td>${esc(tn)}</td><td style="font-weight:700;color:${tcol(t.winrate)}">${t.winrate}%</td><td>${t.wins}–${t.games-t.wins}</td><td>${t.games}</td></tr>`; }).join('')+'</table>';
+    }catch(e){ list.innerHTML='<div class="lb-empty">TIER LIST UNAVAILABLE</div>'; }
+    finally{ lbLoading=false; }
+    return;
+  }
   try{
     const res=await invoke('leaderboard',{tab:lbTab,period:lbPeriod,limit:15});
     const players=(res&&res.players)||[];
@@ -2205,7 +2434,7 @@ async function renderLeaderboard(tab){
       const rank=i===0?'👑':(i+1);
       return `<div class="lb-row ${i===0?'r1':''} ${isMe?'me':''}">
         <div class="lb-rank">${rank}</div>
-        <div class="lb-name lb-click" data-sid="${esc(p.steamid)}" data-nm="${esc(p.name||'Player')}">${esc(p.name||'Player')}${isMe?'<span class="me-tag">YOU</span>':''}</div>
+        <div class="lb-name lb-click" data-sid="${esc(p.steamid)}" data-nm="${esc(p.name||'Player')}">${p.cc?`<span title="${esc(p.city||p.region||'')}">${flagEmoji(p.cc)}</span> `:''}${esc(p.name||'Player')}${isMe?'<span class="me-tag">YOU</span>':''}</div>
         <div class="lb-wl">${p.wins||0}W · ${p.losses||0}L</div>
         <div class="lb-stat">${p.stat||0} ${lab}</div>
       </div>`;
@@ -2242,27 +2471,42 @@ async function openProfile(sid,nm){
   const modal=$('#pfModal'), body=$('#pfBody'); if(!modal||!invoke) return;
   modal.classList.add('show'); body.innerHTML='<div class="lb-empty">LOADING…</div>';
   try{
-    const p=await invoke('profile',{steamid:String(sid)});
+    // profile = base record (Surreal), playerstats = rich derived stats from the full log (nemesis/form/per-char/vs)
+    const [p, ps] = await Promise.all([
+      invoke('profile',{steamid:String(sid)}),
+      invoke('playerstats',{steamid:String(sid)}).catch(()=>({}))
+    ]);
     if(!p||!p.found){ body.innerHTML=`<h3>${esc(nm||'Player')}</h3><div class="lb-empty">No games logged yet.</div>`; return; }
     const gp=(p.wins||0)+(p.losses||0), wr=gp?Math.round(100*(p.wins||0)/gp):0;
-    const teams=(p.teams||[]).slice(0,8).map(t=>{ const cids=String(t.team).split(',').map(Number); const tw=t.games?Math.round(100*t.wins/t.games):0;
+    // recent form (last 10, newest first)
+    const form=(ps.form||[]).map(w=>`<span class="fmw" style="display:inline-block;width:16px;height:16px;line-height:16px;text-align:center;border-radius:3px;font-size:10px;font-weight:700;margin-right:2px;color:#0b0d12;background:${w?'#4ade80':'#f87171'}">${w?'W':'L'}</span>`).join('');
+    // nemesis / favourite victim (clickable → their profile)
+    const badge=(o,ico,lbl,col)=> o?`<span class="lb-click" data-sid="${esc(o.opp_id)}" data-nm="${esc(o.name||'Player')}" style="cursor:pointer;background:#161a24;border:1px solid ${col}55;border-radius:8px;padding:4px 10px;font-size:12px">${ico} ${lbl}: <b>${esc(o.name||'Player')}</b> ${o.wins}–${o.losses}</span>`:'';
+    const badges=[badge(ps.nemesis,'😈','Nemesis','#f87171'),badge(ps.victim,'🎯','Favourite victim','#4ade80')].filter(Boolean).join(' ');
+    const teams=(p.teams||[]).slice(0,10).map(t=>{ const cids=String(t.team).split(',').map(Number); const tw=t.games?Math.round(100*t.wins/t.games):0;
       return `<tr><td>${esc(teamStr(cids))}</td><td>${t.games}</td><td>${t.wins}</td><td>${tw}%</td></tr>`; }).join('');
-    const vs=(p.vs||[]).slice(0,30).map(v=>{ const g=v.games||0, w=v.wins||0, l=v.losses||0, r=g?Math.round(100*w/g):0;
+    const vsSrc=(ps.vs&&ps.vs.length)?ps.vs:(p.vs||[]);
+    const vs=vsSrc.slice(0,30).map(v=>{ const g=v.games||0, w=v.wins||0, l=v.losses||0, r=g?Math.round(100*w/g):0;
       return `<tr class="lb-click" data-sid="${esc(v.opp_id)}" data-nm="${esc(v.name||'Player')}"><td>${esc(v.name||'Player')}</td><td>${w}–${l}</td><td>${r}%</td><td>${g}</td></tr>`; }).join('');
     const eloCell=m=>{ const e=(typeof m.elo==='number')?m.elo:0; const s=e>0?'+':''; return `<td style="font-weight:700;color:${e>=0?'#4ade80':'#f87171'};font-variant-numeric:tabular-nums">${s}${e}</td>`; };
     const recent=(p.recent||[]).slice(0,15).map(m=>`<tr class="${m.won?'w':'l'}">
       <td>${m.won?'W':'L'}</td><td class="lb-click" data-sid="${esc(m.opp_id||'')}" data-nm="${esc(m.opp||'')}">${esc(m.opp||'?')}</td><td>${esc(teamStr(m.my_team))}</td><td>${esc(teamStr(m.opp_team))}</td>
       ${eloCell(m)}<td>${m.combo?('🎯'+m.combo):''}${m.ocv?' 💥':''}${m.perfect?' ✨':''}${m.comeback?' 🔄':''}</td></tr>`).join('');
-    body.innerHTML=`<h3>${esc(p.name||nm||'Player')}</h3>
+    const isMe = mySteam && String(mySteam.steamid)===String(sid);
+    body.innerHTML=`<h3>${esc(p.name||nm||'Player')} ${repBadge(p)}</h3>
+      ${isMe?`<div style="margin:0 0 8px"><button id="pfRep" style="padding:6px 12px;border-radius:8px;border:1px solid var(--line);background:transparent;color:var(--gold-soft);cursor:pointer;font-size:12px;font-weight:600">📍 ${(p.cc||p.city||p.country)?'Edit where you represent':'Set where you represent'}</button></div>`:''}
       <div class="pf-stats"><span>⚔️ <b>${esc(p.rank||'Warrior')}</b> · ${p.rating||1000} ELO</span><span><b>${p.wins||0}</b>W · <b>${p.losses||0}</b>L</span><span><b>${wr}%</b> win</span>
         <span>🔥 <b>${p.best_streak||0}</b></span><span>🎯 <b>${p.best_combo||0}</b></span>
         <span>💥 ${p.ocvs||0} · ✨ ${p.perfects||0} · 🔄 ${p.comebacks||0}</span></div>
+      ${form?`<div style="margin:8px 0 4px;display:flex;align-items:center;gap:8px"><span style="color:#8b90a5;font-size:11px;text-transform:uppercase;letter-spacing:.05em">Recent form</span>${form}</div>`:''}
+      ${badges?`<div style="margin:8px 0;display:flex;gap:8px;flex-wrap:wrap">${badges}</div>`:''}
       <h4>Head-to-head vs players <span style="text-transform:none;letter-spacing:0;color:#8b90a5;font-weight:400">— click a name to open their profile</span></h4>
       <table class="pf-tbl"><tr><th>Player</th><th>Record</th><th>WR</th><th>GP</th></tr>${vs||'<tr><td colspan="4">— no games yet</td></tr>'}</table>
       <h4>Team compositions</h4>
       <table class="pf-tbl"><tr><th>Team</th><th>GP</th><th>W</th><th>WR</th></tr>${teams||'<tr><td colspan="4">—</td></tr>'}</table>
       <h4>Recent matches</h4>
       <table class="pf-tbl"><tr><th></th><th>Opp</th><th>Your team</th><th>Their team</th><th>ELO</th><th></th></tr>${recent||'<tr><td colspan="6">—</td></tr>'}</table>`;
+    if(isMe){ const rb=$('#pfRep'); if(rb) rb.onclick=()=>showLocationEditor(sid,p); }
   }catch(e){ body.innerHTML='<div class="lb-empty">PROFILE UNAVAILABLE</div>'; }
 }
 // Per-session (ranked set) breakdown — reuses the profile modal. Opened by the session chip next to the set score.
@@ -2282,6 +2526,52 @@ async function openSession(sid){
   }catch(e){ body.innerHTML='<div class="lb-empty">SESSION UNAVAILABLE</div>'; }
 }
 $('#lbList')?.addEventListener('click',e=>{ const n=e.target.closest('.lb-click'); if(n) openProfile(n.dataset.sid,n.dataset.nm); });
+
+// ── 🌍 Regions: top cities/countries + per-region board & team-comp meta ──
+let regLevel='city';
+async function renderRegions(){
+  const body=$('#regBody'), ex=$('#regExplain'); if(!body||!invoke) return;
+  $$('#regTabs button').forEach(b=>b.classList.toggle('on',b.dataset.rl===regLevel));
+  if(ex) ex.innerHTML = regLevel==='city'
+    ? 'Strongest <b>cities</b> by wins — tap one for its players and the teams that city runs. Set yours with the 📍 button up top.'
+    : 'Strongest <b>countries</b> — tap one for its players and team-comp meta.';
+  if(!syncOn){ body.innerHTML='<div class="lb-empty">🔒 Live Sync is off — turn it on (top-right) to see regions.</div>'; return; }
+  body.innerHTML='<div class="lb-empty">LOADING…</div>';
+  try{
+    const r=await invoke('regions',{level:regLevel,limit:40}); const rs=(r&&r.regions)||[];
+    if(!rs.length){ body.innerHTML='<div class="lb-empty">No regions yet — be the first to set your city with the 📍 button up top!</div>'; return; }
+    body.innerHTML=rs.map((x,i)=>{
+      const loc=regLevel==='city'?`${flagEmoji(x.cc)} ${esc(x.name)}${x.region?`<span style="color:var(--dim)"> · ${esc(x.region)}</span>`:''}`:`${flagEmoji(x.cc)} ${esc(x.name)}`;
+      return `<div class="lb-row ${i===0?'r1':''} reg-click" data-cc="${esc(x.cc)}" data-city="${regLevel==='city'?esc(x.name):''}" data-nm="${esc(x.name)}" style="cursor:pointer">
+        <div class="lb-rank">${i===0?'👑':(i+1)}</div>
+        <div class="lb-name">${loc}${x.top?`<span style="color:var(--dim);font-size:11px"> — top: ${esc(x.top.name||'')}</span>`:''}</div>
+        <div class="lb-wl">${x.players} player${x.players===1?'':'s'} · ${x.wins}W</div>
+        <div class="lb-stat">${x.avg_rating} ELO</div></div>`;
+    }).join('');
+  }catch(e){ body.innerHTML='<div class="lb-empty">REGIONS UNAVAILABLE</div>'; }
+}
+async function openRegion(cc, city, nm){
+  const body=$('#regBody'); if(!body||!invoke) return;
+  body.innerHTML='<div class="lb-empty">LOADING…</div>';
+  try{
+    const [lb, tl] = await Promise.all([
+      invoke('leaderboard',{tab:'wins',period:'all',limit:50,country:city?'':cc,city:city||''}),
+      invoke('tierlist',{country:city?'':cc,city:city||''}).catch(()=>({teams:[]}))
+    ]);
+    const players=(lb&&lb.players)||[]; const teams=((tl&&tl.teams)||[]).slice(0,8);
+    const plHtml = players.length ? players.map((p,i)=>`<div class="lb-row ${i===0?'r1':''}">
+      <div class="lb-rank">${i===0?'👑':(i+1)}</div>
+      <div class="lb-name lb-click" data-sid="${esc(p.steamid)}" data-nm="${esc(p.name||'Player')}">${p.cc?flagEmoji(p.cc)+' ':''}${esc(p.name||'Player')}</div>
+      <div class="lb-wl">${p.wins||0}W · ${p.losses||0}L</div><div class="lb-stat">${p.rating||1000} ELO</div></div>`).join('') : '<div class="lb-empty">no players here yet</div>';
+    const tlHtml = teams.length ? `<table class="pf-tbl"><tr><th>Team</th><th>GP</th><th>W</th><th>WR</th></tr>`+teams.map(t=>{const cids=String(t.team).split(',').map(Number);return `<tr><td>${esc(teamStr(cids))}</td><td>${t.games}</td><td>${t.wins}</td><td>${t.winrate}%</td></tr>`}).join('')+'</table>' : '<div class="lb-empty" style="padding:8px">not enough games yet</div>';
+    body.innerHTML=`<button id="regBack" style="margin-bottom:10px;padding:6px 12px;border-radius:8px;border:1px solid var(--line);background:transparent;color:var(--dim);cursor:pointer">← Back</button>
+      <h3 style="margin:2px 0 10px">${flagEmoji(cc)} ${esc(nm)} — players</h3>${plHtml}
+      <h4 style="margin:16px 0 6px;text-transform:none">What ${esc(nm)} runs</h4>${tlHtml}`;
+    const bk=$('#regBack'); if(bk) bk.onclick=renderRegions;
+  }catch(e){ body.innerHTML='<div class="lb-empty">REGION UNAVAILABLE</div>'; }
+}
+$('#regTabs')?.addEventListener('click',e=>{ const b=e.target.closest('button'); if(!b) return; regLevel=b.dataset.rl; renderRegions(); });
+$('#regBody')?.addEventListener('click',e=>{ const rc=e.target.closest('.reg-click'); if(rc){ openRegion(rc.dataset.cc, rc.dataset.city, rc.dataset.nm); return; } const pc=e.target.closest('.lb-click'); if(pc&&pc.dataset.sid) openProfile(pc.dataset.sid, pc.dataset.nm); });
 // inside an open profile, clicking an opponent (head-to-head or recent) opens THEIR profile
 $('#pfBody')?.addEventListener('click',e=>{ const n=e.target.closest('.lb-click'); if(n&&n.dataset.sid&&n.dataset.sid.length===17) openProfile(n.dataset.sid,n.dataset.nm); });
 $('#pfX')?.addEventListener('click',()=>$('#pfModal').classList.remove('show'));

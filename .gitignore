@@ -54,3 +54,7 @@ docs/BETA-READINESS.md
 docs/*-EXPERT*.md
 docs/*-HANDOVER*.md
 docs/*-CONTEXT*.md
+
+# deploy artifacts (session)
+/ghrel/
+/latest.json
