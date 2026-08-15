@@ -598,6 +598,37 @@ pub fn sync_publish(steamid: String, name: String, skins: serde_json::Value, eff
         .into_json::<serde_json::Value>().map_err(|e| e.to_string())
 }
 
+// ── custom-skin SAFETY: server backup / restore / stock-defaults ─────────────────────────────────
+// Powers the Library "your customs are never lost" flow. backup_skins uploads the detected custom
+// palettes so they survive a revert-to-stock (or a reinstall); restore_skins pulls them back;
+// fetch_defaults returns the canonical stock palettes used to revert a character to stock.
+
+/// Upload the user's detected custom palettes to the server. `skins` = [{cid, palette:[16 ints],
+/// char_name?, author?}]. Token-authed (server write route). Returns `{ok, count}`.
+#[tauri::command]
+pub fn backup_skins(skins: serde_json::Value) -> Result<serde_json::Value, String> {
+    auth_post(&format!("{}/skins/backup", SKINSYNC)).send_json(serde_json::json!({ "skins": skins }))
+        .map_err(|e| e.to_string())?
+        .into_json::<serde_json::Value>().map_err(|e| e.to_string())
+}
+
+/// Pull a user's backed-up custom palettes back down (`{ok, skins:[...], ts}`). Token-authed.
+#[tauri::command]
+pub fn restore_skins(steamid: String) -> Result<serde_json::Value, String> {
+    auth_get(&format!("{}/skins/restore", SKINSYNC)).query("steamid", &steamid)
+        .call().map_err(|e| e.to_string())?
+        .into_json::<serde_json::Value>().map_err(|e| e.to_string())
+}
+
+/// Canonical stock palettes used to revert a character to stock (`{ok, defaults:{"<cid>":[16 ints]}}`).
+/// No auth needed — public reference data. Frontend falls back to local stock (idleData) if this fails.
+#[tauri::command]
+pub fn fetch_defaults() -> Result<serde_json::Value, String> {
+    ureq::get(&format!("{}/defaults", SKINSYNC)).timeout(std::time::Duration::from_secs(8))
+        .call().map_err(|e| e.to_string())?
+        .into_json::<serde_json::Value>().map_err(|e| e.to_string())
+}
+
 // self-declared "represent" location (country/region/city). Token-authed; the server binds it to our SteamID.
 #[tauri::command]
 pub fn set_location(steamid: String, cc: String, country: String, region: String, city: String) -> Result<serde_json::Value, String> {

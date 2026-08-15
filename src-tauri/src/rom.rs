@@ -70,6 +70,20 @@ pub fn rom_backup(path: String) -> Result<bool, String> {
     Ok(true)
 }
 
+/// Ensure a `.bak` of the character ROM exists BEFORE any revert/bake. Unlike `rom_backup`, this first
+/// resolves whatever the user set (folder / install path / .arc) to the actual game_50.arc — the SAME
+/// target `bake_palette` writes to — so the safety backup and the file that gets reverted are guaranteed
+/// to be the same file. Copies to `<arc>.bak` only if absent (idempotent, never overwrites an existing
+/// backup). Returns true if a NEW backup was made, false if one already existed.
+#[tauri::command]
+pub fn backup_rom(arc_path: String) -> Result<bool, String> {
+    let arc_path = resolve_arc(&arc_path);
+    let bak = format!("{arc_path}.bak");
+    if Path::new(&bak).exists() { return Ok(false); }
+    std::fs::copy(&arc_path, &bak).map_err(|e| e.to_string())?;
+    Ok(true)
+}
+
 /// True if `p` looks like a MvC2 GDI data track (the ISO PVD's "CD001" is where it should be).
 fn is_data_track(p: &Path) -> bool {
     let Ok(mut f) = File::open(p) else { return false };

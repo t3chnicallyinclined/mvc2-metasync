@@ -139,6 +139,10 @@ try{document.documentElement.setAttribute('data-theme', localStorage.getItem('me
   .card.pending{border-color:#31b365 !important; box-shadow:0 0 0 1px rgba(49,179,101,.4) inset;}
   .card.pending .dice{opacity:1;}
   .card .dice:hover{opacity:1; border-color:var(--p1-line); transform:rotate(-12deg) scale(1.12);}
+  .card .dice:disabled,.card.opp-locked .dice{opacity:.3; cursor:default; filter:grayscale(1); pointer-events:none;}
+  .card .dice:disabled:hover,.card.opp-locked .dice:hover{transform:none; border-color:var(--line);}
+  .card.opp-locked{opacity:.94;}
+  .opp-lock-note{font-size:11.5px; color:var(--faint); text-align:center; margin-top:8px; font-style:italic;}
   .card.add{display:flex; flex-direction:column; align-items:center; justify-content:center; gap:6px; border-style:dashed; color:var(--dim); cursor:pointer; min-height:150px;}
   .card.add:hover{color:var(--ink); border-color:var(--p1-line);}
   .card.add .plus{font-size:26px; font-weight:300; line-height:1;}
@@ -319,6 +323,17 @@ try{document.documentElement.setAttribute('data-theme', localStorage.getItem('me
   .libbar{display:flex; align-items:center; gap:11px; flex-wrap:wrap; padding:12px 15px; border:1px solid var(--line); border-radius:14px; background:var(--panel); margin-bottom:14px;}
   .libbar .search{flex:1; min-width:160px; display:flex; align-items:center; gap:9px; background:var(--panel-2); border:1px solid var(--line); border-radius:10px; padding:8px 13px; color:var(--faint);}
   .libbar .search input{flex:1; border:0; background:transparent; color:var(--ink); font:inherit; outline:none;}
+  /* custom-skin SAFETY panel */
+  .skinsafe{display:flex; align-items:center; gap:14px; flex-wrap:wrap; padding:13px 16px; margin-bottom:14px; border-radius:14px;
+    border:1px solid color-mix(in srgb,var(--gold) 55%,var(--line)); background:color-mix(in srgb,var(--gold) 10%,var(--panel));
+    box-shadow:0 0 0 1px color-mix(in srgb,var(--gold) 22%,transparent), 0 14px 34px -22px var(--gold);}
+  .skinsafe .ss-ico{font-size:24px; line-height:1; flex:none;}
+  .skinsafe .ss-info{flex:1; min-width:180px;}
+  .skinsafe .ss-title{font-weight:800; font-size:14px;}
+  .skinsafe .ss-title b{color:var(--gold);}
+  .skinsafe .ss-sub{color:var(--faint); font-size:11.5px; margin-top:2px;}
+  .skinsafe .ss-actions{display:flex; align-items:center; gap:9px; flex-wrap:wrap;}
+  .skinsafe #btnBackupSkins{background:var(--gold); border-color:var(--gold); color:var(--gold-ink,#241700); font-weight:800;}
   .lohead{display:flex; align-items:center; justify-content:space-between; margin:2px 2px 10px;}
   .lohead .t{font-weight:800; font-size:14px; display:flex; align-items:center; gap:9px;}
   .lohead .t .sub{color:var(--faint); font-weight:500; font-size:11.5px;}
@@ -551,6 +566,7 @@ try{document.documentElement.setAttribute('data-theme', localStorage.getItem('me
         <div class="state wait" id="oppState">Sync off</div>
       </div>
       <div class="cards" id="oppCards"></div>
+      <div class="opp-lock-note" id="oppLockNote" style="display:none">🔒 Opponent controls their own skins (they have the app).</div>
       <div class="empty" id="oppEmpty"><b>No opponent synced yet</b><br>Turn on Live sync in a match. If they're running MetaSync too, their skins appear here — and yours on their screen.</div>
     </section>
   </main>
@@ -677,6 +693,17 @@ try{document.documentElement.setAttribute('data-theme', localStorage.getItem('me
     <div class="libbar">
       <div class="search"><span>🔍</span><input placeholder="Search 56 characters…" id="libSearch"></div>
       <button class="btn ghost sm" id="btnImportPack">⬇ Import pack</button>
+    </div>
+    <div class="skinsafe" id="skinSafe" style="display:none">
+      <div class="ss-ico">🎨</div>
+      <div class="ss-info">
+        <div class="ss-title"><b id="ssCount">custom skins baked in</b></div>
+        <div class="ss-sub">Your customs are kept safe — back them up, then revert to stock anytime. Nothing is ever lost.</div>
+      </div>
+      <div class="ss-actions">
+        <button class="btn" id="btnBackupSkins">🛟 Back up my skins</button>
+        <button class="btn ghost sm" id="btnRevertStock">↺ Revert to stock</button>
+      </div>
     </div>
     <div class="lohead">
       <div class="t"><span style="color:var(--gold)">🗂</span> Team Loadouts <span class="sub">— save whole-team looks &amp; swap them like CS loadouts</span></div>
@@ -906,6 +933,74 @@ async function detectRomBakes(){
   } finally { _romScanBusy=false; }
   if(changed) saveBaked();
   if(changed || Object.keys(bakedSkins).length){ await writeAll(); if(syncOn) publishMine(); renderYou(); }
+  renderSkinSafe();                                    // reflect the detected custom-skin state in the safety panel
+}
+
+// ══ custom-skin SAFETY flow — customs are NEVER lost ══
+// bakedSkins is the live detected-custom state. A separate DURABLE safe (suite_customs_safe) holds a
+// palette-level copy that a revert never clears — so even if the server is unreachable, reverting to stock
+// can still be undone locally (re-bake from the safe). The ROM `.bak` is a full-file restore point.
+function customCids(){ return Object.keys(bakedSkins).filter(cid=>bakedPalFor(+cid)); }
+function loadCustomSafe(){ try{ return JSON.parse(localStorage.getItem('suite_customs_safe')||'{}'); }catch(e){ return {}; } }
+// merge the current customs into the durable safe (by cid); never removes existing safe entries
+function stashCustomSafe(){ const safe=loadCustomSafe();
+  for(const cid of customCids()){ safe[cid]={palette:bakedPalFor(+cid), char_name:nameById[+cid]||('char'+cid), author:(activeSkins[+cid]&&activeSkins[+cid].author)||'baked', ts:Date.now()}; }
+  try{ localStorage.setItem('suite_customs_safe', JSON.stringify(safe)); return true; }catch(e){ return false; }
+}
+// the payload we send to the server / stash locally: [{cid, palette:[16 ints], char_name, author}]
+function customBackupPayload(){ return customCids().map(cid=>({ cid:+cid, palette:bakedPalFor(+cid), char_name:nameById[+cid]||('char'+cid), author:(activeSkins[+cid]&&activeSkins[+cid].author)||'baked' })); }
+// Show/update the safety panel whenever custom bakes are present.
+function renderSkinSafe(){
+  const el=$('#skinSafe'); if(!el) return;
+  const n=customCids().length;
+  if(!n){ el.style.display='none'; return; }
+  el.style.display='';
+  const c=$('#ssCount'); if(c) c.textContent=`You have ${n} custom skin${n===1?'':'s'} baked in`;
+}
+// Back up the detected customs: (a) durable local safe, (b) ROM .bak (only if absent), (c) server upload.
+// Returns {ok, serverOk, bakOk, localOk, count}. ok = at least one durable recovery path succeeded.
+async function backupSkins(silent){
+  const payload=customBackupPayload();
+  if(!payload.length){ if(!silent) toast('no custom skins to back up'); return {ok:false, count:0, serverOk:false, bakOk:false, localOk:false}; }
+  const localOk=stashCustomSafe();                                    // local palette safe (survives a revert)
+  let arc=''; try{ arc=await invoke('get_rom_path'); }catch(e){}
+  let bakOk=false; if(arc){ try{ await invoke('backup_rom',{arcPath:arc}); bakOk=true; }catch(e){} }  // full-file restore point (idempotent)
+  let serverOk=false; try{ await invoke('backup_skins',{skins:payload}); serverOk=true; }catch(e){}    // server copy (needs Live Sync auth)
+  const ok=localOk||serverOk||bakOk, n=payload.length;
+  if(!silent){
+    if(serverOk && bakOk) toast(`🛟 Backed up ${n} skin${n===1?'':'s'} — safe on the server + a local .bak.`);
+    else if(serverOk) toast(`🛟 Backed up ${n} skin${n===1?'':'s'} to the server.`);
+    else if(ok) toast(`🛟 Saved a local backup of ${n} skin${n===1?'':'s'} (server unavailable — go Live to sync it).`);
+    else toast('⚠ Could not back up your skins — nothing was changed.');
+  }
+  return {ok, serverOk, bakOk, localOk, count:n};
+}
+// Revert ALL custom characters to stock. SAFETY: confirm + a successful backup MUST come first; if no
+// backup of any kind can be made, the revert is aborted and the customs are left untouched.
+async function revertToStock(){
+  const cids=customCids();
+  if(!cids.length){ toast('no custom skins to revert'); return; }
+  let arc=''; try{ arc=await invoke('get_rom_path'); }catch(e){}
+  if(!arc){ toast('set your Steam install / game_50.arc first (⚙ ROM on the Match tab)'); return; }
+  if(!confirm(`Revert ALL characters to stock?\n\nYour customs stay backed up — you can restore them anytime.\n\n(${cids.length} character${cids.length===1?'':'s'} · ${arc})`)) return;
+  const b=await backupSkins(true);                                    // BACK UP FIRST
+  if(!b.ok){ toast('⚠ Couldn’t back up your skins — revert aborted. Your customs are untouched.'); return; }
+  // canonical stock palettes from the server; fall back to the local stock (idleData) per-character.
+  let defs={}; try{ const r=await invoke('fetch_defaults'); if(r&&r.ok&&r.defaults) defs=r.defaults; }catch(e){}
+  const btn=$('#btnRevertStock'), o=btn?btn.textContent:''; if(btn){ btn.textContent='Reverting…'; btn.disabled=true; }
+  let done=0, skipped=[];
+  for(const cid of cids){
+    const stock=(Array.isArray(defs[cid])&&defs[cid].length>=16)?defs[cid].map(v=>v>>>0):stockPalInts(+cid);
+    if(!stock){ skipped.push(cid); continue; }                        // no stock palette anywhere → don't touch this char
+    try{ await invoke('bake_palette',{arcPath:arc, charId:+cid, colors:stock}); delete bakedSkins[cid]; done++; }
+    catch(e){ skipped.push(cid); }
+  }
+  saveBaked();                                                        // clear reverted customs from the live baked state
+  if(btn){ btn.textContent=o; btn.disabled=false; }
+  await writeAll(); if(syncOn) publishMine(); renderYou(); renderSkinSafe();
+  const where = b.serverOk ? 'server + local .bak' : (b.bakOk ? 'local .bak' : 'local safe');
+  if(skipped.length) toast(`Reverted ${done} to stock (${skipped.length} skipped — no stock palette) · customs backed up (${where}).`);
+  else toast(`↺ Reverted ${done} to stock — customs backed up (${where}).`);
 }
 let oppTeam=[];                  // [{cid, name, palette, author, skinName}]
 let mySteam={}, syncOn=false, syncTimer=null, oppMeta=null;
@@ -934,10 +1029,22 @@ let livePaint=false;              // Live Paint: write skins into guest palette 
 let oppRandom={}, oppRandomKey=''; // opponent (no app): cid -> random custom skin palette, re-rolled per match
 let oppManual={};                  // cid -> {palette,author,skinName} : your manual pick for an opponent char (dice on opp cards) — overrides synced/random
 let pendingOppSkins={};            // cid -> rolled-but-unconfirmed opponent skin (PREVIEW only until ✓)
-// Effective opponent skin for a character: your manual pick > their synced skin (only if truly published) > per-match random.
+// TRUE when the opponent is ALSO running MetaSync: they appear in the /peers fetch result (a peers entry
+// exists for them). This holds even for a 0-skin user whose published skins array is empty — presence in
+// /peers, not a non-empty skins list, is the has-app signal. oppMeta is set by setOpp() exactly when the
+// peers fetch returned an entry; peerSkins mirrors that. When true, the opponent controls their OWN look and
+// we must NOT let the local user's manual pick / dice-roll / per-match random touch their characters.
+function opponentHasApp(){ return !!oppMeta || Object.keys(peerSkins).length>0; }
+// Effective opponent skin for a character.
+//  • opponentHasApp: THEIRS wins — their synced skin where they've skinned, STOCK (null) elsewhere.
+//    Your manual pick and the per-match random are IGNORED (they drive their own skins).
+//  • no app: your manual pick > per-match random (peerSkins is empty in this case, so no synced layer).
 function oppSkinFor(cid){
+  if(opponentHasApp()){
+    for(const pid in peerSkins){ const s=(peerSkins[pid]||[]).find(x=>+x.cid===+cid); if(s&&s.palette) return s; }
+    return null;                                             // char they haven't skinned → STOCK, never random/manual
+  }
   if(oppManual[+cid]) return oppManual[+cid];
-  for(const pid in peerSkins){ const s=(peerSkins[pid]||[]).find(x=>+x.cid===+cid); if(s&&s.palette) return s; }
   if(oppRandom[+cid]) return {palette:oppRandom[+cid], author:'random', skinName:'Random'};
   return null;
 }
@@ -1004,31 +1111,37 @@ function renderYou(){
 function renderOpp(){
   const host=$('#oppCards'); host.innerHTML=''; animCards=animCards.filter(e=>!e.cv._opp);
   const has=oppTeam.length>0;
+  const locked=opponentHasApp();                                    // opponent runs the app → their skins are theirs; disable your roll/change controls
   $('#teamOpp').classList.toggle('on', has);
   const emp=$('#oppEmpty'); if(emp) emp.style.display=has?'none':'';
+  const note=$('#oppLockNote'); if(note) note.style.display=(has&&locked)?'':'none';
   oppTeam.forEach((o,idx)=>{
-    const pend=pendingOppSkins[+o.cid];                              // rolled-but-unconfirmed opponent preview
+    const pend=locked ? null : pendingOppSkins[+o.cid];             // rolled-but-unconfirmed opponent preview (never while locked)
     const palette = pend ? pend.palette : o.palette;
     const p16=pal16For(o.cid, palette);
-    const el=document.createElement('div'); el.className='card '+(idx===0?'point':'assist')+((o.detected&&!o.palette&&!pend)?' detected':'')+(pend?' pending':'');
+    const el=document.createElement('div'); el.className='card '+(idx===0?'point':'assist')+((o.detected&&!o.palette&&!pend)?' detected':'')+(pend?' pending':'')+(locked?' opp-locked':'');
     const label = pend ? ('preview · '+(pend.author||'skin')+' — ✓ to keep')
                        : (o.palette ? ((o.skinName&&o.skinName!=='Stock')?`${o.skinName} · ${o.author||''}`:(o.author||'their skin'))
                                     : (o.detected ? 'in match · stock' : 'stock'));
-    el.innerHTML=`<span class="role">${idx===0?'Point':'Assist'}</span><button class="dice" title="${pend?'Re-roll (preview)':'Roll a random skin for this opponent (preview)'}">🎲</button>
+    const diceTitle = locked ? 'Opponent controls their own skins (they have the app)' : (pend?'Re-roll (preview)':'Roll a random skin for this opponent (preview)');
+    el.innerHTML=`<span class="role">${idx===0?'Point':'Assist'}</span><button class="dice" title="${diceTitle}"${locked?' disabled':''}>🎲</button>
       ${pend?`<button class="confirm" title="Keep this opponent skin">✓</button><button class="cancelp" title="Cancel preview">✕</button>`:''}
       <div class="por-wrap" style="--tint:var(--p2)"><canvas></canvas><span class="live-dot"></span></div>
       <div class="cn">${nameById[o.cid]||('char'+o.cid)}</div>
       <div class="sk ${palette?'':'stock'}">${esc(label)}</div>
       <div class="swatches">${p16?swatchesFromPal16(p16):''}</div>`;
     const cv=el.querySelector('canvas'); cv._opp=true; if(p16) regIdle(cv,o.cid,p16);
-    el.querySelector('.dice').onclick=(e)=>{ e.stopPropagation(); rollOppSkin(o.cid); };
-    const cf=el.querySelector('.confirm'); if(cf) cf.onclick=(e)=>{ e.stopPropagation(); confirmOppSkin(o.cid); };
-    const cx=el.querySelector('.cancelp'); if(cx) cx.onclick=(e)=>{ e.stopPropagation(); cancelOppPreview(o.cid); };
+    if(!locked){                                                     // wire the roll/change controls only when the user is allowed to drive the opponent's look
+      el.querySelector('.dice').onclick=(e)=>{ e.stopPropagation(); rollOppSkin(o.cid); };
+      const cf=el.querySelector('.confirm'); if(cf) cf.onclick=(e)=>{ e.stopPropagation(); confirmOppSkin(o.cid); };
+      const cx=el.querySelector('.cancelp'); if(cx) cx.onclick=(e)=>{ e.stopPropagation(); cancelOppPreview(o.cid); };
+    }
     host.appendChild(el);
   });
 }
 // roll a random skin for an OPPONENT character (your screen) — PREVIEW only; commit with ✓ (no repaint until then)
 async function rollOppSkin(cid){
+  if(opponentHasApp()){ toast('Opponent controls their own skins (they have the app)'); return; }
   const dir=dirById[cid]; if(!dir){ toast('unknown character'); return; }
   const list=await fetchSkinList(dir); if(!list.length){ toast(`no skins for ${nameById[cid]||dir} yet`); return; }
   pendingOppSkins[+cid]=list[Math.floor(Math.random()*list.length)];   // preview on the card, no override/repaint yet
@@ -1287,6 +1400,8 @@ function buildPaintTargets(){
 // When the opponent ISN'T running the app, give each of their characters a RANDOM custom skin from the
 // local collection, re-rolled once per match (keyed to their live datpals, which change each match).
 async function ensureOppRandom(){
+  // NEVER random-fill an opponent who runs the app — they control their own look; unskinned chars stay STOCK.
+  if(opponentHasApp()){ oppRandom={}; oppRandomKey=''; return; }
   const meNum=mySide==='p2'?2:1;
   const opp=detSlots.filter(s=>s.player!==meNum && s.cid!=null && s.datpal && s.datpal!=='0');
   if(!opp.length) return;
@@ -1470,7 +1585,7 @@ async function doGoLive(on){
   document.body.classList.toggle('offline', !syncOn);
   $$('#tabs button[data-t="ranks"]').forEach(b=>b.classList.toggle('lb-off', !syncOn));   // dim the Ranks tab when offline
   if($('#p-ranks')?.classList.contains('on')) renderLeaderboard();                          // refresh the board if it's showing
-  if(syncOn){ if(!mySteam.steamid){ try{ mySteam=await invoke('sync_self'); refreshMe(); }catch(e){} } setOpp(null); syncTick(); syncTimer=setInterval(syncTick,4000); refreshMeBadge(); toast('<span class="k">Live sync on</span> — connected'); }
+  if(syncOn){ if(!mySteam.steamid){ try{ mySteam=await invoke('sync_self'); refreshMe(); }catch(e){} } setOpp(null); syncTick(); syncTimer=setInterval(syncTick,4000); refreshMeBadge(); detectRomBakes(); toast('<span class="k">Live sync on</span> — connected'); }  // detect-on-connect: know the custom-skin state the moment we're online (guards on ROM being set)
   else { clearInterval(syncTimer); syncTimer=null; if(mySteam.steamid) invoke('sync_unpublish',{steamid:mySteam.steamid}).catch(()=>{}); peerSkins={}; setOpp(null); await writeAll(); toast('Offline — leaderboards, player sync & stats are off'); }
 }
 // Live-Sync consent modal wiring
@@ -1686,6 +1801,10 @@ let _updHideT=null;
 // so it can be updated without shipping a new build. This bundled copy is the offline FALLBACK — keep it
 // roughly current, but the remote is authoritative.
 let CHANGELOG = [
+  { v:'0.1.68', t:'Skin safety net + opponent lock', items:[
+    'Custom-skin safety: on connect the app detects your baked skins and offers Back up (local .bak + server + palette copy) and Revert to stock — your customs can never be lost.',
+    'Opponents who have the app now control their own skins. You can no longer roll or change theirs (the dice is disabled), and random skins only apply to opponents without the app.',
+  ]},
   { v:'0.1.67', t:'Lobby sync + baked skins + Result Check', items:[
     'Skin sync now works in hosted lobby matches, not just ranked — your opponent finally sees your skins in a lobby.',
     'Baked-in custom skins now show and sync (they were being reverted to stock under sync before).',
@@ -2074,6 +2193,7 @@ function renderLibrary(){
     grid.appendChild(el);
   });
   renderLoadouts();
+  renderSkinSafe();                                    // custom-skin safety panel reflects detected bakes
 }
 function getLoadouts(){ try{ return JSON.parse(localStorage.getItem('suite_loadouts')||'[]'); }catch(e){ return []; } }
 function setLoadouts(l){ try{ localStorage.setItem('suite_loadouts', JSON.stringify(l)); }catch(e){} }
@@ -2830,6 +2950,8 @@ $('#libSearch').oninput=renderLibrary;
 $$('.applybar .radio').forEach(r=>r.onclick=()=>{ $$('.applybar .radio').forEach(x=>x.classList.remove('on')); r.classList.add('on'); libApplyMode=r.dataset.m; });
 $('#btnLibApply').onclick=async()=>{ await writeAll(); if(syncOn) publishMine(); toast(libApplyMode==='live'?'Applied — live (auto-paints on launch / in match)':'Bake pipeline lands in the next build — using Live for now'); };
 $('#btnLibRevert').onclick=()=>$('#btnReset').click();
+$('#btnBackupSkins').onclick=async(e)=>{ const b=e.currentTarget, o=b.textContent; b.textContent='Backing up…'; b.disabled=true; try{ await backupSkins(false); }finally{ b.textContent=o; b.disabled=false; } renderSkinSafe(); };
+$('#btnRevertStock').onclick=()=>revertToStock();
 $('#btnManageLo').onclick=()=>toast('loadout manager — coming soon');
 $('#btnImportPack').onclick=()=>toast('skin-pack import — coming soon');
 // native Studio wiring
