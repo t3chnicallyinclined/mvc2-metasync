@@ -62,21 +62,23 @@ Base stored at `game_state+0x1b0` AND flat globals `DAT_142edf560`(=exe+0x2edf56
 The leaderboard's win/loss has been wrong repeatedly; two DISTINCT bugs, one fixed, one still leaking:
 - **Bug A (FIXED 0.1.35): health >stride.** `OFF_HEALTH 0xb44 > STRIDE 0x738` read the next slot → every win logged
   as a loss, uniformly. Fixed to `+0x40c`.
-- **Bug B (STILL LIVE as of 0.1.59): one-stride parity flip.** The reader's `anchor_array`/`find_array` can lock
-  onto a rollback SAVESTATE COPY shifted by exactly one stride (0x738), which swaps EVEN↔ODD ⇒ P1↔P2 ⇒ inverts
-  the winner. Caught 2026-08-15: player "Ducvader" (P1, lpn=0) won ~8 games per their OWN tapes but every one was
-  reported as a loss on 0.1.59. The **tape frames are correct** (KO+lpn re-derivation gives the right winner);
-  only the LIVE report inverts ⇒ the winner-determination is reading a shifted copy, not the tape's alignment.
-- **The durable fix:** determine side/winner from the **pointer-follow** array (`*(exe+0xac6ef0) + 0x3f24`,
-  constants already in `sync.rs`) which lands in the ONE live match block (not a ghost copy) → stride-correct
-  alignment → EVEN=P1/ODD=P2 holds. Cross-check with the authoritative in-engine winner signals below.
-- **Authoritative winner signals** (prefer over health-KO+side guessing): `win_result @ block+0x3f24+0x2e5dc+0x3e`
-  (0 = P1/even won, verified once at a real KO) and per-fighter `num_wins` (DC +0x540) — the **in-set win
-  counter** (wins-in-a-row; capped 99). NOTE: the game keeps only this streak counter, **NOT a stored set score**
-  (an earlier "score @ array+0x580" RE lead read 0-0 through game-ends and was WRONG). The "set" (max 10 games) is
-  the app's own construct; per-game winner must be derived at each KO.
-- **Human override (0.1.60):** because no automated signal is fully trustworthy, ship a post-match confirm/contest
-  dialog — the user confirms or corrects W/L (`attested=true`), tape kept as the audit record.
+- **Bug B (FIXED 0.1.60–0.1.62): side-parity inversion at BOTH determination sites.** Caught 2026-08-15 via
+  "Ducvader" (P1, lpn=0) — won ~8 games per their OWN tapes, every one recorded as a loss. ⚠ The initial
+  "one-stride shifted rollback copy" hypothesis was WRONG: on 0.1.59 the reader is pointer-follow only
+  (`*(exe+0xac6ef0)+0x3f24`), shift-immune. Two independent SIDE bugs: **(1) CLIENT** — the live verdict used
+  `effective_side` (= manual_side | local_side); a stale manual toggle or un-debounced lpn latch flipped the
+  whole set. FIX (0.1.62): verdict reads RAW `local_pn` at the KO frame, never the override. **(2) SERVER** —
+  `reconcile.rs::derive_true_winner` had `reporter_is_even = local_pn == 1`, BACKWARDS (truth: lpn 0=P1/even), so
+  it inverted the winner of EVERY tape-uploaded match. FIX (0.1.60): `== 0`. The tell is the producer/consumer
+  contract — the client WRITES lpn with 0=P1 (`sync.rs:2550`), so every consumer must read 0=P1. After both
+  fixes, all 245 tapes were re-derived + the board rebuilt (250 matches, JFRESH 20-0 / Duc 8-1 ✓).
+- **Authoritative winner signals** (the eventual "1–2 pointers" replacement for the health-KO+side machine):
+  `win_result` @ `array+0x2e61a` (0=P1/even won, 1=P2/odd, 0xFF=draw, LATCHED at KO — read but currently only a
+  client FALLBACK) + `localPlayerNum` @ `exe+0xac7230` → `i_won = (win_result == localPlayerNum)`, gated phase≥5.
+  Also `num_wins` (DC +0x540) = in-set win counter (capped 99). NOTE: only that streak exists, **NOT a stored set
+  score** (an earlier "score @ array+0x580" RE lead read 0-0 through game-ends and was WRONG).
+- **Human backstop ("Result Check", planned):** because no automated signal is 100%, a post-match confirm/contest
+  flow lets a user correct W/L (`attested=true`); the tape arbitrates only when two players disagree.
 
 ---
 
