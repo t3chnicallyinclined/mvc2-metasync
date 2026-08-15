@@ -15,10 +15,9 @@ use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 use serde::Serialize;
 use windows::Win32::Foundation::{CloseHandle, HANDLE, FALSE};
-use windows::Win32::System::Threading::{OpenProcess, PROCESS_VM_READ, PROCESS_VM_WRITE, PROCESS_VM_OPERATION, PROCESS_QUERY_INFORMATION};
+use windows::Win32::System::Threading::{OpenProcess, PROCESS_VM_READ, PROCESS_VM_WRITE, PROCESS_VM_OPERATION, PROCESS_QUERY_INFORMATION, PROCESS_TERMINATE, TerminateProcess, GetCurrentProcessId};
 use windows::Win32::System::Memory::{VirtualQueryEx, MEMORY_BASIC_INFORMATION, MEM_COMMIT, PAGE_GUARD, PAGE_NOACCESS, PAGE_READWRITE};
 use windows::Win32::System::Diagnostics::Debug::{ReadProcessMemory, WriteProcessMemory};
-use windows::Win32::UI::Input::XboxController::{XInputGetState, XINPUT_STATE};
 use windows::Win32::System::Diagnostics::ToolHelp::{
     CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W, TH32CS_SNAPPROCESS,
     Module32FirstW, MODULEENTRY32W, TH32CS_SNAPMODULE,
@@ -26,6 +25,67 @@ use windows::Win32::System::Diagnostics::ToolHelp::{
 
 const SKINSYNC: &str = "https://nobd.net/skinsync";
 const STEAMID_HI: u32 = 0x0110_0001; // universe=public, type=individual, instance=desktop
+
+// ══ MvC2 Steam offsets — the ONE table (RPM read-only). The REVERSED Steam-build layout ═══════════════
+// The Steam MvC2 build's runtime struct differs from Demul: 6 fighter slots at STRIDE 0x738, order
+// P1C1,P2C1,P1C2,P2C2,P1C3,P2C3 (even slot = P1, odd = P2 → side is the slot-index parity). Each slot
+// starts with a cluster of ~16 working-buffer pointers; per-fighter fields are relative to that slot start
+// `cl` = base + slot*STRIDE. The array BASE is VOLATILE per match (auto-found by fingerprint / pointer-follow
+// — see find_array / pointer_follow_array). Battle-globals + meter are relative to the array base `ram`;
+// kcode / localPlayerNum / the match-block pointer are relative to the game module (exe) base.
+// ⚠ CONFIRMED-CORRECT — do NOT change: STRIDE 0x738, OFF_HEALTH 0x40c, OFF_REDHP 0x410, OFF_CHARID 0x554,
+//    OFF_COMBO 0x1ca, OFF_INPUT 0x4fc, and the MATCH_PTR/MATCH_ARR pointer chain.
+
+// ── (1) per-fighter slot offsets (relative to cl = base + slot*STRIDE) ──
+const STRIDE: usize = 0x738;          // fighter-slot stride; even slot = P1, odd = P2
+const OFF_COLOR:  usize = 0x6;        // palette/button-colour index
+const OFF_DATPAL: usize = 0x4c;       // → this fighter's 16-colour ARGB4444 palette pointer (working-buffer range)
+const OFF_COMBO:  usize = 0x1ca;      // combo this fighter is DEALING (confirmed correct)
+const OFF_HITSTUN: usize = 0x1d1;     // hitstun flag (u8): 0xFF = in hitstun/real hit, 0 = neutral-or-blocking.
+                                      // ⚠ WAS 0x909 (= 0x1d1 + STRIDE) → read the NEXT slot's flag (same >stride
+                                      // bug class as the old health 0xb44→0x40c). Fixed 2026-08-15 (RE-confirmed).
+const OFF_HEALTH: usize = 0x40c;      // health (u32, full=144). ⚠ WAS 0xb44 (> stride → read the NEXT slot's health
+                                      // = every win logged as a loss); 0x40c is the same-struct field. Confirmed
+                                      // live: re-scoring a full set gives 6W-1L vs the user's ground-truth 8-2.
+const OFF_REDHP:  usize = 0x410;      // recoverable (red) health (u16) = health+4. ⚠ WAS 0xb48 (old >stride bug).
+const OFF_ASSIST: usize = 0x4e9;      // assist type: alpha=0 beta=1 gamma=2 (confirmed live 2026-08-11; DC +0x4C9 does NOT map)
+const OFF_INPUT:  usize = 0x4fc;      // per-fighter input register (CPS2-decoded pad state for that side)
+const OFF_CHARID: usize = 0x554;      // CPS2 unit id (char_id)
+const OFF_POS_X:  usize = 0x61c;      // fighter world X (f32)
+const OFF_POS_Y:  usize = 0x620;      // fighter world Y (f32)
+const OFF_XVEL:   usize = 0x644;      // x velocity (f32)
+const OFF_YVEL:   usize = 0x648;      // y velocity (f32)
+const OFF_FACING: usize = 0x720;      // facing (u8) 0/1
+const OFF_ACTION: usize = 0x76c;      // action/move-phase state (u8). TODO: likely next-slot (RE 2026-08-15), verify before fix
+const OFF_COMBO_RECV: usize = 0x902;  // combo this fighter is RECEIVING. TODO: likely next-slot (RE 2026-08-15) —
+                                      //   true combo (dealt) = OFF_COMBO 0x1ca is already correct; verify before fix
+
+// ── (2) battle-globals + meter (relative to the array base `ram`) ──
+// The DC BattleState struct transfers BYTE-FAITHFUL to array+0x2e5dc (MET_BARS/FILL are that base +0x5a/+0x7c;
+// Ghidra-confirmed) → GROUND-TRUTH win/round state, no health inference.
+const MET_BARS:       usize = 0x2e636;  // P1 meter bars 0-5; P2 = +1 (adjacent, per DC layout)
+const MET_FILL:       usize = 0x2e658;  // P1 meter fine fill (u16) — confirmed +1 per Magneto LP
+const OFF_PHASE:      usize = 0x2e5dc;  // u8: <5 = active fight, 5 = KO, 6 = win-pose, 9 = results
+const OFF_BG_INMATCH: usize = 0x2e610;  // u8: 1 while a real match runs (the game's own gate)
+const OFF_ROUND:      usize = 0x2e617;  // u8: game index within the set
+const OFF_WINRESULT:  usize = 0x2e61a;  // u8: 0x00 = P1(even) won, 0x01 = P2(odd) won, 0xFF = draw. LATCHED at KO.
+const OFF_BG_TIMER:   usize = 0x2e61c;  // u8: 99->0 round timer
+
+// ── (3) exe-relative globals (relative to the game module base; default 0x140000000) + the anchor ──
+const MATCH_PTR_OFF:   usize = 0xac6ef0;    // exe global → pointer to the CURRENT match block. ⚠ do NOT change
+const MATCH_ARR_ADD:   usize = 0x3f24;      // fighter_array = *(exe+MATCH_PTR_OFF) + this. ⚠ pointer chain — do NOT change
+const KCODE_OFF:       usize = 0xac6f58;    // flycast kcode[0] (the LOCAL pad) offset from the exe base
+const LOCALPLAYER_OFF: usize = 0xac7230;    // localPlayerNum: 0 = P1, 1 = P2 (flycast's own side global, next to kcode;
+                                            //   differential-capture confirmed: 0 in a live P1 match, 1 across 3 P2 matches)
+const GSTATE_PTR_OFF:  usize = 0xacd3a0;    // exe global → pointer to game_state (scene id @ +0x8, locked picks @ +PICKS_OFF)
+const PICKS_OFF:       usize = 0x758;       // char-select LOCKED picks (stride-4 char_ids) at game_state+this
+const ARRAY_OFF:       usize = 0x10b3_3fc8; // anchor: fighter array = flycast_reservation_base + this (gs-70)
+
+// ── (4) limits / ranges ──
+const WB_LO: u32 = 0x1000_0000;       // working-buffer pointer range LO (each fighter's own DAT region)
+const WB_HI: u32 = 0x1420_0000;       // working-buffer pointer range HI
+const HP_FULL: u16 = 144;             // full health
+const MAX_CID: u8 = 0x3A;             // Servbot = highest CPS2 unit id (58)
 
 // ── client registration (B): a per-install token the server mints, bound to the local SteamID. Stored in
 //    %LOCALAPPDATA%\MetaSync\auth.json and attached (Bearer) to every write request. The SteamID is read
@@ -52,7 +112,9 @@ fn auth_steamid_stored() -> Option<String> { AUTH.lock().unwrap().as_ref().map(|
 
 /// A ureq POST carrying the Bearer token when we have one (write routes require it server-side).
 fn auth_post(url: &str) -> ureq::Request {
-    let r = ureq::post(url);
+    // H1: default timeout on every authed POST so a hung/slow server can never park a Tauri worker thread
+    // indefinitely (which would eventually starve detect_state and freeze the UI). Callers may override.
+    let r = ureq::post(url).timeout(std::time::Duration::from_secs(8));
     match auth_token() { Some(t) => r.set("Authorization", &format!("Bearer {}", t)), None => r }
 }
 
@@ -83,8 +145,6 @@ pub fn ensure_registered(steamid: String) -> Result<(), String> {
 // P1 (first 3 by address) / P2 (last 3). Roster + side are correct; within-side point/assist
 // order comes from the live palette, not load order.
 const CHAR_SIGS: &str = include_str!("../char_sigs.json");
-const WIN_LO: usize = 0x1000_0000; // working-buffer window low
-const WIN_HI: usize = 0x1400_0000; // working-buffer window high
 
 #[derive(Serialize, Clone)]
 pub struct Candidate { pub steamid: String, pub name: String }
@@ -173,41 +233,48 @@ fn find_game_pid() -> Option<u32> {
     }
 }
 
-// nearest printable ASCII run (3..=24 chars) to `center` in `win` that looks like a Fighter ID.
-// Returns (name, distance-in-bytes-from-center) so the caller can prefer tight co-location.
-fn extract_name(win: &[u8], center: usize) -> Option<(String, usize)> {
-    let mut best: Option<(usize, String)> = None;
-    let mut i = 0;
-    while i < win.len() {
-        if (0x20..=0x7e).contains(&win[i]) {
-            let start = i;
-            while i < win.len() && (0x20..=0x7e).contains(&win[i]) { i += 1; }
-            let run = &win[start..i];
-            if run.len() >= 3 && run.len() <= 24 {
-                let s = String::from_utf8_lossy(run).to_string();
-                let alnum = s.chars().filter(|c| c.is_alphanumeric()).count();
-                let junk = s.contains('\\') || s.contains('/') || s.contains(".dll")
-                    || s.contains(".txt") || s.contains(".dat") || s.contains(".exe");
-                if alnum >= 3 && !junk && !s.chars().all(|c| c.is_ascii_digit()) {
-                    let mid = start + run.len() / 2;
-                    let dist = if mid > center { mid - center } else { center - mid };
-                    if best.as_ref().map_or(true, |(d, _)| dist < *d) { best = Some((dist, s)); }
+/// Kill any OTHER running instance of this app on startup. An in-place update relaunches the app before the
+/// old process fully exits, leaving two instances that BOTH read game memory and record — the flip-flopping
+/// score / conflicting records we observed. The freshly-launched (updated) instance wins; the stale one dies.
+pub fn kill_other_instances() {
+    unsafe {
+        let me = GetCurrentProcessId();
+        let snap = match CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) { Ok(s) => s, Err(_) => return };
+        let mut pe = PROCESSENTRY32W { dwSize: std::mem::size_of::<PROCESSENTRY32W>() as u32, ..Default::default() };
+        let mut procs: Vec<(u32, String)> = Vec::new();   // (pid, exe name)
+        let mut my_name = String::new();
+        if Process32FirstW(snap, &mut pe).is_ok() {
+            loop {
+                let end = pe.szExeFile.iter().position(|&c| c == 0).unwrap_or(pe.szExeFile.len());
+                let name = String::from_utf16_lossy(&pe.szExeFile[..end]);
+                if pe.th32ProcessID == me { my_name = name.clone(); }
+                procs.push((pe.th32ProcessID, name));
+                if Process32NextW(snap, &mut pe).is_err() { break; }
+            }
+        }
+        let _ = CloseHandle(snap);
+        if my_name.is_empty() { return; }   // couldn't resolve our own name → don't risk killing anything
+        for (pid, name) in procs {
+            if pid != me && name.eq_ignore_ascii_case(&my_name) {
+                if let Ok(h) = OpenProcess(PROCESS_TERMINATE, FALSE, pid) {
+                    let _ = TerminateProcess(h, 0);
+                    let _ = CloseHandle(h);
+                    trace(&format!("[startup] terminated stale instance pid={} ({})", pid, my_name));
                 }
             }
-        } else {
-            i += 1;
         }
     }
-    best.map(|(d, s)| (s, d))
 }
 
 // How persona-like a Fighter-ID string is. Real handles ("NaCherO", "Satsui No Tanden") score high;
 // random bytes read as ASCII ("db!Q", "%3#R2D") score low. This + tight co-location is what isolates
 // the actual opponent from the ~59 SteamID-shaped values a broad scan turns up (mostly friends cache).
 fn name_quality(s: &str) -> i32 {
-    let letters = s.chars().filter(|c| c.is_ascii_alphabetic()).count() as i32;
+    // Unicode-aware: CJK/accented/cyrillic letters count as letters (not junk), so a non-ASCII handle isn't
+    // out-ranked by ASCII memory-garbage. Only true symbols/emoji/control punctuation count against it.
+    let letters = s.chars().filter(|c| c.is_alphabetic()).count() as i32;
     let spaces = s.chars().filter(|c| *c == ' ').count() as i32;
-    let junk = s.chars().filter(|c| !c.is_ascii_alphanumeric() && *c != ' ' && *c != '_' && *c != '-' && *c != '.').count() as i32;
+    let junk = s.chars().filter(|c| !c.is_alphanumeric() && *c != ' ' && *c != '_' && *c != '-' && *c != '.').count() as i32;
     letters * 2 + spaces.min(3) - junk * 3
 }
 
@@ -217,100 +284,21 @@ unsafe fn read_window(h: HANDLE, addr: usize, len: usize) -> Option<Vec<u8>> {
     if ReadProcessMemory(h, addr as *const c_void, buf.as_mut_ptr() as *mut c_void, len, Some(&mut got)).is_ok() && got == len { Some(buf) } else { None }
 }
 
-fn scan(pid: u32, my_id: u64) -> Vec<Candidate> {
-    // id -> (best co-located persona name, its score, up to a few ADDRESSES where this id occurs)
-    let mut found: HashMap<u64, (String, i32, Vec<usize>)> = HashMap::new();
-    unsafe {
-        let h: HANDLE = match OpenProcess(PROCESS_VM_READ | PROCESS_QUERY_INFORMATION, FALSE, pid) {
-            Ok(h) => h,
-            Err(_) => return vec![],
-        };
-        let mut my_addrs: Vec<usize> = Vec::new();  // sites of OUR id — the opponent is the id PAIRED near these (live netplay session)
-        let mut addr: usize = 0;
-        loop {
-            let mut mbi = MEMORY_BASIC_INFORMATION::default();
-            let got = VirtualQueryEx(h, Some(addr as *const c_void), &mut mbi, std::mem::size_of::<MEMORY_BASIC_INFORMATION>());
-            if got == 0 { break; }
-            let base = mbi.BaseAddress as usize;
-            let size = mbi.RegionSize;
-            if size == 0 { break; }
-            let prot = mbi.Protect.0;
-            let readable = mbi.State == MEM_COMMIT
-                && (prot & PAGE_GUARD.0) == 0
-                && (prot & PAGE_NOACCESS.0) == 0
-                && (prot & 0xEE) != 0; // RO/RW/WC/ER/ERW/ERWC
-            if readable {
-                let mut buf = vec![0u8; size];
-                let mut read: usize = 0;
-                let ok = ReadProcessMemory(h, base as *const c_void, buf.as_mut_ptr() as *mut c_void, size, Some(&mut read)).is_ok();
-                if ok && read >= 16 {
-                    let b = &buf[..read];
-                    let mut i = 0usize; // 8-aligned value positions (base is page-aligned)
-                    while i + 8 <= b.len() {
-                        let hi = u32::from_le_bytes([b[i + 4], b[i + 5], b[i + 6], b[i + 7]]);
-                        if hi == STEAMID_HI {
-                            let v = u64::from_le_bytes([b[i], b[i + 1], b[i + 2], b[i + 3], b[i + 4], b[i + 5], b[i + 6], b[i + 7]]);
-                            if v != my_id {
-                                // Co-located Fighter-ID string near the SteamID (match struct holds them ~128B
-                                // apart) → display name + a first-pass score; the address list feeds the
-                                // freshness gate below.
-                                let lo = i.saturating_sub(192);
-                                let hie = (i + 192).min(b.len());
-                                let e = found.entry(v).or_insert_with(|| (String::new(), i32::MIN, Vec::new()));
-                                if let Some((nm, dist)) = extract_name(&b[lo..hie], i - lo) {
-                                    let q = name_quality(&nm) - (dist as i32) / 24; // persona-like AND close
-                                    if q > e.1 { e.0 = nm; e.1 = q; }
-                                }
-                                if e.2.len() < 12 { e.2.push(base + i); }
-                            } else if my_addrs.len() < 128 { my_addrs.push(base + i); }   // our own id site
-                        }
-                        i += 8;
-                    }
-                }
-            }
-            addr = base + size;
-            if addr == 0 { break; }
-        }
-
-        // FRESHNESS GATE. Rank by name first + keep the strongest few, then PREFER whichever candidate is
-        // LIVE: the real opponent's SteamID sits in the active netplay session, whose surrounding bytes change
-        // every frame; a friends/persona-cache entry is static. Re-read a small window around each occurrence
-        // twice ~180ms apart — any change means live. Additive: if nothing looks live we fall back to best
-        // name, so this never does worse than before, it only rejects stale-cache winners.
-        // opponent = SteamID PAIRED with ours in the netplay session (within 0x400 of one of our id's sites).
-        let paired = |addrs: &Vec<usize>| addrs.iter().filter(|&&a| my_addrs.iter().any(|&m| (a as isize - m as isize).abs() < 0x400)).count();
-        let mut scored: Vec<(u64, String, i32, Vec<usize>)> = found.into_iter()
-            .filter(|(_, (nm, _, a))| !nm.is_empty() || paired(a) > 0)   // keep named OR netplay-paired
-            .map(|(id, (nm, q, a))| (id, nm, q, a)).collect();
-        scored.sort_by(|a, b| b.2.cmp(&a.2));
-        scored.truncate(32);
-        let win = 0x100usize;
-        let probes: Vec<(usize, usize)> = scored.iter().enumerate()
-            .flat_map(|(ci, (_, _, _, addrs))| addrs.iter().map(move |&a| (ci, a.saturating_sub(0x40)))).collect();
-        let before: Vec<Option<Vec<u8>>> = probes.iter().map(|&(_, a)| read_window(h, a, win)).collect();
-        std::thread::sleep(std::time::Duration::from_millis(180));
-        let mut live = vec![false; scored.len()];
-        for (k, &(ci, a)) in probes.iter().enumerate() {
-            if let (Some(x), Some(y)) = (&before[k], read_window(h, a, win)) { if x != &y { live[ci] = true; } }
-        }
-        let _ = CloseHandle(h);
-        // live candidates first, then by name score. Frontend takes [0].
-        // netplay pairing is DECISIVE (DDH_BD paired x11 vs 300+ scattered copies paired x0), then liveness, then name.
-        let pair: Vec<usize> = scored.iter().map(|(_, _, _, a)| paired(a)).collect();
-        let mut order: Vec<usize> = (0..scored.len()).collect();
-        order.sort_by(|&i, &j| pair[j].cmp(&pair[i]).then(live[j].cmp(&live[i])).then(scored[j].2.cmp(&scored[i].2)));
-        order.into_iter().take(16).map(|i| Candidate { steamid: scored[i].0.to_string(), name: scored[i].1.clone() }).collect()
-    }
-}
-
-// Printable-ASCII run near an address — the opponent's persona sits right beside its SteamID in the session.
+// Persona run near an address — the opponent's name sits right beside its SteamID in the session.
+// Steam stores personas as UTF-8, so a name byte is printable ASCII OR any UTF-8 multibyte byte (>=0x80).
+// The old ASCII-only scan cut the name at the first non-ASCII byte (★/emoji/accents/CJK) — or, when the ASCII
+// remainder was too short, grabbed a different nearby ASCII string entirely → the wrong opponent name.
 fn name_near_rpm(h: HANDLE, addr: usize) -> String {
     let buf = match unsafe { read_window(h, addr.saturating_sub(0x40), 0xC0) } { Some(b) => b, None => return String::new() };
-    let (mut best, mut cur) = (String::new(), String::new());
-    for &c in &buf { if (0x20..0x7f).contains(&c) { cur.push(c as char); } else { if cur.len() > best.len() { best = cur.clone(); } cur.clear(); } }
+    let (mut best, mut cur): (Vec<u8>, Vec<u8>) = (Vec::new(), Vec::new());
+    for &c in &buf {
+        if (0x20..0x7f).contains(&c) || c >= 0x80 { cur.push(c); }
+        else { if cur.len() > best.len() { best = cur.clone(); } cur.clear(); }
+    }
     if cur.len() > best.len() { best = cur; }
-    let t = best.trim().to_string();
-    if t.len() >= 3 && plausible_opponent_name(&t) { t } else { String::new() }
+    // Lossy-decode (a window edge can bisect a multibyte sequence) and strip any replacement chars the cut left.
+    let t = String::from_utf8_lossy(&best).trim().trim_matches('\u{FFFD}').trim().to_string();
+    if t.chars().count() >= 3 && plausible_opponent_name(&t) { t } else { String::new() }
 }
 
 // Scan ONE committed region for SteamID64s → collect our-id addresses + candidate-id addresses.
@@ -369,12 +357,12 @@ unsafe fn name_of_opp(h: HANDLE, opp_addrs: &[usize]) -> String {
 }
 // Turn a completed scan (my id addresses + candidate opp ids) into (opp_id, name, side) + refresh the caches.
 unsafe fn finish_opp(h: HANDLE, my_addrs: &[usize], cand: &HashMap<u64, Vec<usize>>,
-                     region: &mut Option<(usize, usize)>, cache: &mut Option<(usize, u8, String)>) -> Option<(u64, String, u8)> {
+                     region: &mut Option<(usize, usize)>, cache: &mut Option<(usize, u8, String, u64)>) -> Option<(u64, String, u8)> {
     best_pair(my_addrs, cand).map(|(sid, na)| {
         let opp_addrs = cand.get(&sid).cloned().unwrap_or_default();
         let side = detect_side(my_addrs, &opp_addrs);
         let name = name_of_opp(h, &opp_addrs);   // resolved once from the most-common copy; cached below
-        *cache = Some((na, side, name.clone()));
+        *cache = Some((na, side, name.clone(), sid));   // store the id too → fast-path can detect a CHANGED opponent
         let mut mbi = MEMORY_BASIC_INFORMATION::default();
         if VirtualQueryEx(h, Some(na as *const c_void), &mut mbi, std::mem::size_of::<MEMORY_BASIC_INFORMATION>()) != 0 && mbi.RegionSize != 0 {
             *region = Some((mbi.BaseAddress as usize, mbi.RegionSize));
@@ -385,7 +373,7 @@ unsafe fn finish_opp(h: HANDLE, my_addrs: &[usize], cand: &HashMap<u64, Vec<usiz
 
 // DETERMINISTIC opponent + side. Three tiers, fastest first: FAST (cached slot, re-validated) → WARM (cached
 // region scan) → COLD (full sweep, first lock of a launch). Returns (opp_id, name, local_side 1/2/0).
-fn find_opponent_netplay(pid: u32, my_id: u64, cache: &mut Option<(usize, u8, String)>, region: &mut Option<(usize, usize)>) -> Option<(u64, String, u8)> {
+fn find_opponent_netplay(pid: u32, my_id: u64, cache: &mut Option<(usize, u8, String, u64)>, region: &mut Option<(usize, usize)>) -> Option<(u64, String, u8)> {
     if pid == 0 || my_id == 0 { return None; }
     unsafe {
         let h = OpenProcess(PROCESS_VM_READ | PROCESS_QUERY_INFORMATION, FALSE, pid).ok()?;
@@ -393,9 +381,13 @@ fn find_opponent_netplay(pid: u32, my_id: u64, cache: &mut Option<(usize, u8, St
         //    co-located within 0x400 (a freed-but-not-zeroed slot lingers → returned the GHOST opponent forever).
         //    Returns the CACHED name (resolved once from the best copy) — don't re-scrape a single slot each cycle
         //    (that clobbered the good name with whatever junk sat next to this particular copy).
-        if let Some((a, side, cached_name)) = cache.clone() {
+        if let Some((a, side, cached_name, cached_id)) = cache.clone() {
             let v = read_window(h, a, 8).map(|b| u64::from_le_bytes([b[0],b[1],b[2],b[3],b[4],b[5],b[6],b[7]])).unwrap_or(0);
-            if (v >> 32) as u32 == STEAMID_HI && v != my_id {
+            // Trust the cache ONLY if the SAME opponent id is still at the slot. If the value changed to a
+            // DIFFERENT valid SteamID (the game reused this session slot for a NEW opponent), the cached NAME is
+            // stale → invalidate + re-hunt so the new opponent AND name resolve fresh. This fixes "stuck on the
+            // old opponent after they left mid-session and I went on to the next one."
+            if v == cached_id && (v >> 32) as u32 == STEAMID_HI && v != my_id {
                 let lo = a.saturating_sub(0x400);
                 let paired = read_window(h, lo, 0x808).map_or(false, |w| {
                     let mut i = 0usize;
@@ -407,7 +399,7 @@ fn find_opponent_netplay(pid: u32, my_id: u64, cache: &mut Option<(usize, u8, St
                 });
                 if paired { let _ = CloseHandle(h); return Some((v, cached_name, side)); }
             }
-            *cache = None;   // pairing gone (set over / new session) → fall through to WARM / COLD
+            *cache = None;   // pairing gone / opponent CHANGED → fall through to WARM / COLD (re-resolves id + name)
         }
         // 2. WARM PATH — remembered region only.
         if let Some((rb, rs)) = *region {
@@ -477,9 +469,30 @@ pub fn sync_publish(steamid: String, name: String, skins: serde_json::Value, eff
         .into_json::<serde_json::Value>().map_err(|e| e.to_string())
 }
 
+// self-declared "represent" location (country/region/city). Token-authed; the server binds it to our SteamID.
+#[tauri::command]
+pub fn set_location(steamid: String, cc: String, country: String, region: String, city: String) -> Result<serde_json::Value, String> {
+    let body = serde_json::json!({ "steamid": steamid, "cc": cc, "country": country, "region": region, "city": city });
+    auth_post(&format!("{}/location", SKINSYNC)).send_json(body)
+        .map_err(|e| e.to_string())?
+        .into_json::<serde_json::Value>().map_err(|e| e.to_string())
+}
+
+// real-cities typeahead for the location picker — proxies the server's cities lookup (validated real cities).
+#[tauri::command]
+pub fn search_cities(country: String, q: String) -> Result<serde_json::Value, String> {
+    ureq::get(&format!("{}/cities", SKINSYNC))
+        .query("country", &country)
+        .query("q", &q)
+        .query("limit", "10")
+        .timeout(std::time::Duration::from_secs(8))
+        .call().map_err(|e| e.to_string())?
+        .into_json::<serde_json::Value>().map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 pub fn sync_unpublish(steamid: String) -> Result<(), String> {
-    let mut r = ureq::delete(&format!("{}/publish?id={}", SKINSYNC, steamid));
+    let mut r = ureq::delete(&format!("{}/publish?id={}", SKINSYNC, steamid)).timeout(std::time::Duration::from_secs(8));
     if let Some(t) = auth_token() { r = r.set("Authorization", &format!("Bearer {}", t)); }
     r.call().map_err(|e| e.to_string())?;
     Ok(())
@@ -487,7 +500,7 @@ pub fn sync_unpublish(steamid: String) -> Result<(), String> {
 
 #[tauri::command]
 pub fn sync_fetch_peers(ids: Vec<String>) -> Result<serde_json::Value, String> {
-    ureq::post(&format!("{}/peers", SKINSYNC)).send_json(serde_json::json!({ "ids": ids }))
+    ureq::post(&format!("{}/peers", SKINSYNC)).timeout(std::time::Duration::from_secs(8)).send_json(serde_json::json!({ "ids": ids }))
         .map_err(|e| e.to_string())?
         .into_json::<serde_json::Value>().map_err(|e| e.to_string())
 }
@@ -503,7 +516,7 @@ pub fn sync_heartbeat(id: String, name: String) -> Result<serde_json::Value, Str
 // presence: live list of connected clients ({ online, players[] })
 #[tauri::command]
 pub fn sync_presence() -> Result<serde_json::Value, String> {
-    ureq::get(&format!("{}/presence", SKINSYNC)).call()
+    ureq::get(&format!("{}/presence", SKINSYNC)).timeout(std::time::Duration::from_secs(8)).call()
         .map_err(|e| e.to_string())?
         .into_json::<serde_json::Value>().map_err(|e| e.to_string())
 }
@@ -561,12 +574,18 @@ struct Snapshot {
     ram_base: usize,                     // ★ the reader's CURRENTLY-LOCATED fighter array (anchor OR find_array). The
                                          //   array is NOT always at the anchor — it relocates per match — so paint_live
                                          //   uses THIS (the real located base) to resolve live DatPals, not just the anchor.
+    session_id: String,                  // current ranked set's id ("" = none) — surfaced to the UI for the session chip
+    match_index: u32,                    // games committed this set (0..SESSION_CAP)
+    picks: Vec<u8>,                      // ★ char-select LOCKED picks (char_ids) read live from game_state+0x758 —
+                                         //   populated DURING selection (before the fighter array), for instant skin preload
+    scene: i32,                          // ★ game_state+0x8 screen-state id (5=match/fighting, else menu/select/results);
+                                         //   the game's own screen controller — FPS-guards heavy scans + drives screen UI
 }
 // The side used for team-labeling + stats: the manual override wins; else the auto-detector.
 fn effective_side(s: &Snapshot) -> u8 { if s.manual_side != 0 { s.manual_side } else { s.local_side } }
 fn snapshot() -> &'static Mutex<Snapshot> {
     static S: OnceLock<Mutex<Snapshot>> = OnceLock::new();
-    S.get_or_init(|| Mutex::new(Snapshot { state: "game_off".into(), roster: Vec::new(), opponent: None, game: None, score: (0, 0), local_side: 0, manual_side: 0, side_confirmed: false, in_session: false, paint_slots: Vec::new(), ram_base: 0 }))
+    S.get_or_init(|| Mutex::new(Snapshot { state: "game_off".into(), roster: Vec::new(), opponent: None, game: None, score: (0, 0), local_side: 0, manual_side: 0, side_confirmed: false, in_session: false, paint_slots: Vec::new(), ram_base: 0, session_id: String::new(), match_index: 0, picks: Vec::new(), scene: -1 }))
 }
 
 // Per-fighter live state (the 6 fighter slots: char_id, palette colour index, health, DatPal, and the live
@@ -592,44 +611,16 @@ fn pal_sig(pal: &[u8; 32]) -> String {
     s
 }
 #[derive(Clone)]
-struct GameSt { in_match: u8, match_state: u8, stage: u8, timer: u32, frame: u32, ram: usize, slots: Vec<GSlot>, meter1: u8, meter2: u8 }
+struct GameSt { in_match: u8, match_state: u8, stage: u8, timer: u32, frame: u32, ram: usize, slots: Vec<GSlot>, meter1: u8, meter2: u8,
+                // ── battle-globals (gs-99): the game's own ground-truth match/round state ──
+                phase: u8, win_result: u8, round_no: u8, bg_in_match: u8 }
 
 
 // ── App-side player-array reader (RPM, READ-ONLY) — the REVERSED Steam-build layout ──
-// The Steam MvC2 build's runtime struct differs from Demul: 6 fighter slots at STRIDE 0x738, order
-// P1C1,P2C1,P1C2,P2C2,P1C3,P2C3 (even slot = P1, odd = P2 → side is the slot-index parity). Each slot
-// starts with a cluster of ~16 working-buffer pointers; per-fighter fields (relative to that start `cl`):
-// DatPal @ cl+0x4c (→16-colour ARGB4444 palette), char_id @ cl+0x554 (CPS2 unit id), color @ cl+0x6,
-// health (u32, full=144) @ cl+0xb44. The array BASE is VOLATILE per match, so we auto-find it by
-// fingerprint (no hardcoded base, no Cheat Engine): a cluster = a 40-word window holding >=14
-// working-buffer pointers; the real array = the unique run of 6 such clusters at exactly 0x738 stride
-// whose DatPal pointers all land in the working-buffer range. Validated live end-to-end.
-const STRIDE: usize = 0x738;
-const WB_LO: u32 = 0x1000_0000;   // working-buffer pointer range (each fighter's own DAT region)
-const WB_HI: u32 = 0x1420_0000;
-const OFF_DATPAL: usize = 0x4c;
-const OFF_COLOR:  usize = 0x6;
-const OFF_CHARID: usize = 0x554;
-const OFF_HEALTH: usize = 0xb44;
-const OFF_COMBO:  usize = 0x1ca;    // combo this fighter is dealing; +0x902 = received
-const OFF_COMBO_RECV: usize = 0x902; // combo this fighter is RECEIVING (the +0x902 pair to OFF_COMBO)
-const OFF_POS_X:  usize = 0x61c;    // fighter world X (f32) — per ranked_capture schema
-const OFF_POS_Y:  usize = 0x620;    // fighter world Y (f32)
-const OFF_ASSIST: usize = 0x4e9;    // assist type per fighter: alpha=0 beta=1 gamma=2 (confirmed live 2026-08-11 vs ground truth on 2 array bases; DC +0x4C9 does NOT map)
-// ── additional per-fighter match-state fields ──
-const OFF_XVEL:   usize = 0x644;    // x velocity (f32)
-const OFF_YVEL:   usize = 0x648;    // y velocity (f32)
-const OFF_REDHP:  usize = 0xb48;    // recoverable health (u16) = health+4
-const OFF_FACING: usize = 0x720;    // facing (u8) 0/1
-const OFF_HITSTUN:usize = 0x909;    // hitstun flag (u8) 0xFF while in hitstun, 0 otherwise
-const OFF_ACTION: usize = 0x76c;    // action/move-phase state (u8)
-const MET_BARS:   usize = 0x2e636;  // P1 meter bars 0-5 (relative to the array base `ram`); P2 = +1 (adjacent, per DC layout)
-const MET_FILL:   usize = 0x2e658;  // P1 meter fine fill (u16) — confirmed +1 per Magneto LP
-const HP_FULL: u16 = 144;
-const MAX_CID: u8 = 0x3A;          // Servbot = highest CPS2 unit id (58)
+// (All MvC2 memory offsets — STRIDE / OFF_* / MET_* / exe globals / the anchor — live in the ONE table
+//  near the top of this file. The array BASE is VOLATILE per match; see find_array / pointer_follow_array.)
 
 unsafe fn rpm_u8(h: HANDLE, a: usize) -> Option<u8> { read_at(h, a, 1).filter(|b| b.len() >= 1).map(|b| b[0]) }
-#[allow(dead_code)] // red-health (health+4) reader — kept for future use
 unsafe fn rpm_u16(h: HANDLE, a: usize) -> Option<u16> { read_at(h, a, 2).filter(|b| b.len() >= 2).map(|b| b[0] as u16 | ((b[1] as u16) << 8)) }
 unsafe fn rpm_u32(h: HANDLE, a: usize) -> Option<u32> { read_at(h, a, 4).filter(|b| b.len() >= 4).map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]])) }
 
@@ -638,7 +629,6 @@ unsafe fn rpm_u32(h: HANDLE, a: usize) -> Option<u32> { read_at(h, a, 4).filter(
 // frame_counter, plus the match context (teams, local side). Reuses the same anchor the reader
 // already uses; strictly read-only. One row per new frame_counter.
 static CAPTURING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-const LOCALPLAYER_HOST_OFF: usize = 0xac7230; // exe+off: 0=P1, 1=P2 (localPlayerNum)
 
 #[derive(Default)]
 struct CapState { frames: Vec<(u32, u16, u16, [u16; 6])>, meta: serde_json::Value, status: String, path: String }
@@ -713,7 +703,7 @@ fn capture_loop() {
     };
     cap_set_status(&format!("array @ 0x{array:x} — locating frame counter"));
     let cid = |i: usize| unsafe { rpm_u8(h, array + i * STRIDE + OFF_CHARID) }.unwrap_or(255);
-    let side = unsafe { rpm_u8(h, exe + LOCALPLAYER_HOST_OFF) }.unwrap_or(255);
+    let side = unsafe { rpm_u8(h, exe + LOCALPLAYER_OFF) }.unwrap_or(255);
     {
         let mut st = cap_state().lock().unwrap();
         st.meta = serde_json::json!({
@@ -729,18 +719,22 @@ fn capture_loop() {
     let mut last = u32::MAX;
     let mut synth = 0u32;
     while CAPTURING.load(SeqCst) {
-        let frame = match fc { Some(a) => unsafe { rpm_u32(h, a) }.unwrap_or(0), None => { synth += 1; synth } };
-        if frame != last {
-            let p1 = unsafe { rpm_u16(h, array + OFF_INPUT) }.unwrap_or(0);
-            let p2 = unsafe { rpm_u16(h, array + STRIDE + OFF_INPUT) }.unwrap_or(0);
-            // health: all 6 fighters (Steam health u32 @+0xb44, low16 = 0..144).
-            let mut hp = [0u16; 6];
-            // clamp to real MvC2 max (144): a never-played (benched) char's slot can read
-            // uninitialized garbage (e.g. 999) — an un-played char is at full health = 144.
-            for i in 0..6 { hp[i] = (unsafe { rpm_u32(h, array + i * STRIDE + OFF_HEALTH) }.unwrap_or(0) as u16).min(144); }
-            cap_state().lock().unwrap().frames.push((frame, p1, p2, hp));
-            last = frame;
-        }
+        // P0.3: guard each capture frame so one panicking read can't kill the whole capture thread.
+        let guard = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let frame = match fc { Some(a) => unsafe { rpm_u32(h, a) }.unwrap_or(0), None => { synth += 1; synth } };
+            if frame != last {
+                let p1 = unsafe { rpm_u16(h, array + OFF_INPUT) }.unwrap_or(0);
+                let p2 = unsafe { rpm_u16(h, array + STRIDE + OFF_INPUT) }.unwrap_or(0);
+                // health: all 6 fighters (Steam health u32 @OFF_HEALTH, low16 = 0..144).
+                let mut hp = [0u16; 6];
+                // clamp to real MvC2 max (144): a never-played (benched) char's slot can read
+                // uninitialized garbage (e.g. 999) — an un-played char is at full health = 144.
+                for i in 0..6 { hp[i] = (unsafe { rpm_u32(h, array + i * STRIDE + OFF_HEALTH) }.unwrap_or(0) as u16).min(144); }
+                cap_state().lock().unwrap().frames.push((frame, p1, p2, hp));
+                last = frame;
+            }
+        }));
+        if guard.is_err() { trace("[capture] frame panicked — recovering, continuing"); }
         std::thread::sleep(std::time::Duration::from_millis(2));   // ~500Hz poll, dedup by frame
     }
     cap_set_status("stopped");
@@ -813,7 +807,7 @@ fn atomic_write(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
     std::fs::write(&tmp, bytes)?;
     std::fs::rename(&tmp, path)
 }
-const GS_SCHEMA: &str = "[frame,p1_in,p2_in,hp[6],px[6],py[6],p1_meter,p2_meter,meter_fill,combo_dealt[6],combo_recv[6],vx[6],vy[6],red_hp[6],facing[6],hitstun[6],action[6]]";
+const GS_SCHEMA: &str = "[frame,p1_in,p2_in,kcode,hp[6],px[6],py[6],p1_meter,p2_meter,meter_fill,combo_dealt[6],combo_recv[6],vx[6],vy[6],red_hp[6],facing[6],hitstun[6],action[6]]";
 
 fn gs_now_ms() -> u64 { std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0) }
 
@@ -865,6 +859,8 @@ pub fn suggest_stat(steamid: String, name: String, text: String) -> Result<(), S
 #[derive(Clone)]
 struct GsRow {
     frame: u32, p1_in: u16, p2_in: u16,
+    kcode: u32,   // ★ the LOCAL pad (flycast kcode[0] @ exe+KCODE_OFF) — correlate vs p1_in/p2_in offline to find
+                  //   which team is the reporter's (mirror-proof, skin-independent) → objective W/L attribution.
     hp: [u16; 6], px: [f32; 6], py: [f32; 6],
     m1: u8, m2: u8, mfill: u16, cd: [u16; 6], cr: [u16; 6],
     // additional per-slot match state
@@ -875,10 +871,13 @@ struct GsCapture {
     frame_addr: usize,                              // located guest frame counter (0 = synthetic index)
     synthetic: bool,                                // true when no counter found → monotonic per-frame index
     assist: [u8; 6],                                // assist type per slot (alpha=0/beta=1/gamma=2) — fixed per match
+    local_pn: u8,                                   // ★ raw localPlayerNum (exe+LOCALPLAYER_OFF) at match start — the
+                                                    //   game's own local netplay index (0/1), UN-overridden by any app
+                                                    //   layer. Candidate side signal; validated offline vs the frame KO.
     last_update: Option<std::time::Instant>,        // for the recency guard in the snapshot
 }
 impl Default for GsCapture {
-    fn default() -> Self { GsCapture { frames: std::collections::BTreeMap::new(), frame_addr: 0, synthetic: false, assist: [0; 6], last_update: None } }
+    fn default() -> Self { GsCapture { frames: std::collections::BTreeMap::new(), frame_addr: 0, synthetic: false, assist: [0; 6], local_pn: 255, last_update: None } }
 }
 fn gs_capture() -> &'static Mutex<GsCapture> {
     static S: OnceLock<Mutex<GsCapture>> = OnceLock::new();
@@ -886,14 +885,14 @@ fn gs_capture() -> &'static Mutex<GsCapture> {
 }
 
 // A snapshot of the current/just-ended game's frames, taken by on_game_win at KO time.
-struct GsSnapshot { frames: Vec<GsRow>, frame_addr: usize, synthetic: bool, assist: [u8; 6] }
+struct GsSnapshot { frames: Vec<GsRow>, frame_addr: usize, synthetic: bool, assist: [u8; 6], local_pn: u8 }
 // Return the buffered game IFF it was actively updating within the last few seconds (i.e. it IS the game
 // that just ended). This guards against attaching a stale/other game's buffer to a late (pending-flush) win.
 fn gamestate_snapshot() -> Option<GsSnapshot> {
     let c = gs_capture().lock().unwrap();
     if c.frames.is_empty() { return None; }
     if c.last_update.map_or(true, |t| t.elapsed().as_secs() > 6) { return None; }
-    Some(GsSnapshot { frames: c.frames.values().cloned().collect(), frame_addr: c.frame_addr, synthetic: c.synthetic, assist: c.assist })
+    Some(GsSnapshot { frames: c.frames.values().cloned().collect(), frame_addr: c.frame_addr, synthetic: c.synthetic, assist: c.assist, local_pn: c.local_pn })
 }
 
 fn le32(b: &[u8], o: usize) -> u32 { u32::from_le_bytes([b[o], b[o + 1], b[o + 2], b[o + 3]]) }
@@ -915,7 +914,7 @@ fn gs_match_load(r: &GsRow) -> bool {
 
 // Read one full per-frame row off the located array. 6 slot reads (0xB48 each, covers every field) + the
 // 3 global-meter reads. Read-only RPM; runs on the dedicated capture thread only.
-unsafe fn read_gs_row(h: HANDLE, base: usize, frame: u32) -> Option<GsRow> {
+unsafe fn read_gs_row(h: HANDLE, base: usize, frame: u32, exe_base: usize) -> Option<GsRow> {
     let mut s: Vec<Vec<u8>> = Vec::with_capacity(6);
     for i in 0..6 {
         let buf = read_at(h, base + i * STRIDE, 0xB50)?;   // 0xB50 (was 0xB48) to include red_health @ +0xb48
@@ -931,6 +930,7 @@ unsafe fn read_gs_row(h: HANDLE, base: usize, frame: u32) -> Option<GsRow> {
     Some(GsRow {
         frame,
         p1_in: u16le(&s[0], OFF_INPUT), p2_in: u16le(&s[1], OFF_INPUT),
+        kcode: if exe_base != 0 { rpm_u32(h, exe_base + KCODE_OFF).unwrap_or(0) } else { 0 },
         hp: hp_arr,
         px: [lef32(&s[0], OFF_POS_X), lef32(&s[1], OFF_POS_X), lef32(&s[2], OFF_POS_X), lef32(&s[3], OFF_POS_X), lef32(&s[4], OFF_POS_X), lef32(&s[5], OFF_POS_X)],
         py: [lef32(&s[0], OFF_POS_Y), lef32(&s[1], OFF_POS_Y), lef32(&s[2], OFF_POS_Y), lef32(&s[3], OFF_POS_Y), lef32(&s[4], OFF_POS_Y), lef32(&s[5], OFF_POS_Y)],
@@ -960,9 +960,20 @@ fn start_gamestate_capture() {
             if !SHARE_GAMEPLAY.load(SeqCst) { std::thread::sleep(std::time::Duration::from_millis(500)); continue; }
             let pid = match find_game_pid() { Some(p) => p, None => { std::thread::sleep(std::time::Duration::from_millis(600)); continue; } };
             let h = match unsafe { OpenProcess(PROCESS_VM_READ | PROCESS_QUERY_INFORMATION, FALSE, pid) } { Ok(h) => h, Err(_) => { std::thread::sleep(std::time::Duration::from_millis(600)); continue; } };
-            // wait for a live match with BOTH teams alive (a fresh game start, not a mid-KO/loading copy)
-            let base = match unsafe { anchor_array(h) } { Some(b) => b, None => { unsafe { let _ = CloseHandle(h); } std::thread::sleep(std::time::Duration::from_millis(300)); continue; } };
-            let start_row = match unsafe { read_gs_row(h, base, 0) } { Some(r) => r, None => { unsafe { let _ = CloseHandle(h); } std::thread::sleep(std::time::Duration::from_millis(200)); continue; } };
+            let exe_base = game_exe_base(pid);   // for the local pad (kcode) recorded per frame → offline side-attribution
+            // wait for a live match with BOTH teams alive (a fresh game start, not a mid-KO/loading copy).
+            // Prefer the base the MAIN reader already located via find_array (struct-layout scan → the LIVE copy,
+            // not a rollback savestate). anchor_array is only a fallback for the brief window before the reader
+            // locks on — using it as the primary source is why the capture recorded ZERO frames (it kept landing
+            // on rejected savestate copies).
+            let base = {
+                let rb = { snapshot().lock().unwrap().ram_base };
+                // rely SOLELY on the main reader's located (most-animating) base — never the fixed anchor, which on
+                // this relocating build points at stale savestate copies (the between-match "random Ryu" source).
+                if rb != 0 && unsafe { array_valid(h, rb) } { rb }
+                else { unsafe { let _ = CloseHandle(h); } std::thread::sleep(std::time::Duration::from_millis(300)); continue; }
+            };
+            let start_row = match unsafe { read_gs_row(h, base, 0, exe_base) } { Some(r) => r, None => { unsafe { let _ = CloseHandle(h); } std::thread::sleep(std::time::Duration::from_millis(200)); continue; } };
             // TRUE match-load gate. Ideal: catch the +-213 spawn during the intro (gs_match_load) so the tape
             // starts at frame 0 of the FIGHT. Fallback: if all real chars have been full for ~1.5s but we never
             // caught the spawn (attached mid-intro), start anyway so a match is never entirely missed. The 50ms
@@ -985,6 +996,7 @@ fn start_gamestate_capture() {
                 c.frame_addr = fc.unwrap_or(0);
                 c.synthetic = fc.is_none();
                 c.assist = assist;
+                c.local_pn = if exe_base != 0 { unsafe { rpm_u32(h, exe_base + LOCALPLAYER_OFF) }.unwrap_or(255) as u8 } else { 255 };
                 c.last_update = None;
             }
             GS_IN_MATCH.store(true, SeqCst);   // pause the uploader for the duration of the fight
@@ -1001,27 +1013,34 @@ fn start_gamestate_capture() {
             loop {
                 if !SHARE_GAMEPLAY.load(SeqCst) { break; }
                 let frame = match fc { Some(a) => unsafe { rpm_u32(h, a) }.unwrap_or(0), None => { synth += 1; synth } };
-                if frame != last {
-                    if let Some(row) = unsafe { read_gs_row(h, base, frame) } {
-                        {
-                            let mut c = gs_capture().lock().unwrap();
-                            // LAST-WRITE-WINS: a rollback re-visits an earlier frame → overwrites it with the
-                            // confirmed state. Cap at GS_CAP unique frames (still allow updates to existing keys).
-                            if c.frames.len() < GS_CAP || c.frames.contains_key(&frame) {
-                                c.frames.insert(frame, row.clone());
-                                c.last_update = Some(std::time::Instant::now());
+                // P0.3: guard the per-frame read+record so one panicking frame can't kill the capture thread.
+                // Returns true when the freeze-guard wants to stop the tape (kept as a signal so the `break`
+                // still fires outside the closure); a panic is logged and treated as "no row this frame".
+                let frozen = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| -> bool {
+                    if frame != last {
+                        if let Some(row) = unsafe { read_gs_row(h, base, frame, exe_base) } {
+                            {
+                                let mut c = gs_capture().lock().unwrap();
+                                // LAST-WRITE-WINS: a rollback re-visits an earlier frame → overwrites it with the
+                                // confirmed state. Cap at GS_CAP unique frames (still allow updates to existing keys).
+                                if c.frames.len() < GS_CAP || c.frames.contains_key(&frame) {
+                                    c.frames.insert(frame, row.clone());
+                                    c.last_update = Some(std::time::Instant::now());
+                                }
                             }
+                            wipe_since = if gs_team_wiped(&row.hp) { wipe_since.or_else(|| Some(std::time::Instant::now())) } else { None };
+                            last = frame; last_new = std::time::Instant::now();
+                            // FREEZE GUARD: a synthetic frame counter keeps incrementing even on a stuck/stale base;
+                            // if the actual state is byte-identical for many frames, the base is frozen — stop the
+                            // tape instead of filling it with a stuck copy (the 20k-identical-garbage-frame artifact).
+                            let sig = (row.hp, [row.px[0].to_bits(), row.px[1].to_bits(), row.px[2].to_bits(), row.px[3].to_bits(), row.px[4].to_bits(), row.px[5].to_bits()]);
+                            if Some(&sig) == prev_sig.as_ref() { same_ct += 1; } else { same_ct = 0; prev_sig = Some(sig); }
+                            if same_ct > 240 { return true; }   // ~0.7s of zero change → frozen base
                         }
-                        wipe_since = if gs_team_wiped(&row.hp) { wipe_since.or_else(|| Some(std::time::Instant::now())) } else { None };
-                        last = frame; last_new = std::time::Instant::now();
-                        // FREEZE GUARD: a synthetic frame counter keeps incrementing even on a stuck/stale base;
-                        // if the actual state is byte-identical for many frames, the base is frozen — stop the
-                        // tape instead of filling it with a stuck copy (the 20k-identical-garbage-frame artifact).
-                        let sig = (row.hp, [row.px[0].to_bits(), row.px[1].to_bits(), row.px[2].to_bits(), row.px[3].to_bits(), row.px[4].to_bits(), row.px[5].to_bits()]);
-                        if Some(&sig) == prev_sig.as_ref() { same_ct += 1; } else { same_ct = 0; prev_sig = Some(sig); }
-                        if same_ct > 240 { break; }   // ~0.7s of zero change → frozen base
                     }
-                }
+                    false
+                })).unwrap_or_else(|_| { trace("[gamestate] frame panicked — recovering, continuing"); false });
+                if frozen { break; }                                                           // frozen base → stop the tape
                 if wipe_since.map_or(false, |t| t.elapsed().as_millis() > 600) { break; }     // a team wiped → game over
                 if last_new.elapsed().as_millis() > 2500 { break; }                            // frame counter froze → moved on
                 if !unsafe { array_valid(h, base) } { break; }                                 // array relocated/gone
@@ -1067,7 +1086,7 @@ fn b64_encode(data: &[u8]) -> String {
 // <match_key>_<reporter>.json.gz + a .meta envelope. The uploader drains the spool between matches, so no
 // large upload ever runs during a fight. The .gz gunzips to this exact record (server writes it verbatim).
 fn spool_gamestate(match_key: &str, reporter: &str, side: u8, p1_team: &[u8], p2_team: &[u8],
-                   winner: &str, loser: &str, gs: &GsSnapshot) {
+                   winner: &str, loser: &str, gs: &GsSnapshot, session_id: &str, match_index: u32) {
     let dir = gs_cache_dir();
     // soft backpressure: if uploads are failing and the spool is huge, stop piling on.
     let pending = std::fs::read_dir(&dir)
@@ -1078,7 +1097,7 @@ fn spool_gamestate(match_key: &str, reporter: &str, side: u8, p1_team: &[u8], p2
     let ts = gs_now_ms();
     let id = format!("{}_{}", match_key, reporter);
     let frames: Vec<serde_json::Value> = gs.frames.iter().map(|r| serde_json::json!([
-        r.frame, r.p1_in, r.p2_in, r.hp, r.px, r.py, r.m1, r.m2, r.mfill, r.cd, r.cr,
+        r.frame, r.p1_in, r.p2_in, r.kcode, r.hp, r.px, r.py, r.m1, r.m2, r.mfill, r.cd, r.cr,
         r.vx, r.vy, r.rhp, r.face, r.hitstun, r.act
     ])).collect();
     // the complete artifact that lands on disk (server writes the gunzip-able bytes verbatim)
@@ -1086,6 +1105,9 @@ fn spool_gamestate(match_key: &str, reporter: &str, side: u8, p1_team: &[u8], p2
     let assist_p2 = [gs.assist[1], gs.assist[3], gs.assist[5]];
     let record = serde_json::json!({
         "id": id, "match_key": match_key, "reporter": reporter, "side": side,
+        "local_pn": gs.local_pn,   // raw localPlayerNum (0/1/255=unknown) — candidate side signal for offline validation
+        "session_id": session_id, "match_index": match_index,   // gs-96: the ranked set this game belongs to
+        "ver": env!("CARGO_PKG_VERSION"),   // gs-98: app build that recorded this (fixed vs pre-fix)
         "p1_team": p1_team, "p2_team": p2_team, "winner": winner, "loser": loser,
         "assist": gs.assist, "assist_p1": assist_p1, "assist_p2": assist_p2,
         "ts": ts, "schema": GS_SCHEMA,
@@ -1103,6 +1125,7 @@ fn spool_gamestate(match_key: &str, reporter: &str, side: u8, p1_team: &[u8], p2
     // envelope the uploader POSTs (frames_gz gets base64'd from the .gz at upload time) + spool bookkeeping.
     let meta = serde_json::json!({
         "match_key": match_key, "reporter": reporter, "side": side,
+        "session_id": session_id, "match_index": match_index, "ver": env!("CARGO_PKG_VERSION"),
         "p1_team": p1_team, "p2_team": p2_team, "winner": winner, "loser": loser,
         "assist_p1": assist_p1, "assist_p2": assist_p2,
         "ts": ts, "schema": GS_SCHEMA,
@@ -1175,7 +1198,11 @@ fn start_gamestate_uploader() {
         use std::sync::atomic::Ordering::SeqCst;
         std::thread::sleep(std::time::Duration::from_secs(6)); // let the app settle before the first drain
         loop {
-            if SHARE_GAMEPLAY.load(SeqCst) && !GS_IN_MATCH.load(SeqCst) { drain_gs_cache(); }
+            // P0.3: guard each drain so a panicking upload/parse can't kill the uploader thread.
+            let guard = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                if SHARE_GAMEPLAY.load(SeqCst) && !GS_IN_MATCH.load(SeqCst) { drain_gs_cache(); }
+            }));
+            if guard.is_err() { trace("[gamestate] uploader cycle panicked — recovering, continuing"); }
             std::thread::sleep(std::time::Duration::from_secs(20));
         }
     });
@@ -1188,7 +1215,12 @@ fn is_wb(v: u32) -> bool { v >= WB_LO && v < WB_HI }
 // clusters exist, but only the real 6-run keeps a WB pointer at exactly +0x4c across every slot).
 unsafe fn array_valid(h: HANDLE, base: usize) -> bool {
     if base == 0 { return false; }
+    // >=5 WB DatPals AND no garbage health (>144). The health clause is essential: without it a STALE savestate
+    // copy that still holds WB DatPals but reads garbage health passes validation, PINS ram_base, and
+    // read_fighters then rejects it every cycle (health>144) → permanent "no gamestate" while find_array never
+    // re-runs (ram_base != 0). Frozen copies with sane-but-stale health are handled separately by the liveness gate.
     (0..6).filter(|&i| is_wb(rpm_u32(h, base + i * STRIDE + OFF_DATPAL).unwrap_or(0))).count() >= 5
+        && !(0..6).any(|i| (rpm_u32(h, base + i * STRIDE + OFF_HEALTH).unwrap_or(0) & 0xffff) > HP_FULL as u32)
 }
 
 // ── ANCHOR: compute the live fighter array from flycast's guest-RAM reservation base ──────────────────
@@ -1197,7 +1229,7 @@ unsafe fn array_valid(h: HANDLE, base: usize) -> bool {
 // the live array in every launch tested — 0x95e0000→0x1a113fc8 and 0x9760000→0x1a293fc8). The rollback netcode
 // keeps ~14 savestate COPIES of the array, but they ALL share the SAME DatPals, so this one computed read
 // paints correctly — no ~1GB find_array scan, no volatile-copy flicker, no drop. This is the performant anchor.
-const ARRAY_OFF: usize = 0x10b3_3fc8; // build-marker: gs-70 anchor (rebuild forced 2026-08-05)
+// (ARRAY_OFF = reservation_base + this fixed offset — defined in the ONE offsets table at the top of the file.)
 // The reservation base: the >=128MB committed PAGE_READWRITE block that contains the working-buffer window
 // (host 0x10000000). ASLR'd per launch, but found deterministically by region enumeration (no content scan).
 unsafe fn flycast_base(h: HANDLE) -> usize {
@@ -1257,13 +1289,22 @@ unsafe fn anchor_roster(h: HANDLE) -> Vec<Found> {
 }
 
 // Heavy (~1.25GB scan) — run only when the cached base is stale/missing AND fighters are loaded, throttled.
-// 1) find every candidate cluster (a 40-word window with >=14 working-buffer pointers), 2) find bases where
-// >=5 of base+i*0x738 (i=0..6) is also a cluster, 3) pick the base whose slots best satisfy the per-fighter
-// invariant (WB DatPal + sane health). Returns the array base (volatile — never cache across matches blindly).
+// Locates the array by the fighter-STRUCT LAYOUT (gs-89): for each 4-byte-aligned base, require >=5 of the 6
+// slots (base + i*0x738) to hold a WB DatPal @+0x4c AND a valid char_id @+0x554, with BOTH sides (even/odd
+// slots) carrying a living fighter (health 1..=144 @+0xb44). This is the invariant the external capture tool
+// uses — it finds the live array every time; the OLD pointer-density heuristic (>=14 WB pointers clustered per
+// slot) matched 0 real candidates in a live fight (find_array_replica confirmed). Returns the array base
+// (volatile — never cache across matches blindly).
 unsafe fn find_array(h: HANDLE) -> Option<usize> {
-    const WIN: usize = 40;   // ~0xA0-byte window
-    const MINP: usize = 14;  // the real cluster holds ~16 working-buffer pointers
-    let mut clusters: Vec<usize> = Vec::new();
+    const STRIDE_W: usize = STRIDE / 4;      // 0x738 in words
+    const DP_W: usize  = OFF_DATPAL / 4;     // DatPal  @ +0x4c
+    const CID_W: usize = OFF_CHARID / 4;     // char_id @ +0x554
+    const HP_W: usize  = OFF_HEALTH / 4;     // health  @ +0xb44
+    let need = HP_W.max(CID_W).max(DP_W) + 5 * STRIDE_W + 2;  // furthest word indexed from a base (+2 margin).
+                                             // ⚠ MUST be the MAX field offset, not HP_W: once OFF_HEALTH moved to
+                                             // 0x40c (< char_id 0x554), char_id became the furthest field — using
+                                             // HP_W here indexed char_id past the buffer → OOB panic in find_array.
+    let mut raw: Vec<usize> = Vec::new();
     let mut addr = 0usize;
     loop {
         let mut mbi = MEMORY_BASIC_INFORMATION::default();
@@ -1275,65 +1316,120 @@ unsafe fn find_array(h: HANDLE) -> Option<usize> {
         addr = base + size; if addr <= base { break; }
         // include the ~512MB guest-RAM virtmem blocks (earlier scans wrongly capped at 256MB and missed them)
         if !(readable && size >= 0x10000 && size <= 0x5000_0000) { continue; }
-        let buf = match read_at(h, base, size) { Some(v) if v.len() == size => v, _ => continue };
-        let words = buf.len() / 4;
-        if words < WIN { continue; }
-        let flag: Vec<u8> = (0..words).map(|i| { let o = i*4; if is_wb(u32::from_le_bytes([buf[o],buf[o+1],buf[o+2],buf[o+3]])) {1} else {0} }).collect();
-        let mut sum: usize = flag[..WIN].iter().map(|&x| x as usize).sum();
-        let mut i = 0usize; let mut last: isize = -(STRIDE as isize);
-        while i + WIN <= words {
-            if sum >= MINP {
-                let a = base + i * 4;
-                if (a as isize - last) > 0x200 { clusters.push(a); last = a as isize; }
+        // Read in bounded CHUNKS: a whole-region read of a ~512MB..1.25GB block allocates that entire size at once
+        // (read_at does vec![0u8; len]); find_array now runs frequently, so repeated giant allocations are an
+        // OOM/abort hazard. 64MB base windows + a `tail` overlap (so a base near the window end can still index all
+        // 6 slots) bound the allocation to ~80MB regardless of region size.
+        const CHUNK: usize = 0x0400_0000;               // 64MB of base positions per read
+        let tail = (need + 2) * 4;                       // bytes past a base to reach slot 5's health (+margin)
+        let mut off = 0usize;
+        while off + need * 4 < size {
+            let rd = (CHUNK + tail).min(size - off);
+            let buf = match read_at(h, base + off, rd) { Some(v) if v.len() == rd => v, _ => { off += CHUNK; continue; } };
+            let words = buf.len() / 4;
+            if words <= need { off += CHUNK; continue; }
+            let word = |i: usize| -> u32 { u32::from_le_bytes([buf[i*4], buf[i*4+1], buf[i*4+2], buf[i*4+3]]) };
+            // one pass → a per-word predicate byte (bit0=DatPal-WB, bit1=char_id-valid, bit2=health-alive)
+            let pred: Vec<u8> = (0..words).map(|i| {
+                let v = word(i); let mut p = 0u8;
+                if is_wb(v) { p |= 1; }
+                if (v & 0xff) <= MAX_CID as u32 { p |= 2; }
+                let hp = v & 0xffff; if hp >= 1 && hp <= HP_FULL as u32 { p |= 4; }
+                p
+            }).collect();
+            // process only CHUNK-worth of bases; the tail overlap supplied their slots. Last chunk: all that fit.
+            let lim = (words - need).min(CHUNK / 4);
+            let slot_present = |b: usize| (pred[b + DP_W] & 1) != 0 && (pred[b + CID_W] & 2) != 0;
+            for b in 0..lim {
+                // cheap early-reject: if BOTH slot 0 and slot 1 are absent, >=2 slots are missing → can't reach 5/6.
+                if !slot_present(b) && !slot_present(b + STRIDE_W) { continue; }
+                let mut present = 0u32; let (mut ev, mut od) = (false, false);
+                for i in 0..6 {
+                    let so = b + i * STRIDE_W;
+                    if slot_present(so) {
+                        present += 1;
+                        if (pred[so + HP_W] & 4) != 0 { if i % 2 == 0 { ev = true; } else { od = true; } }
+                    }
+                }
+                if present >= 5 && ev && od { raw.push(base + off + b * 4); }
             }
-            sum -= flag[i] as usize;
-            if i + WIN < words { sum += flag[i + WIN] as usize; }
-            i += 1;
+            off += CHUNK;
         }
     }
-    clusters.sort(); clusters.dedup();
-    let has_cluster = |t: usize| clusters.iter().any(|&x| (x as isize - t as isize).abs() <= 0x40);
-    // candidate bases: a cluster whose 6-run at 0x738 stride is >=5/6 present, then scored by the real
-    // per-fighter invariant (WB DatPal at cl+0x4c AND a sane health at cl+0xb44).
-    let mut cands: Vec<(usize, usize)> = Vec::new();
+    if raw.is_empty() { return None; }
+    raw.sort(); raw.dedup();
+    // score + both-sides-alive (re-read live; the structured scan can match at a couple of neighbouring offsets).
     // even slot = P1, odd = P2; a side is "alive" if any of its fighters has real health (1..=144).
     let side_alive = |c: usize, par: usize| (0..6).filter(|&i| i % 2 == par)
-        .any(|i| { let hp = rpm_u32(h, c + i * STRIDE + OFF_HEALTH).unwrap_or(0); (1..=144).contains(&hp) });
-    for &c in clusters.iter() {
-        if (0..6).filter(|&i| has_cluster(c + i * STRIDE)).count() < 5 { continue; }
+        .any(|i| { let hp = rpm_u32(h, c + i * STRIDE + OFF_HEALTH).unwrap_or(0) & 0xffff; (1..=144).contains(&hp) });
+    let mut cands: Vec<(usize, usize)> = Vec::new();
+    for &c in raw.iter() {
         // ★ NEGATIVE GATE (live-capture-confirmed): reject any candidate with an impossible health (>144) —
-        // that's a stale/half-written savestate COPY. The live capture showed copies reading hp=11200/62807
-        // while the live mem_b array is all <=144; the old `<=0x200` check let hp=235 garbage through.
+        // that's a stale/half-written savestate COPY (the live capture showed copies reading hp=11200/62807).
         if (0..6).any(|i| (rpm_u32(h, c + i * STRIDE + OFF_HEALTH).unwrap_or(0) & 0xffff) > HP_FULL as u32) { continue; }
         let score = (0..6).filter(|&i| {
             let cl = c + i * STRIDE;
             is_wb(rpm_u32(h, cl + OFF_DATPAL).unwrap_or(0)) && (rpm_u32(h, cl + OFF_HEALTH).unwrap_or(0xffff) & 0xffff) <= HP_FULL as u32
         }).count();
-        // ★ require BOTH teams to have a LIVING fighter — a frozen post-KO copy reads one whole side at 0
-        // (the "P2 reads dead → phantom wins / broken side" bug). Rejecting one-sided buffers at the source is
-        // the real fix. (A genuine KO frame is transient; the base is already cached from when both were alive.)
+        // ★ require BOTH teams to have a LIVING fighter — a frozen post-KO copy reads one whole side at 0.
         if score >= 5 && side_alive(c, 0) && side_alive(c, 1) { cands.push((c, score)); }
     }
     if cands.is_empty() { return None; }
     cands.sort_by(|a, b| b.1.cmp(&a.1));
-    // LIVENESS: a live match animates the fighter structs every frame; a frozen/stale copy (a leftover
-    // post-match savestate — the trace's endless phantom wins) does not. Sample each candidate's animating
-    // region, wait, re-sample, and PREFER whichever actually changed, so we never lock a frozen buffer.
-    // LIVENESS (capture-confirmed): only the LIVE array's per-frame fields (position/velocity @ +0x61c..0x64c)
-    // move every frame; the rollback savestate COPIES are frozen snapshots — the app's fixed anchor lands on
-    // one, which is the whole bug. Probe that region across ~180ms (~11 frames) and lock ONLY a candidate that
-    // actually MOVED. If none moved this instant, return None and retry — never lock a static copy.
+
+    // ── FRAME-COUNTER live-copy selection (gs-97, the DEFINITIVE stale-read fix) ──
+    // The rollback netcode keeps ~14 full savestate COPIES of guest RAM, each with the fighter array at the SAME
+    // offset. The animation heuristic below can lock a re-simulating STALE copy and the reader then caches it for
+    // a WHOLE match → systematically wrong health → inverted W/L for every game of a set (the Rychu04 8↔2 flip).
+    // The LIVE copy is the one at the CURRENT frame: its frame counter is HIGHEST and ADVANCING; every savestate
+    // holds an OLDER frame. The counter sits at a FIXED offset from the array (both live in guest RAM at fixed
+    // guest offsets), so we locate that offset ONCE (cached) and then pick the candidate whose counter is highest
+    // among those still advancing. This is immune to how many copies exist or where ASLR put them.
+    static FC_REL: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
+    let mut fc_rel = FC_REL.load(std::sync::atomic::Ordering::Relaxed);
+    if fc_rel == 0 {
+        // find the per-frame counter near a candidate (any copy with an advancing counter works — the offset is
+        // shared across all copies). Try the top few by score so a frozen top candidate doesn't block discovery.
+        for &(c, _) in cands.iter().take(5) {
+            if let Some(fc) = hunt_frame_counter(h, c) { fc_rel = fc as i64 - c as i64; FC_REL.store(fc_rel, std::sync::atomic::Ordering::Relaxed); break; }
+        }
+    }
+    if fc_rel != 0 {
+        let fc_of = |c: usize| -> Option<u32> { rpm_u32(h, (c as i64 + fc_rel) as usize) };
+        let t0: Vec<Option<u32>> = cands.iter().map(|&(c, _)| fc_of(c)).collect();
+        std::thread::sleep(std::time::Duration::from_millis(120));
+        let mut best: Option<(u32, usize)> = None;   // (frame_counter, base) — highest ADVANCING = the live copy
+        for (i, &(c, _)) in cands.iter().enumerate() {
+            if let (Some(a), Some(b)) = (t0[i], fc_of(c)) {
+                if b > a && b != 0xffff_ffff && best.map_or(true, |(bb, _)| b > bb) { best = Some((b, c)); }
+            }
+        }
+        if let Some((_, c)) = best { return Some(c); }
+        // counter located but nothing advanced this instant (a lull between rounds) → fall through to animation.
+    }
+
+    // FALLBACK — animation probe (used until the frame counter is located, or in a lull): sample a wide per-fighter
+    // region (position/velocity 0x61c + action/anim 0x100) across ~180ms and take the MOST-changed candidate; None
+    // if nothing moved (never lock a frozen copy — the 0.1.25 best-effort-stale regression).
     let anim = |c: usize| -> Vec<u8> {
-        let mut v = Vec::with_capacity(6 * 0x40);
-        for i in 0..6 { if let Some(b) = read_at(h, c + i * STRIDE + OFF_POS_X, 0x40) { v.extend_from_slice(&b); } }
+        let mut v = Vec::with_capacity(6 * 0x80);
+        for i in 0..6 {
+            if let Some(b) = read_at(h, c + i * STRIDE + OFF_POS_X, 0x40) { v.extend_from_slice(&b); }
+            if let Some(b) = read_at(h, c + i * STRIDE + 0x100, 0x40) { v.extend_from_slice(&b); }
+        }
         v
     };
     let before: Vec<Vec<u8>> = cands.iter().map(|&(c, _)| anim(c)).collect();
     std::thread::sleep(std::time::Duration::from_millis(180));
+    let mut best: Option<(usize, usize)> = None;   // (change_count, base)
     for (i, &(c, _)) in cands.iter().enumerate() {
-        if !before[i].is_empty() && anim(c) != before[i] { return Some(c); }  // this candidate is LIVE (moving)
+        if before[i].is_empty() { continue; }
+        let after = anim(c);
+        if after.is_empty() { continue; }
+        let changed = before[i].iter().zip(after.iter()).filter(|(a, b)| a != b).count();
+        if changed > 0 && best.map_or(true, |(bc, _)| changed > bc) { best = Some((changed, c)); }
     }
-    None   // nothing demonstrably live right now → don't lock a frozen copy; the caller retries next cycle
+    best.map(|(_, c)| c)
 }
 
 // Cheap (~6 small reads/slot) — read the six fighters from a located base. side = slot parity (VALIDATED:
@@ -1371,13 +1467,100 @@ unsafe fn read_fighters(h: HANDLE, base: usize) -> Option<GameSt> {
     if slots.is_empty() { return None; }
     let meter1 = rpm_u8(h, base + MET_BARS).unwrap_or(0);           // P1 bars (global, relative to array base)
     let meter2 = rpm_u8(h, base + MET_BARS + 1).unwrap_or(0);       // P2 bars (adjacent, per DC layout)
-    Some(GameSt { in_match: if any_live { 1 } else { 0 }, match_state: 0, stage: 0, timer: 0, frame: 0, ram: base, slots, meter1, meter2 })
+    // ── battle-globals (gs-99): the game's own match/round state (ground truth for W/L) ──
+    let phase       = rpm_u8(h, base + OFF_PHASE).unwrap_or(0);
+    let win_result  = rpm_u8(h, base + OFF_WINRESULT).unwrap_or(0);
+    let round_no    = rpm_u8(h, base + OFF_ROUND).unwrap_or(0);
+    let bg_in_match = rpm_u8(h, base + OFF_BG_INMATCH).unwrap_or(0);
+    let bg_timer    = rpm_u8(h, base + OFF_BG_TIMER).unwrap_or(0) as u32;
+    Some(GameSt { in_match: if any_live { 1 } else { 0 }, match_state: phase, stage: 0, timer: bg_timer, frame: 0, ram: base, slots, meter1, meter2,
+                  phase, win_result, round_no, bg_in_match })
+}
+
+// ── POINTER-FOLLOW locator (gs-98) — THE fix for the array-alignment inversion ──────────────────────────
+// The game keeps a pointer to the CURRENT match block at a FIXED exe global, right beside kcode/localPlayerNum.
+//   fighter_array = *(exe + 0xac6ef0) + 0x3f24
+// Confirmed live across 3 relocations AND every mode (training/arcade/ranked). This is the PRIMARY locator: no
+// ~1GB scan, and — crucially — NO one-STRIDE alignment ambiguity. The old find_array scan matched the fighter
+// block at TWO offsets one STRIDE (0x738) apart (true base vs base+0x738), so it randomly picked the SHIFTED
+// copy → swapped even/odd → flipped P1/P2 → inverted the W/L. Following the pointer lands on the true base every
+// time. Same win cures the stale-copy skin flicker: this is the live block, never a rollback ghost.
+// (MATCH_PTR_OFF / MATCH_ARR_ADD are defined in the ONE offsets table at the top of the file.)
+// ── char-select picks (gs-100) ──────────────────────────────────────────────────────────────────────
+// game_state = *(exe+0xacd3a0) (an exe-fixed global, e.g. 0x140ac6d40). During character select the LOCKED
+// picks land at game_state+0x758 as a stride-4 char_id list (-1 = slot not yet locked); a parallel
+// [char_id, assist] stride-8 array sits at +0x6b4. Confirmed live: Iron Man(0x33)+Sentinel(0x34) appeared at
+// +0x758 the instant they were locked (the cursor HOVER is a grid coord and does NOT write here — only locks
+// do). Reading this gives instant team detection BEFORE the fighter array exists, for skin preload + display.
+// (GSTATE_PTR_OFF / PICKS_OFF are defined in the ONE offsets table at the top of the file.)
+/// Read your char-select LOCKED picks (the 3-char team at game_state+0x758; `0xffffffff` = slot not yet locked).
+/// SELF-GATING (no netplay dependency, so it fires on MATCH 1 with no delay): surfaces ONLY during an ACTIVE
+/// partial selection — ≥1 char locked AND ≥1 slot still unlocked. A settled state (all 3 locked, or a stale
+/// menu team with no in-team -1) returns empty, so we never flash a stale team here — the live fighter array
+/// drives menus/matches. Cheap: one pointer deref + one 12-byte read.
+unsafe fn read_char_picks(h: HANDLE, exe_base: usize) -> Vec<u8> {
+    if exe_base == 0 { return Vec::new(); }
+    let gs = match read_at(h, exe_base + GSTATE_PTR_OFF, 8).filter(|b| b.len() >= 8) {
+        Some(b) => u64::from_le_bytes([b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7]]) as usize,
+        None => return Vec::new(),
+    };
+    if gs < 0x10000 { return Vec::new(); }
+    let b = match read_at(h, gs + PICKS_OFF, 3 * 4) { Some(b) if b.len() >= 12 => b, _ => return Vec::new() };
+    let mut picks = Vec::new();
+    for i in 0..3 {
+        let v = u32::from_le_bytes([b[i*4], b[i*4+1], b[i*4+2], b[i*4+3]]);
+        if v <= 0x3A { picks.push(v as u8); }           // a locked character (0xffffffff = not yet locked → skipped)
+    }
+    picks   // NO -1 requirement (a fully-locked team has no in-team -1). The CALLER gates on scene==5 && no live
+            // fighters (= char-select), so a settled menu/in-fight state never surfaces a stale team here.
+}
+unsafe fn pointer_follow_array(h: HANDLE, exe_base: usize) -> Option<usize> {
+    if exe_base == 0 { return None; }
+    let blk = read_at(h, exe_base + MATCH_PTR_OFF, 8)
+        .filter(|b| b.len() >= 8)
+        .map(|b| u64::from_le_bytes([b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7]]))? as usize;
+    if blk == 0 { return None; }
+    let arr = blk.checked_add(MATCH_ARR_ADD)?;
+    if arr < 0x10000 || arr > 0x7fff_ffff_ffff { return None; }
+    if !array_valid(h, arr) { return None; }
+    // LIVENESS (mirrors find_array's animation gate): between matches the pointer still holds the LAST match's
+    // now-FROZEN block. Only accept a block that's actually advancing, so we never surface a stale match — and
+    // so a truly-frozen read falls through to the scan (which also returns None when frozen), never to a wrong
+    // alignment. Sample position(+0x61c) + action/anim(+0x100) across ~70ms.
+    let snap = |a: usize| -> Vec<u8> {
+        let mut v = Vec::with_capacity(6 * 0x80);
+        for i in 0..6 {
+            if let Some(b) = read_at(h, a + i * STRIDE + OFF_POS_X, 0x40) { v.extend_from_slice(&b); }
+            if let Some(b) = read_at(h, a + i * STRIDE + 0x100, 0x40) { v.extend_from_slice(&b); }
+        }
+        v
+    };
+    let s0 = snap(arr);
+    std::thread::sleep(std::time::Duration::from_millis(70));
+    let s1 = snap(arr);
+    if s0.is_empty() || s0 == s1 { return None; }   // frozen/unreadable → let the caller fall back to the scan
+    Some(arr)
+}
+
+// gs-101 OVERKILL: pointer-follow with NO liveness sleep. Used ONLY when scene==5 (game_state+0x8) already
+// GUARANTEES we're in a live fight, so the game's own match-block pointer necessarily points at the current
+// (rendered) block — never a frozen savestate. Pure O(1): two reads + a validate, microseconds, no scan.
+unsafe fn pointer_follow_fast(h: HANDLE, exe_base: usize) -> Option<usize> {
+    if exe_base == 0 { return None; }
+    let blk = read_at(h, exe_base + MATCH_PTR_OFF, 8)
+        .filter(|b| b.len() >= 8)
+        .map(|b| u64::from_le_bytes([b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7]]))? as usize;
+    if blk == 0 { return None; }
+    let arr = blk.checked_add(MATCH_ARR_ADD)?;
+    if arr < 0x10000 || arr > 0x7fff_ffff_ffff { return None; }
+    if !array_valid(h, arr) { return None; }
+    Some(arr)
 }
 
 // Self-contained gamestate read used by BOTH the hook path and the RPM fallback. Opens its own read-only
 // handle, re-validates (or re-finds, throttled) the volatile array base, then does the cheap per-fighter
 // read. `allow_find` gates the heavy scan to when fighters are likely loaded (sig-scan roster non-empty).
-fn read_gamestate_rpm(pid: u32, ram_base: &mut usize, last_find: &mut std::time::Instant, allow_find: bool, hint: usize) -> Option<GameSt> {
+fn read_gamestate_rpm(pid: u32, ram_base: &mut usize, last_find: &mut std::time::Instant, fighting: bool, live_ctx: bool, hint: usize) -> Option<GameSt> {
     if pid == 0 { return None; }
     let h = unsafe { OpenProcess(PROCESS_VM_READ | PROCESS_QUERY_INFORMATION, FALSE, pid).ok()? };
     let out = unsafe {
@@ -1387,19 +1570,42 @@ fn read_gamestate_rpm(pid: u32, ram_base: &mut usize, last_find: &mut std::time:
         // regressed cross-round painting (at a round reload the anchor copy's DatPal pointers go null/stale while
         // find_array's ANIMATING copy still tracks the live render). So: anchor to acquire O(1), then the
         // liveness gate below hands off to find_array's animating copy if this one freezes.
-        if *ram_base == 0 { if let Some(a) = anchor_array(h) { *ram_base = a; } }
-        // Fallbacks (only if the anchor offset ever shifts on a future game build): reuse last base, then scan.
-        if *ram_base == 0 && hint != 0 && array_valid(h, hint) { *ram_base = hint; }
-        if *ram_base == 0 && allow_find && last_find.elapsed().as_millis() >= 1500 {
-            *last_find = std::time::Instant::now();
-            *ram_base = find_array(h).unwrap_or(0);
-            // find_array is a heavy ~1GB scan. If it came up empty (char-select/loading — the array isn't
-            // instantiated yet, but sig-scan fighters linger), back the NEXT attempt off a bit so the scan
-            // doesn't thrash, but retry FAST so teams lock within ~1-2s of a round starting (not 5-15s — the
-            // "didn't detect the match right away" lag). Once found, array_valid is cheap → no re-scan.
-            if *ram_base == 0 { *last_find += std::time::Duration::from_millis(500); }
+        // PRIMARY locator: the struct-layout scan. The fighter array is VOLATILE on this build — it RELOCATES
+        // every match (the external logger confirmed a different base per game: 0x15f5.., 0x1815.., 0x1625..), so
+        // the fixed anchor below CANNOT track it. Worse, running the anchor first STARVED the scan: the anchor set
+        // ram_base to a stale copy, so find_array (gated on ram_base==0) never ran → game 1 read garbage and
+        // games 2..N read nothing (the "1 of 10 recorded" bug). So scan FIRST, throttled so the ~1GB read doesn't
+        // thrash; once found, array_valid keeps it cached cheaply until the array relocates.
+        // gs-101 OVERKILL LOCATOR: pointer-ONLY, scene-gated. scene==5 (fighting) GUARANTEES the block is live, so
+        // we O(1) pointer-follow it (only when ram_base is missing) — NO struct-layout scan, NO liveness sleep, NO
+        // 1200ms throttle. Between fights (fighting=false) we never even look: there is no live array, so ram_base
+        // stays 0 and the reader correctly shows no gamestate. This removes the LAST heavy scan from the hot path.
+        if *ram_base == 0 {
+            if fighting {
+                // scene==5 GUARANTEES the block is live → O(1) pointer, no liveness sleep, no scan.
+                *ram_base = pointer_follow_fast(h, game_exe_base(pid)).unwrap_or(0);
+            } else if live_ctx {
+                // In a match context but not the fight frame (KO / win-pose / results / loading). Use the
+                // liveness-CHECKED pointer (70ms anim gate) so we still capture the KO frame + never pin a frozen
+                // between-match copy — still NO struct-layout scan. Not the FPS-critical path, so the gate is fine.
+                *ram_base = pointer_follow_array(h, game_exe_base(pid)).unwrap_or(0);
+            }
+            if *ram_base != 0 { trace(&format!("[find] located live array @ {:x} (ptr)", *ram_base)); }
         }
-        if *ram_base != 0 { read_fighters(h, *ram_base) } else { None }
+        let _ = last_find;
+        // The fixed-anchor + last-base(hint) fallbacks are REMOVED. On this build the array RELOCATES every match
+        // (traces show a different, sometimes HIGH, base per game — 0x7ff9..), so the fixed anchor points at
+        // nothing or at a STALE savestate copy. BETWEEN matches (no live fight) that stale copy is exactly the
+        // "scan brings in a random Ryu" bug + inverted W/L (the copy holds a previous round's dead team). So
+        // find_array (most-animating, None when nothing moves) is the SOLE locator: during a fight it returns the
+        // live copy; between fights it returns None → the reader shows no gamestate (correct) instead of stale data.
+        let _ = hint;
+        // read_fighters returns None on a garbage/empty base (health>144 or no valid fighter slots). Drop the base
+        // in that case so the NEXT cycle re-acquires (anchor → find_array) instead of pinning a dead base forever —
+        // the second half of the "no gamestate" deadlock (a base array_valid accepts but read_fighters rejects).
+        if *ram_base != 0 {
+            match read_fighters(h, *ram_base) { Some(g) => Some(g), None => { *ram_base = 0; None } }
+        } else { None }
     };
     unsafe { let _ = CloseHandle(h); }
     out
@@ -1441,11 +1647,39 @@ struct ScoreState { set_opp: Option<String>, p1: u32, p2: u32, was_in: bool, la1
     g1_met: u32, g2_met: u32, last_m1: u8, last_m2: u8, met_init: bool,
     // Games finished BEFORE the side was confirmed — held here (never recorded) and committed the moment the user
     // confirms their side (the "never record a guess" gate). Cleared with the rest on a new opponent.
-    pending: Vec<PendingGame> }
+    pending: Vec<PendingGame>,
+    // CONFIRMED-KO debounce: pend_w = the side that looks KO-winner right now (a team FULLY dead), pend_n =
+    // consecutive cycles it has held. We only record once pend_n reaches 2 — that rides out the speculative
+    // rollback frame the app used to judge from (logger-proven: the array shows the RIGHT winner once settled).
+    pend_w: u8, pend_n: u32,
+    // ── SESSION (ranked set) ── a unique id per set (vs one opponent), HARD-capped at SESSION_CAP games (the 11th
+    // opens a fresh session), persisted to disk so an app restart mid-set RESUMES it, and stamped onto every result
+    // + recording so each match is tied to its set → per-session stats. match_index = games committed this session.
+    session_id: Option<String>, match_index: u32, session_started_ms: u64 }
+
+const SESSION_CAP: u32 = 10;                    // a ranked set is at most 10 games; the 11th opens a new session
+const SESSION_FILE: &str = "C:\\g\\mvc_session.txt";
+
+// Unique per set: reporter + opponent + start-ms (+ a cheap nonce so two sets vs the same opp in the same ms differ).
+fn new_session_id(my_id: u64, opp_id: &str) -> String {
+    let ms = gs_now_ms();
+    let nonce = ms.rotate_left(17) ^ (opp_id.len() as u64).wrapping_mul(0x9e37_79b9_7f4a_7c15);
+    format!("s_{}_{}_{:x}", my_id, opp_id, ms ^ (nonce & 0xffff))
+}
+fn save_session(st: &ScoreState) {
+    let (Some(sid), Some(opp)) = (st.session_id.as_deref(), st.set_opp.as_deref()) else { return };
+    let body = serde_json::json!({ "opp": opp, "session_id": sid, "p1": st.p1, "p2": st.p2,
+        "match_index": st.match_index, "started_ms": st.session_started_ms });
+    let _ = std::fs::write(SESSION_FILE, serde_json::to_vec(&body).unwrap_or_default());
+}
+fn load_session() -> Option<serde_json::Value> {
+    std::fs::read_to_string(SESSION_FILE).ok().and_then(|s| serde_json::from_str(&s).ok())
+}
 
 // A finished game held until the side is confirmed. winner = the side (1/2) that won; my_side is resolved at commit.
 #[derive(Clone)]
-struct PendingGame { winner: u8, opp: (String, String), ocv: bool, perfect: bool, comeback: bool, rich: GameRich }
+struct PendingGame { winner: u8, opp: (String, String), ocv: bool, perfect: bool, comeback: bool, rich: GameRich,
+    session_id: String, match_index: u32 }
 
 // Rich per-game payload for logging (both teams + combat stats). Winner/loser & my/opp are resolved downstream.
 #[derive(Clone, Default)]
@@ -1477,7 +1711,9 @@ fn record_result(steamid: &str, name: &str, i_won: bool) {
 // refuse to record a result against anything that clearly isn't a handle, so garbage never hits the board.
 fn plausible_opponent_name(nm: &str) -> bool {
     let s = nm.trim();
-    if s.len() < 3 || s.len() > 24 { return false; }
+    let nchars = s.chars().count();
+    if nchars < 3 || nchars > 32 { return false; }            // Steam persona cap is 32 CHARS (count, not bytes —
+                                                              //   a CJK/emoji handle is many bytes but few chars)
     if s.matches(' ').count() > 2 { return false; }           // gamertags aren't sentences
     if s.chars().any(|c| "<>{}[]|=\\^~`".contains(c)) { return false; }  // symbol junk (e.g. "cjU>") isn't a gamertag
     let low = s.to_lowercase();
@@ -1487,13 +1723,14 @@ fn plausible_opponent_name(nm: &str) -> bool {
                 "connect", "matchmak", "lobby", "player", "press", "select", "steam"] {
         if low.contains(bad) { return false; }
     }
-    s.chars().filter(|c| c.is_ascii_alphanumeric()).count() >= 4   // ≥4 alphanumeric chars (rejects short garbage runs)
+    // ≥3 letter/digit chars, Unicode-aware: CJK/accented/cyrillic handles count; ★/emoji/punctuation don't.
+    s.chars().filter(|c| c.is_alphanumeric()).count() >= 3
 }
 
 // A finished game: record the local per-opponent H2H AND report it to the global leaderboard. The rich-stat
 // flags (ocv/perfect/comeback) always describe the WINNER — computed symmetrically from both sides' health,
 // so we credit them correctly whether we won or lost.
-fn on_game_win(winner: u8, opp: &Option<(String, String)>, my_side: u8, ocv: bool, perfect: bool, comeback: bool, rich: &GameRich) {
+fn on_game_win(winner: u8, opp: &Option<(String, String)>, my_side: u8, ocv: bool, perfect: bool, comeback: bool, rich: &GameRich, session_id: &str, match_index: u32) {
     if my_side != 1 && my_side != 2 { return; }
     // Belt-and-suspenders: NEVER record unless the side is confirmed (manual toggle / deterministic lock). The
     // fuzzy auto-detectors set local_side for the UI label only — a confidently-WRONG side must never post stats.
@@ -1525,7 +1762,7 @@ fn on_game_win(winner: u8, opp: &Option<(String, String)>, my_side: u8, ocv: boo
     let gs = gamestate_snapshot();
     report_result_server(reporter, winner_id, winner_name, loser_id, loser_name, ocv, perfect, comeback,
         winner_team, loser_team, winner_combo, winner_met,
-        my_side, rich.p1_team.clone(), rich.p2_team.clone(), gs);
+        my_side, rich.p1_team.clone(), rich.p2_team.clone(), gs, session_id.to_string(), match_index);
 }
 
 // Fire-and-forget POST of a finished game to the skinsync leaderboard (own thread so the reader never blocks
@@ -1536,14 +1773,46 @@ fn report_result_server(reporter: String, winner: String, winner_name: String, l
                         ocv: bool, perfect: bool, comeback: bool,
                         winner_team: Vec<u8>, loser_team: Vec<u8>, biggest_combo: u16, meters_used: u32,
                         // game-state recording context (uploaded only if share_gameplay_data + a recording exists)
-                        side: u8, p1_team: Vec<u8>, p2_team: Vec<u8>, gs: Option<GsSnapshot>) {
+                        side: u8, p1_team: Vec<u8>, p2_team: Vec<u8>, gs: Option<GsSnapshot>,
+                        session_id: String, match_index: u32) {
     std::thread::spawn(move || {
         use std::sync::atomic::Ordering::SeqCst;
+        // gs-105 frame-derived per-match stats from the recording (BOTH teams — hp/red_hp state is global, and hp
+        // 0..144 is roster-comparable per the MvC2 spec). Non-zero only when a recording exists (share-gameplay on).
+        // Keyed to the WINNER's side so the server attributes w*→winner, l*→loser (symmetric, no dedup issue):
+        //  • chip = PEAK recoverable(red) health on the opponent at one moment (a MAX, bounded ≤432) — NOT a
+        //    sum of frame rises: red-hp oscillates (recovers off-screen, jumps on char-swap) + tapes span
+        //    multiple games, so summing rises over-counts wildly (saw 27k). Peak is the honest, bounded read.
+        //  • comeback = the WINNER's max character-count deficit overcome (loser doesn't "come back").
+        //  (damage-dealt has no clean source — MvC2 keeps no cumulative damage counter — so its board is retired.)
+        let winner_side: u8 = if winner == reporter { side } else { 3 - side };
+        let (wdmg, ldmg, wchip, lchip, wcomeback): (u32, u32, u32, u32, u8) = gs.as_ref().map(|g| {
+            let ws: [usize; 3] = if winner_side == 1 { [0, 2, 4] } else { [1, 3, 5] };
+            let ls: [usize; 3] = if winner_side == 1 { [1, 3, 5] } else { [0, 2, 4] };
+            let (mut wchip, mut lchip) = (0u32, 0u32);
+            let mut comeback = 0i32;
+            for f in &g.frames {
+                // peak recoverable on each team (winner's chip pressure = peak red on the loser's team)
+                let l_red: u32 = ls.iter().map(|&s| f.rhp[s] as u32).sum();
+                if l_red > wchip { wchip = l_red; }
+                let w_red: u32 = ws.iter().map(|&s| f.rhp[s] as u32).sum();
+                if w_red > lchip { lchip = w_red; }
+                let wa = ws.iter().filter(|&&s| f.hp[s] > 0).count() as i32;
+                let la = ls.iter().filter(|&&s| f.hp[s] > 0).count() as i32;
+                if la - wa > comeback { comeback = la - wa; }
+            }
+            (0u32, 0u32, wchip.min(432), lchip.min(432), comeback.max(0) as u8)
+        }).unwrap_or((0, 0, 0, 0, 0));
         let body = serde_json::json!({
             "reporter": reporter.clone(), "winner": winner.clone(), "loser": loser.clone(),
             "winner_name": winner_name, "loser_name": loser_name,
             "ocv": ocv, "perfect": perfect, "comeback": comeback,
             "winner_team": winner_team, "loser_team": loser_team, "biggest_combo": biggest_combo, "meters_used": meters_used,
+            // gs-105 frame-derived per-side stats (0 when no recording): damage dealt, chip dealt, winner's comeback
+            "wdmg": wdmg, "ldmg": ldmg, "wchip": wchip, "lchip": lchip, "wcomeback": wcomeback,
+            "side": side,   // gs-92: which side the reporter was (1=P1,2=P2) — makes every game auditable server-side
+            "session_id": session_id, "match_index": match_index,   // gs-96: tie each game to its ranked set (≤10 games)
+            "ver": env!("CARGO_PKG_VERSION"),   // gs-98: which app build recorded this — so we can tell fixed vs pre-fix
         });
         // capture the server-derived match_key from the /result response (single source of truth → both
         // players consense on ONE key, and each tags its own recording with it).
@@ -1557,16 +1826,26 @@ fn report_result_server(reporter: String, winner: String, winner_name: String, l
         if !SHARE_GAMEPLAY.load(SeqCst) { return; }
         let gs = match gs { Some(g) => g, None => return };
         let key = match key { Some(k) if !k.is_empty() => k, _ => { trace("[gamestate] no match_key returned — skipping recording upload"); return; } };
-        spool_gamestate(&key, &reporter, side, &p1_team, &p2_team, &winner, &loser, &gs);
+        spool_gamestate(&key, &reporter, side, &p1_team, &p2_team, &winner, &loser, &gs, &session_id, match_index);
         trace(&format!("[gamestate] spooled {} frames as {}_{} (uploads between matches)", gs.frames.len(), key, reporter));
     });
 }
 
 // Record a finished game now if the side is confirmed, else BUFFER it (the "never record a guess" gate).
 fn commit_or_buffer(st: &mut ScoreState, winner: u8, opp: &Option<(String, String)>, confirmed: bool, my_side: u8,
-                    ocv: bool, perfect: bool, comeback: bool, rich: GameRich) {
-    if confirmed { on_game_win(winner, opp, my_side, ocv, perfect, comeback, &rich); }
-    else if let Some(o) = opp { st.pending.push(PendingGame { winner, opp: o.clone(), ocv, perfect, comeback, rich }); }
+                    ocv: bool, perfect: bool, comeback: bool, rich: GameRich, session_id: String, match_index: u32) {
+    if confirmed { on_game_win(winner, opp, my_side, ocv, perfect, comeback, &rich, &session_id, match_index); }
+    else if let Some(o) = opp { st.pending.push(PendingGame { winner, opp: o.clone(), ocv, perfect, comeback, rich, session_id, match_index }); }
+}
+
+// Stamp the CURRENT game with (session_id, its index in the set), then advance the counter + persist. Called once
+// per judged game so the 11th game rolls a new session (via the cap check in update_score) and a restart resumes.
+fn session_stamp(st: &mut ScoreState) -> (String, u32) {
+    let sid = st.session_id.clone().unwrap_or_default();
+    let mi = st.match_index;
+    st.match_index = st.match_index.saturating_add(1);
+    save_session(st);
+    (sid, mi)
 }
 
 fn update_score(st: &mut ScoreState, game: &Option<GameSt>, opp: &Option<(String, String)>, my_side: u8, confirmed: bool) {
@@ -1575,12 +1854,32 @@ fn update_score(st: &mut ScoreState, game: &Option<GameSt>, opp: &Option<(String
     // undetected between games / long char-select) must NOT wipe the set score — hold it until a real,
     // different SteamID actually appears.
     if let Some(cur_id) = cur {
-        if st.set_opp.as_deref() != Some(cur_id.as_str()) { *st = ScoreState { set_opp: Some(cur_id), ..Default::default() }; }
+        if st.set_opp.as_deref() != Some(cur_id.as_str()) {
+            *st = ScoreState { set_opp: Some(cur_id.clone()), ..Default::default() };
+            // RESUME the same running set after an app restart mid-session (same opponent, still under the cap) so
+            // the score + session id pick up where they left off; otherwise mint a fresh session for this set.
+            if let Some(v) = load_session() {
+                if v.get("opp").and_then(|x| x.as_str()) == Some(cur_id.as_str())
+                    && (v.get("match_index").and_then(|x| x.as_u64()).unwrap_or(SESSION_CAP as u64)) < SESSION_CAP as u64 {
+                    st.session_id = v.get("session_id").and_then(|x| x.as_str()).map(String::from);
+                    st.p1 = v.get("p1").and_then(|x| x.as_u64()).unwrap_or(0) as u32;
+                    st.p2 = v.get("p2").and_then(|x| x.as_u64()).unwrap_or(0) as u32;
+                    st.match_index = v.get("match_index").and_then(|x| x.as_u64()).unwrap_or(0) as u32;
+                    st.session_started_ms = v.get("started_ms").and_then(|x| x.as_u64()).unwrap_or(0);
+                }
+            }
+            if st.session_id.is_none() {
+                let (my_id, _) = self_ident();
+                st.session_id = Some(new_session_id(my_id, &cur_id));
+                st.session_started_ms = gs_now_ms();
+            }
+            save_session(st);
+        }
     }
     // Side just got confirmed → flush the games we buffered this set, in order, with the now-known side.
     if confirmed && !st.pending.is_empty() {
         for pg in std::mem::take(&mut st.pending) {
-            on_game_win(pg.winner, &Some(pg.opp), my_side, pg.ocv, pg.perfect, pg.comeback, &pg.rich);
+            on_game_win(pg.winner, &Some(pg.opp), my_side, pg.ocv, pg.perfect, pg.comeback, &pg.rich, &pg.session_id, pg.match_index);
         }
     }
     match game {
@@ -1593,7 +1892,19 @@ fn update_score(st: &mut ScoreState, game: &Option<GameSt>, opp: &Option<(String
                 if a1 && a2 {
                     // fresh game beginning (both teams back up after the last KO) → reset per-game trackers
                     if st.judged { st.g1_dmg = false; st.g2_dmg = false; st.g1_low = false; st.g2_low = false;
-                        st.g1_maxcombo = 0; st.g2_maxcombo = 0; st.g1_met = 0; st.g2_met = 0; st.met_init = false; st.teams = None; }
+                        st.g1_maxcombo = 0; st.g2_maxcombo = 0; st.g1_met = 0; st.g2_met = 0; st.met_init = false; st.teams = None;
+                        // ── SESSION HARD CAP ── the set just reached SESSION_CAP games → the game NOW starting opens
+                        // a NEW session (rolled lazily at the next start so the completed set's score stays visible).
+                        if st.match_index >= SESSION_CAP {
+                            if let Some(opp_id) = st.set_opp.clone() {
+                                let (my_id, _) = self_ident();
+                                st.session_id = Some(new_session_id(my_id, &opp_id));
+                                st.session_started_ms = gs_now_ms();
+                                st.match_index = 0; st.p1 = 0; st.p2 = 0; st.pend_w = 0; st.pend_n = 0;
+                                save_session(st);
+                            }
+                        }
+                    }
                     st.judged = false;
                     st.saw_both = true;                        // a genuine CONTESTED game is in progress
                 }
@@ -1616,30 +1927,47 @@ fn update_score(st: &mut ScoreState, game: &Option<GameSt>, opp: &Option<(String
                 if g.meter1 < st.last_m1 { st.g1_met += (st.last_m1 - g.meter1) as u32; }   // bars spent = decreases
                 if g.meter2 < st.last_m2 { st.g2_met += (st.last_m2 - g.meter2) as u32; }
                 st.last_m1 = g.meter1; st.last_m2 = g.meter2;
-                if !st.judged && st.saw_both {                 // KO edge (only for a game we saw contested)
-                    if st.la1 && !a1 && a2 {
-                        st.p2 += 1; st.judged = true; let r = rich_of(st);
-                        let (o, p, c) = (alive_ct(2) == 3, !st.g2_dmg, st.g2_low);
-                        commit_or_buffer(st, 2, opp, confirmed, my_side, o, p, c, r);
-                    } else if st.la2 && !a2 && a1 {
-                        st.p1 += 1; st.judged = true; let r = rich_of(st);
-                        let (o, p, c) = (alive_ct(1) == 3, !st.g1_dmg, st.g1_low);
-                        commit_or_buffer(st, 1, opp, confirmed, my_side, o, p, c, r);
-                    }
+                // CONFIRMED-KO winner: one team FULLY dead (no fighter alive) while the other still has one. Require
+                // it to HOLD for 2 cycles (pend_n>=2) so the speculative rollback frame — where the wrong team
+                // briefly reads dead — is never recorded. Once rollback settles the array shows the true winner
+                // (logger-proven). cur_w: 1 = P1(even) won, 2 = P2(odd) won, 0 = no KO (both alive or both dead).
+                // ── gs-99 GROUND-TRUTH WINNER. Primary = HEALTH (which team is FULLY dead at the KO — proven since
+                // 0.1.43, unambiguous at the KO frame). win_result (array+0x2e61a: 0x00=P1/even won→1, 0x01=P2/odd→2,
+                // 0xFF=draw) is a FALLBACK for the frames health can't resolve. ⚠ The battle-globals `phase` @ +0
+                // reads a POINTER on Steam (the DC page's leading fields are pointers here — LAW 1 only holds from
+                // the meter onward, meter-confirmed), so we do NOT gate on phase. The "not both-teams-alive" guard
+                // IS the gate: win_result is consulted only once a team is dead (a real KO), never mid-fight, so no
+                // stale "opens 0-1/1-0" count slips in. DISAGREE logging flags any win_result-vs-health drift.
+                let hp_w = if !a1 && a2 { 2u8 } else if !a2 && a1 { 1u8 } else { 0u8 };
+                let wr_w = if !(a1 && a2) { match g.win_result { 0 => 1u8, 1 => 2u8, _ => 0u8 } } else { 0u8 };
+                if wr_w != 0 && hp_w != 0 && wr_w != hp_w {
+                    trace(&format!("[winres] DISAGREE win_result→P{} vs health→P{} (wr={:#04x} round={})", wr_w, hp_w, g.win_result, g.round_no));
+                }
+                let cur_w = if hp_w != 0 { hp_w } else { wr_w };   // PREFER proven health; win_result fills gaps only
+                if cur_w != 0 && cur_w == st.pend_w { st.pend_n = st.pend_n.saturating_add(1); }
+                else { st.pend_w = cur_w; st.pend_n = if cur_w != 0 { 1 } else { 0 }; }
+                if !st.judged && st.saw_both && cur_w != 0 && st.pend_n >= 2 {
+                    st.judged = true; let r = rich_of(st); let (sid, mi) = session_stamp(st);
+                    if cur_w == 2 { st.p2 += 1; let (o, p, c) = (alive_ct(2) == 3, !st.g2_dmg, st.g2_low); commit_or_buffer(st, 2, opp, confirmed, my_side, o, p, c, r, sid, mi); }
+                    else          { st.p1 += 1; let (o, p, c) = (alive_ct(1) == 3, !st.g1_dmg, st.g1_low); commit_or_buffer(st, 1, opp, confirmed, my_side, o, p, c, r, sid, mi); }
                 }
                 st.la1 = a1; st.la2 = a2; st.was_in = true;
-            } else if st.was_in && !st.judged && st.saw_both { // match ended before the KO edge (contested game only)
-                if st.la1 && !st.la2 { st.p1 += 1; st.judged = true; let r = rich_of(st); let (p, c) = (!st.g1_dmg, st.g1_low); commit_or_buffer(st, 1, opp, confirmed, my_side, false, p, c, r); }
-                else if st.la2 && !st.la1 { st.p2 += 1; st.judged = true; let r = rich_of(st); let (p, c) = (!st.g2_dmg, st.g2_low); commit_or_buffer(st, 2, opp, confirmed, my_side, false, p, c, r); }
-                st.was_in = false; st.saw_both = false;
+            } else if st.was_in && !st.judged && st.saw_both { // match-flag off before we confirmed in-frame → settle from the pending KO (the round is over, so its last state is settled)
+                if st.pend_w != 0 && st.pend_n >= 1 {
+                    st.judged = true; let r = rich_of(st); let (sid, mi) = session_stamp(st);
+                    if st.pend_w == 1 { st.p1 += 1; let (p, c) = (!st.g1_dmg, st.g1_low); commit_or_buffer(st, 1, opp, confirmed, my_side, false, p, c, r, sid, mi); }
+                    else { st.p2 += 1; let (p, c) = (!st.g2_dmg, st.g2_low); commit_or_buffer(st, 2, opp, confirmed, my_side, false, p, c, r, sid, mi); }
+                } else { trace(&format!("[record] MISS(match-end) — no KO seen (pend_w={} pend_n={}) → dropped (under-count)", st.pend_w, st.pend_n)); }
+                st.was_in = false; st.saw_both = false; st.pend_w = 0; st.pend_n = 0;
             } else { st.was_in = g.in_match == 1; if g.in_match != 1 { st.saw_both = false; } }
         }
-        None => {   // game data gone (liveness gate / match over): judge from the LAST-known alive states
-            if st.was_in && !st.judged && st.saw_both {
-                if st.la1 && !st.la2 { st.p1 += 1; st.judged = true; let r = rich_of(st); let (p, c) = (!st.g1_dmg, st.g1_low); commit_or_buffer(st, 1, opp, confirmed, my_side, false, p, c, r); }
-                else if st.la2 && !st.la1 { st.p2 += 1; st.judged = true; let r = rich_of(st); let (p, c) = (!st.g2_dmg, st.g2_low); commit_or_buffer(st, 2, opp, confirmed, my_side, false, p, c, r); }
+        None => {   // game data gone (liveness gate / match over): settle from the pending KO (round is over → settled)
+            if st.was_in && !st.judged && st.saw_both && st.pend_w != 0 && st.pend_n >= 1 {
+                st.judged = true; let r = rich_of(st); let (sid, mi) = session_stamp(st);
+                if st.pend_w == 1 { st.p1 += 1; let (p, c) = (!st.g1_dmg, st.g1_low); commit_or_buffer(st, 1, opp, confirmed, my_side, false, p, c, r, sid, mi); }
+                else { st.p2 += 1; let (p, c) = (!st.g2_dmg, st.g2_low); commit_or_buffer(st, 2, opp, confirmed, my_side, false, p, c, r, sid, mi); }
             }
-            st.was_in = false; st.saw_both = false;
+            st.was_in = false; st.saw_both = false; st.pend_w = 0; st.pend_n = 0;
         }
     }
 }
@@ -1656,12 +1984,15 @@ pub fn get_record(steamid: String) -> serde_json::Value {
 /// Global leaderboard from the skinsync server for a tab (streak | wins | ocv | perfect | comeback).
 /// Returns { tab, field, players: [{ steamid, name, wins, losses, stat }] } (backend fetch → no CORS/CSP).
 #[tauri::command]
-pub fn leaderboard(tab: String, period: Option<String>, limit: Option<u32>) -> Result<serde_json::Value, String> {
+pub fn leaderboard(tab: String, period: Option<String>, limit: Option<u32>, country: Option<String>, city: Option<String>) -> Result<serde_json::Value, String> {
     let lim = limit.unwrap_or(10).min(50);
     let period = period.unwrap_or_else(|| "all".into());
-    ureq::get(&format!("{}/leaderboard?tab={}&period={}&limit={}", SKINSYNC, tab, period, lim))
-        .timeout(std::time::Duration::from_secs(6))
-        .call().map_err(|e| e.to_string())?
+    let mut r = ureq::get(&format!("{}/leaderboard", SKINSYNC))
+        .query("tab", &tab).query("period", &period).query("limit", &lim.to_string())
+        .timeout(std::time::Duration::from_secs(6));
+    if let Some(c) = country.filter(|s| !s.is_empty()) { r = r.query("country", &c); }
+    if let Some(c) = city.filter(|s| !s.is_empty()) { r = r.query("city", &c); }
+    r.call().map_err(|e| e.to_string())?
         .into_json::<serde_json::Value>().map_err(|e| e.to_string())
 }
 
@@ -1675,11 +2006,54 @@ pub fn profile(steamid: String) -> Result<serde_json::Value, String> {
         .into_json::<serde_json::Value>().map_err(|e| e.to_string())
 }
 
+/// One ranked set's breakdown (games + each player's W-L) from the server. Backend fetch (no CORS/CSP).
+#[tauri::command]
+pub fn session_stats(id: String) -> Result<serde_json::Value, String> {
+    ureq::get(&format!("{}/session?id={}", SKINSYNC, id))
+        .timeout(std::time::Duration::from_secs(6))
+        .call().map_err(|e| e.to_string())?
+        .into_json::<serde_json::Value>().map_err(|e| e.to_string())
+}
+
 /// Matchup intel between two SteamIDs: { my_elo, opp_elo, my_rank, opp_rank, win_chance, elo_expected,
 /// h2h:{wins,losses}, best_team_vs_them:{team,wins}, their_kryptonite:{team,losses} }. Backend fetch (no CORS/CSP).
 #[tauri::command]
 pub fn matchup(me: String, opp: String) -> Result<serde_json::Value, String> {
     ureq::get(&format!("{}/matchup?me={}&opp={}", SKINSYNC, me, opp))
+        .timeout(std::time::Duration::from_secs(6))
+        .call().map_err(|e| e.to_string())?
+        .into_json::<serde_json::Value>().map_err(|e| e.to_string())
+}
+
+/// gs-104 rich per-player stats: per-character W/L, head-to-head vs every opponent, nemesis/favourite-victim,
+/// and recent form — all derived server-side from the full match log (SSOT). Backend fetch (no CORS/CSP).
+#[tauri::command]
+pub fn playerstats(steamid: String) -> Result<serde_json::Value, String> {
+    ureq::get(&format!("{}/playerstats?steamid={}", SKINSYNC, steamid))
+        .timeout(std::time::Duration::from_secs(6))
+        .call().map_err(|e| e.to_string())?
+        .into_json::<serde_json::Value>().map_err(|e| e.to_string())
+}
+
+/// gs-104 global character tier list (win rate per character across all games). Backend fetch (no CORS/CSP).
+#[tauri::command]
+pub fn tierlist(country: Option<String>, city: Option<String>) -> Result<serde_json::Value, String> {
+    let mut r = ureq::get(&format!("{}/tierlist", SKINSYNC)).timeout(std::time::Duration::from_secs(6));
+    if let Some(c) = country.filter(|s| !s.is_empty()) { r = r.query("country", &c); }
+    if let Some(c) = city.filter(|s| !s.is_empty()) { r = r.query("city", &c); }
+    r.call().map_err(|e| e.to_string())?
+        .into_json::<serde_json::Value>().map_err(|e| e.to_string())
+}
+
+// region aggregate boards (top cities / countries) — GET /skinsync/regions
+// sort = wins (default) | players | winrate — forwarded to the server so it ranks regions by the chosen metric.
+#[tauri::command]
+pub fn regions(level: Option<String>, sort: Option<String>, limit: Option<u32>) -> Result<serde_json::Value, String> {
+    let lvl = level.unwrap_or_else(|| "city".into());
+    let srt = sort.unwrap_or_else(|| "wins".into());
+    let lim = limit.unwrap_or(30).min(100);
+    ureq::get(&format!("{}/regions", SKINSYNC))
+        .query("level", &lvl).query("sort", &srt).query("limit", &lim.to_string())
         .timeout(std::time::Duration::from_secs(6))
         .call().map_err(|e| e.to_string())?
         .into_json::<serde_json::Value>().map_err(|e| e.to_string())
@@ -1732,64 +2106,6 @@ unsafe fn read_at(h: HANDLE, addr: usize, len: usize) -> Option<Vec<u8>> {
         buf.truncate(read);
         Some(buf)
     } else { None }
-}
-
-// scan the working-buffer window for every character sig; returns hits sorted by address (one per cid)
-unsafe fn full_scan(h: HANDLE) -> Vec<Found> {
-    let (sigs, buckets) = sigtab();
-    let mut hits: Vec<Found> = Vec::new();
-    let mut seen: std::collections::HashSet<u32> = std::collections::HashSet::new();
-    let mut addr = WIN_LO;
-    while addr < WIN_HI {
-        let mut mbi = MEMORY_BASIC_INFORMATION::default();
-        let got = VirtualQueryEx(h, Some(addr as *const c_void), &mut mbi, std::mem::size_of::<MEMORY_BASIC_INFORMATION>());
-        if got == 0 { break; }
-        let base = mbi.BaseAddress as usize;
-        let size = mbi.RegionSize;
-        if size == 0 { break; }
-        let prot = mbi.Protect.0;
-        let readable = mbi.State == MEM_COMMIT
-            && (prot & PAGE_GUARD.0) == 0
-            && (prot & PAGE_NOACCESS.0) == 0
-            && (prot & 0xEE) != 0;
-        if readable && base < WIN_HI && base + size > WIN_LO {
-            let lo = base.max(WIN_LO);
-            let hi = (base + size).min(WIN_HI);
-            if let Some(buf) = read_at(h, lo, hi - lo) {
-                if buf.len() >= 64 {
-                    let end = buf.len() - 64;
-                    let mut i = 0;
-                    while i <= end {
-                        for &si in &buckets[buf[i] as usize] {
-                            let s = &sigs[si];
-                            if !seen.contains(&s.cid) && buf[i..i + 64] == s.bytes {
-                                seen.insert(s.cid);
-                                hits.push(Found { cid: s.cid, name: s.name.clone(), addr: lo + i });
-                            }
-                        }
-                        i += 1;
-                    }
-                }
-            }
-        }
-        addr = base + size;
-        if addr <= base { break; }
-    }
-    hits.sort_by_key(|f| f.addr);
-    hits
-}
-
-// cheap confirm: are all cached sigs still resident at their known addresses?
-unsafe fn confirm(h: HANDLE, roster: &[Found]) -> bool {
-    let (sigs, _) = sigtab();
-    for f in roster {
-        let want = match sigs.iter().find(|s| s.cid == f.cid) { Some(s) => &s.bytes, None => return false };
-        match read_at(h, f.addr, 64) {
-            Some(b) if b.len() == 64 && &b[..] == &want[..] => {}
-            _ => return false,
-        }
-    }
-    true
 }
 
 fn roster_ids(r: &[Found]) -> Vec<u32> { r.iter().map(|f| f.cid).collect() }
@@ -1867,36 +2183,6 @@ fn pick_working(mut occ: Vec<(usize, u32, String)>) -> Vec<Found> {
     out
 }
 
-
-// ── Auto local-side detection (input correlation) ──────────────────────────────────────────────────
-// GGPO netplay is transparent to the emulated game, so "which side is local" isn't in DC RAM. But the LOCAL
-// fighter is the one that ACTS when YOUR pad is active — so per side we track how much the fighters' state
-// churns while you're inputting vs idle; the side that churns WITH your input is you. Mirror-proof (keys on
-// input, not character). Read-only. The "am I inputting?" trigger comes from the local stick directly via
-// XInput (offset-free, robust across game updates); we OR in flycast's host kcode[0] as a backup so keyboard
-// and DirectInput players (whose pads flycast still funnels into kcode) are covered too.
-const KCODE_OFF: usize = 0xac6f58;      // flycast kcode[0] offset from the game exe base (default base 0x140000000)
-// ★ localPlayerNum — flycast's own P1/P2 side global (0 = P1, 1 = P2), found by DIFFERENTIAL capture (sidehunt):
-// it read 0 in a live P1 match and 1 across 3 live P2 matches, right next to kcode. DETERMINISTIC side, one read.
-const LOCALPLAYER_OFF: usize = 0xac7230;
-
-/// True if ANY local XInput pad (0..4) is being pressed — face buttons, d-pad, triggers, or a deflected
-/// stick. This is the real local input, read straight from the OS, so it needs no game-memory offset.
-fn xinput_active() -> bool {
-    for i in 0..4u32 {
-        let mut st = XINPUT_STATE::default();
-        if unsafe { XInputGetState(i, &mut st) } == 0 {          // 0 = ERROR_SUCCESS = pad connected
-            let g = st.Gamepad;
-            let deflect = |v: i16| v.unsigned_abs() > 12000;
-            if g.wButtons.0 != 0 || g.bLeftTrigger > 40 || g.bRightTrigger > 40
-                || deflect(g.sThumbLX) || deflect(g.sThumbLY) || deflect(g.sThumbRX) || deflect(g.sThumbRY) {
-                return true;
-            }
-        }
-    }
-    false
-}
-
 fn game_exe_base(pid: u32) -> usize {
     unsafe {
         let snap = match CreateToolhelp32Snapshot(TH32CS_SNAPMODULE, pid) { Ok(s) => s, Err(_) => return 0 };
@@ -1924,248 +2210,7 @@ fn load_anchors() -> (u32, usize, Option<(usize, usize)>, Option<(usize, usize)>
     } else { (0, 0, None, None) }
 }
 
-// ── DETERMINISTIC SIDE via Input_DEC (per-player input register) ────────────────────────────────────
-// The game's per-player input register (Input_DEC), offset validated live: the input is Input_DEC in
-// emulated DC RAM — P1 @ DC 0x8C2681DC, P2 @ +0x14 (stride 0x14): +0 cur / +2 prev / +4 (cur&~prev) /
-// +6 (prev&~cur), CPS2-decoded. DC RAM is a runtime MEM_PRIVATE region (earlier scans only did MEM_IMAGE →
-// missed it). We scan committed memory for the invariant-shaped pairs, then over a few seconds of your
-// natural play find the slot whose `cur` is a clean FUNCTION of your pad (kcode[0]) — that slot IS you.
-// Deterministic, mirror-proof, dummy-proof (keys on INPUT, not animation). Read-only; bg thread; once/set.
-static INPUTDEC_LOCKED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-const IDEC_STRIDE: usize = 0x14;
 fn u16le(b: &[u8], o: usize) -> u16 { (b[o] as u16) | ((b[o + 1] as u16) << 8) }
-fn idec_inv(cur: u16, prev: u16, ep: u16, er: u16) -> bool { ep == (cur & !prev) && er == (prev & !cur) }
-
-// candidate P1-slot addresses across committed memory (input present → cur nonzero, input-shaped).
-// GENTLE: caps candidates + total bytes (DC RAM sits in the low ~100 MB) and yields between regions so the
-// scan burst can't starve the emulator of a CPU frame.
-fn idec_candidates(h: HANDLE) -> Vec<usize> {
-    let mut out = Vec::new(); let mut addr = 0usize; let mut scanned = 0usize;
-    loop {
-        let mut mbi = MEMORY_BASIC_INFORMATION::default();
-        if unsafe { VirtualQueryEx(h, Some(addr as *const c_void), &mut mbi, std::mem::size_of::<MEMORY_BASIC_INFORMATION>()) } == 0 { break; }
-        let b = mbi.BaseAddress as usize; let s = mbi.RegionSize; if s == 0 { break; }
-        let p = mbi.Protect.0;
-        let ok = mbi.State == MEM_COMMIT && (p & PAGE_GUARD.0) == 0 && (p & PAGE_NOACCESS.0) == 0 && (p & 0xEE) != 0;
-        let nx = b + s; if nx <= b { break; }
-        if ok && s <= 0x0400_0000 {
-            if let Some(buf) = unsafe { read_at(h, b, s) } {
-                let mut o = 0usize;
-                while o + 8 + IDEC_STRIDE <= buf.len() {
-                    let (cur, prev, ep, er) = (u16le(&buf, o), u16le(&buf, o+2), u16le(&buf, o+4), u16le(&buf, o+6));
-                    if cur != 0 && cur != 0xffff && cur.count_ones() <= 8 && prev.count_ones() <= 8 && idec_inv(cur, prev, ep, er) {
-                        let (c2, p2, e2, r2) = (u16le(&buf, o+0x14), u16le(&buf, o+0x16), u16le(&buf, o+0x18), u16le(&buf, o+0x1a));
-                        if idec_inv(c2, p2, e2, r2) && c2.count_ones() <= 8 && p2.count_ones() <= 8 {
-                            out.push(b + o);
-                            if out.len() >= 3000 { return out; }
-                        }
-                    }
-                    o += 2;
-                }
-                scanned += s;
-                std::thread::sleep(std::time::Duration::from_millis(1));   // yield a slice back to the game
-            }
-        }
-        if scanned > 0x1800_0000 { break; }   // ~384 MB is plenty to reach DC RAM (candidates cluster ~64-80 MB)
-        addr = nx;
-    }
-    out
-}
-fn idec_pair(h: HANDLE, a: usize) -> [u16; 2] {   // both slots' cur in ONE read (halves the RPM load)
-    match unsafe { read_at(h, a, IDEC_STRIDE + 2) } {
-        Some(b) if b.len() >= IDEC_STRIDE + 2 => [u16le(&b, 0), u16le(&b, IDEC_STRIDE)],
-        _ => [0, 0],
-    }
-}
-
-// find your side by correlating each candidate slot's cur with your pad. Returns 1 (P1) or 2 (P2).
-fn idec_find_side(h: HANDLE, kaddr: usize) -> Option<u8> {
-    let all = idec_candidates(h);
-    if all.is_empty() { return None; }
-    // Pass A (light, ~0.7s): sample ALL candidates a few times, keep only the LIVE ones (cur actually varies) —
-    // drops frozen rollback copies + junk from thousands to a handful, so Pass B is cheap.
-    let mut seen: Vec<[std::collections::HashSet<u16>; 2]> = (0..all.len()).map(|_| [std::collections::HashSet::new(), std::collections::HashSet::new()]).collect();
-    for _ in 0..12 {
-        for (i, &a) in all.iter().enumerate() { let pr = idec_pair(h, a); seen[i][0].insert(pr[0]); seen[i][1].insert(pr[1]); }
-        std::thread::sleep(std::time::Duration::from_millis(55));
-    }
-    let cands: Vec<usize> = all.iter().enumerate()
-        .filter(|(i, _)| seen[*i][0].len() >= 2 || seen[*i][1].len() >= 2).map(|(_, &a)| a).collect();
-    if cands.is_empty() || cands.len() > 800 { return None; }   // none live, or too noisy to trust → bail cheaply
-    // Pass B: correlate the few live candidates against your pad during natural play.
-    let mut samples: Vec<(u32, Vec<[u16; 2]>)> = Vec::with_capacity(70);
-    for _ in 0..70 {
-        let k = unsafe { rpm_u32(h, kaddr) }.unwrap_or(0);
-        let row: Vec<[u16; 2]> = cands.iter().map(|&a| idec_pair(h, a)).collect();
-        samples.push((k, row));
-        std::thread::sleep(std::time::Duration::from_millis(50));
-    }
-    let kstates: std::collections::HashSet<u32> = samples.iter().map(|s| s.0).collect();
-    if kstates.len() < 3 { return None; }   // need input variety
-    // the slot whose cur is the cleanest FUNCTION of kcode (your input deterministically drives it) is you.
-    let (mut best_score, mut best_slot) = (0i32, 0usize);
-    for i in 0..cands.len() {
-        let mut track = [0usize; 2];   // how cleanly cur is a FUNCTION of your kcode (your input drives it)
-        let mut vary = [false; 2];     // does cur take >=2 values (this slot is an ACTIVE input)
-        for s in 0..2 {
-            let mut ok = 0usize;
-            for &ks in &kstates {
-                let mut vc: std::collections::HashMap<u16, usize> = std::collections::HashMap::new(); let mut tot = 0;
-                for (k, row) in &samples { if *k == ks { *vc.entry(row[i][s]).or_insert(0) += 1; tot += 1; } }
-                if tot < 2 { continue; }
-                if *vc.values().max().unwrap() * 100 >= tot * 80 { ok += 1; }
-            }
-            let distinct: std::collections::HashSet<u16> = samples.iter().map(|(_, r)| r[i][s]).collect();
-            vary[s] = distinct.len() >= 2;
-            track[s] = ok;
-        }
-        let (me, other) = if track[0] >= track[1] { (0, 1) } else { (1, 0) };
-        // ★ PORT-INDEXED requirement: your slot tracks your pad AND the OTHER slot is an ACTIVE input that
-        // does NOT track your pad (= the opponent). This rejects side-agnostic LOCAL input buffers (whose
-        // other slot is empty/a copy) — those always read as P1 and were the wrong-side bug.
-        if track[me] >= 3 && vary[other] && (track[other] as i32) < (track[me] as i32) - 1 {
-            let score = track[me] as i32 * 2 - track[other] as i32;   // prefer clean me + independent opponent
-            if score > best_score { best_score = score; best_slot = me; }
-        }
-    }
-    if best_score > 0 { Some((best_slot + 1) as u8) } else { None }
-}
-
-// ★ Authoritative local side straight from the LIVE fighter structs the reader already located — no memory
-// scan. Found empirically from a full-set recording (slana): each fighter's input register @ struct +0x4FC is
-// a clean FUNCTION of that side's pad, so over a few seconds of your natural play the LOCAL side's fighters'
-// +0x4FC track your kcode (deterministically) while the remote side carries network input. The player whose
-// input is the cleaner function of your pad IS you. Mirror-proof; keys on INPUT, not animation.
-const OFF_INPUT: usize = 0x4fc;
-fn struct_side_detect(h: HANDLE, kaddr: usize, fighters: &[(u8, usize)]) -> Option<u8> {
-    if !fighters.iter().any(|(p, _)| *p == 1) || !fighters.iter().any(|(p, _)| *p == 2) { return None; }
-    let mut samples: Vec<(u32, Vec<u16>)> = Vec::with_capacity(70);
-    for _ in 0..70 {
-        let k = unsafe { rpm_u32(h, kaddr) }.unwrap_or(0);
-        let row: Vec<u16> = fighters.iter().map(|&(_, a)| unsafe { read_at(h, a + OFF_INPUT, 2) }.map(|b| u16le(&b, 0)).unwrap_or(0)).collect();
-        samples.push((k, row));
-        std::thread::sleep(std::time::Duration::from_millis(50));
-    }
-    let kstates: std::collections::HashSet<u32> = samples.iter().map(|s| s.0).collect();
-    if kstates.len() < 3 { return None; }   // need input variety to correlate
-    let mut track = [0i32; 3]; let mut vary = [false; 3];
-    for (fi, &(pl, _)) in fighters.iter().enumerate() {
-        if pl != 1 && pl != 2 { continue; }
-        let mut ok = 0i32;
-        for &ks in &kstates {
-            let mut vc: std::collections::HashMap<u16, usize> = std::collections::HashMap::new(); let mut tot = 0;
-            for (k, row) in &samples { if *k == ks { *vc.entry(row[fi]).or_insert(0) += 1; tot += 1; } }
-            if tot >= 2 && *vc.values().max().unwrap() * 100 >= tot * 80 { ok += 1; }   // same kcode ⇒ same input
-        }
-        let distinct: std::collections::HashSet<u16> = samples.iter().map(|(_, r)| r[fi]).collect();
-        if distinct.len() >= 2 { vary[pl as usize] = true; }
-        track[pl as usize] += ok;
-    }
-    if track[1] >= track[2] + 2 && vary[1] { Some(1) }
-    else if track[2] >= track[1] + 2 && vary[2] { Some(2) }
-    else { None }
-}
-
-fn start_inputdec_detector() {
-    std::thread::spawn(|| {
-        let mut cur_pid = 0u32; let mut cur_opp = String::new();
-        let mut next_try = std::time::Instant::now();     // cooldown gate so a failed lock can't re-scan in a tight loop
-        loop {
-            std::thread::sleep(std::time::Duration::from_millis(1500));
-            // side is a NETPLAY concept — only run in a live match with a real opponent; re-derive per new set.
-            let (in_match, opp) = { let s = snapshot().lock().unwrap();
-                (s.game.as_ref().map(|g| g.in_match == 1).unwrap_or(false),
-                 s.opponent.as_ref().map(|o| o.0.clone()).unwrap_or_default()) };
-            if !in_match || opp.is_empty() { continue; }
-            let pid = match find_game_pid() { Some(p) => p, None => continue };
-            if pid != cur_pid || opp != cur_opp {   // new game / new opponent (new set) → re-derive
-                cur_pid = pid; cur_opp = opp; INPUTDEC_LOCKED.store(false, std::sync::atomic::Ordering::Relaxed);
-                next_try = std::time::Instant::now();
-            }
-            if INPUTDEC_LOCKED.load(std::sync::atomic::Ordering::Relaxed) { continue; }   // locked this set → hold
-            if std::time::Instant::now() < next_try { continue; }                          // in cooldown → don't scan
-            let base = game_exe_base(pid); if base == 0 { continue; }
-            let h = match unsafe { OpenProcess(PROCESS_VM_READ | PROCESS_QUERY_INFORMATION, FALSE, pid) } { Ok(h) => h, Err(_) => continue };
-            // PRIMARY: the proven struct-based read (+0x4FC on the located fighters); FALLBACK: the old scan.
-            let fighters: Vec<(u8, usize)> = { let s = snapshot().lock().unwrap();
-                s.game.as_ref().map(|g| g.slots.iter().map(|sl| (sl.player, sl.addr)).collect()).unwrap_or_default() };
-            let found = struct_side_detect(h, base + KCODE_OFF, &fighters)
-                .or_else(|| idec_find_side(h, base + KCODE_OFF));
-            if let Some(side) = found {
-                snapshot().lock().unwrap().local_side = side;
-                INPUTDEC_LOCKED.store(true, std::sync::atomic::Ordering::Relaxed);
-                trace(&format!("[side] locked deterministic side = P{side} (struct +0x4fc)"));
-            } else {
-                next_try = std::time::Instant::now() + std::time::Duration::from_secs(15);  // failed → back off 15s
-            }
-            unsafe { let _ = CloseHandle(h); }
-        }
-    });
-}
-
-fn start_side_detector() {
-    std::thread::spawn(|| {
-        let mut cur_pid = 0u32; let mut exe_base = 0usize;
-        let mut last: [Option<Vec<u8>>; 6] = Default::default();
-        let (mut act, mut idl) = ([0f64; 2], [0f64; 2]);
-        let (mut an, mut idn) = (0u32, 0u32);
-        loop {
-            std::thread::sleep(std::time::Duration::from_millis(60));
-            // fighter cluster addresses + side (0/1), from the shared snapshot (set by the reader thread)
-            let fighters: Vec<(usize, usize)> = {
-                let s = snapshot().lock().unwrap();
-                match s.game.as_ref() {
-                    Some(g) if g.in_match == 1 => g.slots.iter().filter(|x| x.addr != 0)
-                        .map(|x| ((x.player.saturating_sub(1)) as usize, x.addr)).collect(),
-                    _ => Vec::new(),
-                }
-            };
-            if fighters.is_empty() { last = Default::default(); act = [0.0; 2]; idl = [0.0; 2]; an = 0; idn = 0; continue; }
-            let pid = match find_game_pid() { Some(p) => p, None => continue };
-            if pid != cur_pid { cur_pid = pid; exe_base = game_exe_base(pid); last = Default::default(); act = [0.0; 2]; idl = [0.0; 2]; an = 0; idn = 0;
-                snapshot().lock().unwrap().local_side = 0; }   // fresh game → re-detect from scratch (keeps side across between-games churn)
-            let h = match unsafe { OpenProcess(PROCESS_VM_READ | PROCESS_QUERY_INFORMATION, FALSE, pid) } { Ok(h) => h, Err(_) => continue };
-            // primary trigger: the local stick, straight from Windows (offset-free, no game memory needed).
-            // backup: flycast's host kcode[0] at the known offset — covers keyboard / DirectInput pads that
-            // XInput can't see (only consulted when the module base resolved).
-            let active = xinput_active()
-                || (exe_base != 0 && unsafe { rpm_u32(h, exe_base + KCODE_OFF) }.unwrap_or(0) != 0);
-            for (i, (side, cl)) in fighters.iter().enumerate().take(6) {
-                let cur = unsafe { read_at(h, cl + 0x100, 0x300) };  // action/animation region of the struct
-                if let (Some(c), Some(p)) = (&cur, &last[i]) {
-                    if c.len() == p.len() {
-                        let churn = c.iter().zip(p).filter(|(a, b)| a != b).count() as f64;
-                        if *side < 2 { if active { act[*side] += churn; } else { idl[*side] += churn; } }
-                    }
-                }
-                last[i] = cur;
-            }
-            if active { an += 1; } else { idn += 1; }
-            unsafe { let _ = CloseHandle(h); }
-            // Evaluate once we have some of BOTH input-active and idle samples. Score each side by how much
-            // MORE it churns while I'm inputting vs idle, NORMALIZED (robust to animation size): my fighter
-            // reacts to my pad, the opponent's churn is independent of it.
-            if an >= 12 && idn >= 8 {
-                let ex = |sd: usize| {                            // normalized input-correlation in ~[-1,1]
-                    let a = act[sd] / an as f64; let i = idl[sd] / idn as f64;
-                    (a - i) / (a + i + 1.0)
-                };
-                let (e0, e1) = (ex(0), ex(1));
-                let (win, win_e, lose_e) = if e0 >= e1 { (1u8, e0, e1) } else { (2u8, e1, e0) };
-                // churn is only a FALLBACK now — if the deterministic Input_DEC detector has locked the side,
-                // don't let the (fuzzier) churn signal overwrite it.
-                if win_e > 0.10 && (win_e - lose_e) > 0.06 && !INPUTDEC_LOCKED.load(std::sync::atomic::Ordering::Relaxed) {
-                    let mut s = snapshot().lock().unwrap();
-                    // hysteresis: flipping an already-locked side needs a bigger margin than the first lock,
-                    // so brief cross-talk (I get hit while idle, etc.) can't flip-flop the answer.
-                    let need = if s.local_side != 0 && s.local_side != win { 0.15 } else { 0.06 };
-                    if (win_e - lose_e) >= need { s.local_side = win; }
-                }
-                for x in act.iter_mut().chain(idl.iter_mut()) { *x *= 0.6; } an = an * 3 / 5; idn = idn * 3 / 5;  // decay → keeps adapting
-            }
-        }
-    });
-}
 
 // LIVENESS: a live match's fighter animation changes every frame. Hash a volatile slice of each fighter's
 // struct; if it's byte-identical across reader cycles the buffer is FROZEN (menus / match over / a stale
@@ -2191,12 +2236,10 @@ fn game_liveness_hash(pid: u32, game: &GameSt) -> u64 {
 /// roster / side / opponent / health all come from cross-process reads on this one thread, so all heavy
 /// work is OFF the Tauri IPC path and no command can ever block the UI. Spawned once at app startup.
 pub fn start_reader() {
-    // NOTE: the old input-correlation side detectors (start_side_detector = churn, start_inputdec_detector =
-    // +0x4fc render field) are DISABLED — the +0x4fc field is side-agnostic so inputdec always locked P1, which
-    // is what inverted the stats. Side now comes DETERMINISTICALLY from the session-struct pairing (P1's SteamID
-    // is stored above P2's), set in the reader loop. Kept for reference; do not re-enable without a real fix.
-    // start_side_detector();
-    // start_inputdec_detector();
+    // NOTE: the old input-correlation side detectors (churn-based start_side_detector and +0x4fc-based
+    // start_inputdec_detector) were REMOVED — the +0x4fc field is side-agnostic so inputdec always locked P1,
+    // which inverted the stats. Side now comes DETERMINISTICALLY from the session-struct pairing (P1's SteamID
+    // is stored above P2's), set in the reader loop.
     load_share_setting();            // restore the gameplay-data sharing consent (beta default = on)
     load_auth();                     // restore the registration token (attached to every write request)
     // silent auto-registration: the moment the local SteamID is readable (Steam registry, no game needed),
@@ -2223,7 +2266,7 @@ pub fn start_reader() {
         let mut opp: Option<(String, String)> = None;
         let mut opp_backoff: i32 = 0;
         let mut opp_pending: Option<String> = None;  // a DIFFERENT candidate id; must persist 2 scans to swap (anti-flip)
-        let mut opp_addr: Option<(usize, u8, String)> = None; // cached (session-slot, side, name) → instant re-reads
+        let mut opp_addr: Option<(usize, u8, String, u64)> = None; // cached (session-slot, side, name, opp_id) → instant re-reads; opp_id lets us detect a CHANGED opponent
         let mut opp_region: Option<(usize, usize)> = None; // cached session REGION → warm re-locks skip the 2GB sweep (per-launch stable)
         let mut in_session = false;                   // live netplay pairing present (fast "in a match" signal)
         let mut opp_lost: Option<std::time::Instant> = None; // when the pairing first went missing while holding an opp → set-over grace
@@ -2234,6 +2277,7 @@ pub fn start_reader() {
         let mut prev_live_hash = 0u64; let mut frozen_cycles = 0u32; // liveness gate (drop frozen/stale match data)
         let mut prev_log = String::new();            // last trace line (log only on change)
         let mut last_find = std::time::Instant::now() - std::time::Duration::from_secs(10); // find_array throttle
+        let mut live_seen: Option<std::time::Instant> = None; // last cycle we had a LIVE array read → keeps find_array re-acquiring through rollback flicker, and gates the deterministic side lock
         let mut ram_base: usize = 0;                 // located player-array base (0 = not yet found; volatile per match)
         // ★ persisted anchors (keyed to the game pid): an app restart while the SAME game is running restores them
         // in the pid-change block below → skips ALL cold scans. Every restored value is validated downstream, so a
@@ -2277,28 +2321,41 @@ pub fn start_reader() {
             }
             let h = match handle { Some(h) => h, None => { std::thread::sleep(std::time::Duration::from_millis(1000)); continue; } };
 
+            // P0.3: guard the ENTIRE per-cycle body (all game-memory reads + parsing + the snapshot publish) so
+            // one panicking frame can't kill the reader/detection/painting thread — it logs and continues to the
+            // next cycle (mirrors the server's per-request catch_unwind). Real Result errors below are untouched.
+            let cycle = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             // roster + mode — LAYOUT-INDEPENDENT (robust to per-launch ASLR of the guest RAM):
             // cheaply re-scan the located team region each cycle; only if it stays empty for 2 cycles do
             // a bounded wide relocate. The wide scan therefore never fires mid-match (buffers are stable
             // there) — it only runs at menus/match-start, so it can't hitch live gameplay.
-            // ★ FAST roster (no scan): during a fight the anchored array's six char_ids ARE the roster. This
-            // deletes the ~1GB `rpm_occurrences` wide relocate from the hot path (the last heavy scan). The
-            // signature scan below is now ONLY the character-select fallback, before fighters spawn.
-            let mut team = unsafe { anchor_roster(h) };
-            if !team.is_empty() { empty_streak = 0; }
-            else {
-                team = if let Some((lo, hi)) = work { pick_working(unsafe { rpm_occurrences(h, lo, hi) }) } else { Vec::new() };
-                if team.is_empty() {
-                    empty_streak += 1;
-                    if work.is_none() || empty_streak >= 2 {
-                        team = pick_working(unsafe { rpm_occurrences(h, 0x0200_0000, 0x4000_0000) });
-                        work = match (team.first(), team.last()) {
-                            (Some(f), Some(l)) => Some((f.addr.saturating_sub(0x10_0000), l.addr + 0x10_0000)),
-                            _ => None,
-                        };
-                        empty_streak = 0;
-                    }
-                } else { empty_streak = 0; }
+            // ★ ROSTER via SIGNATURE, not the +0x554 char_id. The point char's +0x554 misreads as 0=Ryu,
+            // so anchor_roster (which reads +0x554) planted phantom Ryus in ~38% of recorded teams. The
+            // fingerprint scan (pick_working ⟵ rpm_occurrences) reads characters by their DAT signature —
+            // immune to that misread — and was the ORIGINAL, reliable source. It was swapped to anchor_roster
+            // purely to drop the 1 GB wide relocate from the hot path; the fix keeps the fingerprint source but
+            // BOUNDS it to the located array's region (~MBs — the same bounded scan that already ran every cycle
+            // at char-select, so its cost is proven). anchor_roster survives only as a last-resort so the
+            // opponent still surfaces in the brief window before the region is bounded (may carry a phantom Ryu).
+            let mut team = if let Some((lo, hi)) = work {
+                pick_working(unsafe { rpm_occurrences(h, lo, hi) })
+            } else { Vec::new() };
+            if !team.is_empty() {
+                empty_streak = 0;
+                if let (Some(f), Some(l)) = (team.first(), team.last()) {
+                    work = Some((f.addr.saturating_sub(0x10_0000), l.addr + 0x10_0000)); // track region drift
+                }
+            } else {
+                empty_streak += 1;
+                if work.is_none() || empty_streak >= 2 {
+                    team = pick_working(unsafe { rpm_occurrences(h, 0x0200_0000, 0x4000_0000) });
+                    work = match (team.first(), team.last()) {
+                        (Some(f), Some(l)) => Some((f.addr.saturating_sub(0x10_0000), l.addr + 0x10_0000)),
+                        _ => None,
+                    };
+                    empty_streak = 0;
+                }
+                if team.is_empty() { team = unsafe { anchor_roster(h) }; } // last-resort only
             }
             let n = team.len();
             let same = roster_ids(&team) == roster_ids(&roster);
@@ -2359,34 +2416,39 @@ pub fn start_reader() {
             }
             if opp_backoff > 0 { opp_backoff -= 1; }
 
-            // ★ DETERMINISTIC SIDE — flycast's localPlayerNum global (0 = P1, 1 = P2), one read, no scan. Only while
-            // in a live netplay SESSION, and never over a manual override. AUTO-CONFIRMS the side so stats record
-            // correctly with zero user action (retires the manual "set your side" gate).
-            if exe_base == 0 && cur_pid != 0 { exe_base = game_exe_base(cur_pid); }   // retry if the first resolve missed
-            // gs-77 — TIE THE SIDE TO THE SESSION, not the early n>0 sig-scan: that fired at select/loading before the
-            // game refreshed localPlayerNum for THIS match, so it read the PREVIOUS match's stale value → the P1→P2
-            // first-match flash. Require in_session AND the value STABLE for 2 reads before confirming, so a single
-            // transient/stale read can never lock the wrong side.
-            if in_session && exe_base != 0 {
-                if let Some(pn) = unsafe { rpm_u32(h, exe_base + LOCALPLAYER_OFF) } {
-                    let side = match pn { 0 => 1u8, 1 => 2u8, _ => 0u8 };
-                    if side != 0 && side == side_seen { side_stable = side_stable.saturating_add(1); }
-                    else { side_seen = side; side_stable = if side != 0 { 1 } else { 0 }; }
-                    if side_stable >= 2 {
-                        let mut s = snapshot().lock().unwrap();
-                        if s.manual_side == 0 && !(s.side_confirmed && s.local_side == side) {
-                            s.local_side = side; s.side_confirmed = true;
-                            drop(s);
-                            trace(&format!("[side] AUTO = P{} (localPlayerNum={}, stable)", side, pn));
-                        }
-                    }
-                }
-            } else if !in_session { side_seen = 0; side_stable = 0; }   // between sessions → fresh debounce for the next match
+            // ★ DETERMINISTIC SIDE is resolved AFTER the liveness gate below — it needs a LIVE fighter read
+            // (game.is_some()), which is the only signal that's both fresh (mid-fight → localPlayerNum is THIS
+            // match's) and independent of the laggy pairing scan + flickering roster. Just resolve the module base
+            // here so it's ready.
+            if exe_base == 0 && cur_pid != 0 { exe_base = game_exe_base(cur_pid); }   // module base for localPlayerNum
+
+            // ── gs-101: SCENE STATE (game_state+0x8; 5 = actively fighting) ── the master screen id (the game's own
+            // dispatcher gates match-load on ==5; confirmed live). We use it as an FPS GUARD: while scene==5 the
+            // fight frame must do ZERO heavy work, so every expensive scan is blocked and only the tiny per-cycle
+            // health/state reads run. Cheap: one pointer deref + one 4-byte read.
+            let scene = if exe_base != 0 {
+                unsafe { read_at(h, exe_base + GSTATE_PTR_OFF, 8) }
+                    .filter(|b| b.len() >= 8)
+                    .map(|b| u64::from_le_bytes([b[0],b[1],b[2],b[3],b[4],b[5],b[6],b[7]]) as usize)
+                    .filter(|&gs| gs > 0x10000)
+                    .and_then(|gs| unsafe { read_at(h, gs + 0x8, 4) })
+                    .map(|b| i32::from_le_bytes([b[0],b[1],b[2],b[3]]))
+                    .unwrap_or(-1)
+            } else { -1 };
+            let fighting = scene == 5;
 
             // Game state: auto-find + read the reversed player array via read-only RPM. The heavy find is
             // attempted only when fighters are loaded (n>0) and throttled; once found, the volatile base is
             // re-validated & read cheaply.
-            let raw_game = read_gamestate_rpm(cur_pid, &mut ram_base, &mut last_find, n > 0, last_good_base);
+            // allow_find is broadened PAST the flickering sig-scan roster: the fixed anchor lands on frozen/garbage
+            // savestate copies mid-rollback → anchor_roster empties (n=0) → the old `n>0` gate starved find_array
+            // EXACTLY when it was needed (the "reads flash on/off, no wins recorded" bug). Once we've seen a live
+            // array recently (live_seen) OR pairing is up, keep letting find_array re-acquire the real live copy.
+            // The latch expires ~20s after the last live read so idle menus never thrash the ~1GB scan.
+            // gs-101: the array locator is now pointer-ONLY + scene-gated INSIDE read_gamestate_rpm. Pass `fighting`
+            // (scene==5) → it O(1) pointer-follows the live block; there is NO scan anywhere in the hot path now.
+            let raw_game = read_gamestate_rpm(cur_pid, &mut ram_base, &mut last_find, fighting,
+                n > 0 || in_session || live_seen.map_or(false, |t| t.elapsed().as_secs() < 20), last_good_base);
             if ram_base != 0 { last_good_base = ram_base; }   // remember the located base → reuse it, never re-scan
             // ── PAINT SLOTS ── the EXACT per-fighter render-palette pointers (cl+0x4c) + char_id, straight from
             // the located array. This is the "follow the pointer, don't scan" path: it is NOT subject to the
@@ -2400,7 +2462,7 @@ pub fn start_reader() {
             // ── LIVENESS GATE ── drop game data that isn't actively updating. A live fight animates every
             // frame, so a hash that's unchanged across cycles = a FROZEN buffer (menu / match over / stale
             // base) → treat as NO live match, so we never surface an old match's roster/opponent/side.
-            let game = match raw_game {
+            let mut game = match raw_game {
                 Some(g) => {
                     let hh = game_liveness_hash(cur_pid, &g);
                     if hh != 0 && hh == prev_live_hash { frozen_cycles = frozen_cycles.saturating_add(1); }
@@ -2413,17 +2475,119 @@ pub fn start_reader() {
                 }
                 None => { frozen_cycles = 0; None }
             };
+            // gs-91: the +0x554 char_id field reads a wrong value (0 = Ryu, sometimes another id) for some live
+            // fighters in the find_array copy, while the sig-scan roster carries the real 6 chars. The roster's
+            // ORDER is by address (not team parity), so we can't map it positionally — instead, treat the roster as
+            // the authoritative SET: any game slot whose char_id isn't one of the real chars is a mis-read, and gets
+            // the leftover real char no correctly-read slot accounted for. (Common case = one point-slot reading 0 →
+            // exactly one leftover → unambiguous.) Keeps the overlay/skin on the true character. The team split for
+            // display comes from the game slots' own player field, which IS reliable — not the roster order.
+            // gs-93: the old set-difference fill produced PHANTOM DUPLICATES ("opponent has 2 Ryus") because 0 is
+            // BOTH the mis-read default AND a real char (Ryu) — a mis-read 0 looked "known" whenever the roster held
+            // a real Ryu, so it was never corrected. Fix: the 6 live slots must COLLECTIVELY equal the sig-scan
+            // roster MULTISET. Claim greedily from that pool, trusting NON-zero reads first (a 0 read is the
+            // unreliable default); a 0 that matches a still-unclaimed roster Ryu is kept as a real Ryu; any slot
+            // left unclaimed (a mis-read) takes a remaining pool char. Guarantees no character shows more times than
+            // the roster actually contains → no phantom dupes. (Exact per-slot identity still needs char-select.)
+            // gs-95: the point/active fighter's +0x554 char-id reads 0 (=Ryu) even on the LIVE copy → a phantom
+            // "Ryu" on that character's card. The old multiset fix couldn't correct it: its pool (roster via
+            // anchor_roster) reads the SAME +0x554, so slot AND pool agreed on the phantom. Real fix (RE-confirmed):
+            // when a slot reads 0, identify EVERY fighter by its DAT FINGERPRINT (the char_sigs structural signature,
+            // which is +0x554-INDEPENDENT and skin/color-invariant), located per slot via the DatPal→DAT-bank rank.
+            // The 6 DAT banks load at a fixed 0x150000 stride and each slot's DatPal points into its own bank, so
+            // sorting slots by DatPal ↔ banks by address pairs each slot to its true character. Only applied when all
+            // 6 slots have a valid DatPal AND exactly 6 banks are found; otherwise the +0x554 reads stand (safe).
+            if let Some(g) = game.as_mut() {
+                if g.slots.iter().any(|s| s.char_id == 0) {
+                    let dps: Vec<u32> = g.slots.iter().map(|s| s.datpal).filter(|&d| is_wb(d)).collect();
+                    if dps.len() == 6 {
+                        let lo = (*dps.iter().min().unwrap() as usize).saturating_sub(0x160000);
+                        let hi = (*dps.iter().max().unwrap() as usize) + 0x160000;
+                        let mut occ = unsafe { rpm_occurrences(h, lo, hi) };   // (addr, cid, name), unsorted, no dedup
+                        occ.sort_by_key(|o| o.0);
+                        // one hit per DAT bank: keep the first of each cluster separated by >= 0x100000 (banks are
+                        // 0x150000 apart). A mirror (same char, two banks) correctly yields two same-cid entries.
+                        let mut banks: Vec<u8> = Vec::new(); let mut last_a = 0usize;
+                        for (a, cid, _) in &occ {
+                            if banks.is_empty() || *a >= last_a + 0x100000 { banks.push(*cid as u8); last_a = *a; }
+                        }
+                        if banks.len() == 6 {
+                            let mut order: Vec<usize> = (0..6).collect();
+                            order.sort_by_key(|&i| g.slots[i].datpal);   // slots in DatPal (= bank address) order
+                            for (rank, &si) in order.iter().enumerate() { g.slots[si].char_id = banks[rank]; }
+                        }
+                    }
+                }
+            }
+            // live_seen latch: set on every LIVE array read → keeps find_array re-acquiring through rollback flicker
+            // (allow_find above) and gates the deterministic side lock below.
+            if game.is_some() { live_seen = Some(std::time::Instant::now()); }
+
+            // ── SIDE — AUTHORITATIVE from localPlayerNum (gs-94) ── localPlayerNum @ exe+0xac7230 is the game's OWN
+            // local netplay index (0/1). Validated live: stable 16/16 within a session, while the char-based method
+            // flip-flopped on point-char mis-reads and inverted the stats. It is PER-MACHINE (each app reads its own
+            // user's index) and, because the game state is shared, the two players' values are complementary — so it
+            // cleanly identifies YOUR team. Map it straight to the user's parity and CONFIRM it: 0 => P1/even slots,
+            // 1 => P2/odd slots (ground-truth confirmed 2026-08-14; see the mapping at the read below). ⚠ an earlier
+            // version of THIS comment said "0 => odd/P2" — that was WRONG and contradicted the code; deleted.
+            // An explicit manual override (rare now) still wins; otherwise localPlayerNum decides and games record
+            // immediately (no buffering, no wrong guess). NOTE: unproven case is localPlayerNum=1 (the side-flip) —
+            // the next session on the other side confirms it live, and every recording carries local_pn + the frame
+            // KO so we can validate/correct offline regardless.
+            let _ = (&mut side_seen, &mut side_stable);
+            // ★ Read localPlayerNum ONLY once fighters are LIVE (game.is_some()), NEVER during matchmaking.
+            // WHY (regression fixed): the netplay PAIRING (in_session) appears at the ranked-matchmaking screen —
+            // BEFORE the game reassigns localPlayerNum for the new session — so localPlayerNum still holds the LAST
+            // session's value in that window. Reading on in_session locked that STALE value as the side, inverting
+            // the win. By the time fighters are on screen the game has settled localPlayerNum to this match's real
+            // value, so a live-game read is always correct. (Trade-off: side/names aren't known until game 1 loads;
+            // the char-select names feature will use a proper char-select signal, not the racy pairing.)
+            if game.is_some() && exe_base != 0 {
+                if let Some(pn) = unsafe { rpm_u32(h, exe_base + LOCALPLAYER_OFF) } {
+                    // ⚠ lpn→side. GROUND TRUTH (clean pointer-follow read, ranked, 2026-08-14): localPlayerNum=1 →
+                    // the user is on the ODD/P2 slots (their team read on odd; they lost round 1; win_result agreed).
+                    // ⇒ 0 => P1/even (side 1), 1 => P2/odd (side 2). The earlier (0=>2,1=>1) came from SHIFTED
+                    // sig-scan reads (pre-pointer-follow) that inverted characters + W/L + skins together. Names are
+                    // side-INDEPENDENT (p1name=you, p2name=opp; applySideLayout is a fixed you-left/opp-right layout),
+                    // so this flip does NOT touch names — the old "flip breaks the name" note WAS that misdiagnosis.
+                    let side = match pn { 0 => 1u8, 1 => 2u8, _ => 0u8 };
+                    if side != 0 {
+                        let mut s = snapshot().lock().unwrap();
+                        // ALWAYS track the raw localPlayerNum side — it's the authoritative, ground-truth-confirmed
+                        // side and now drives the W/L VERDICT directly (see the update_score caller). manual_side
+                        // still overrides the DISPLAY label via effective_side, but NEVER the recorded result — a
+                        // stale manual toggle must not be able to invert a whole set (the Duc-class failure).
+                        s.local_side = side; s.side_confirmed = true;
+                    }
+                }
+            }
+            // NOTE: we do NOT reset the debounce when game is None (a flash gap between live reads) — localPlayerNum
+            // is read ONLY on a live fighter read, so a wrong char-select value never enters the debounce, and the
+            // value-change branch above already resets on any genuine side flip. Accumulating across sparse live
+            // reads is what lets the side lock inside the first match despite the read flashing on and off.
             // Hold the opponent while EITHER the game reads live OR fighters are present (sig-scan roster n) —
             // robust to a flaky reversed-struct read so we never drop + re-hunt the opponent mid-set. Drop
             // only after a sustained gone stretch (set over / menus).
             let active = game.as_ref().map(|g| g.in_match == 1).unwrap_or(false) || n > 0 || in_session;
             if active { last_active = std::time::Instant::now(); }
             else if opp.is_some() && last_active.elapsed().as_secs() > OUT_TIMEOUT { opp = None; opp_addr = None; }
-            let (side_for_stats, side_ok) = { let s = snapshot().lock().unwrap(); (effective_side(&s), s.side_confirmed) };  // manual override wins; gate on confirmation
+            // VERDICT side = RAW localPlayerNum (authoritative, ground-truth mapping 0=>P1 / 1=>P2) via local_side,
+            // NOT effective_side: a stale/wrong manual override must never flip the RECORDED winner (the Duc-class
+            // inversion). manual_side still steers the on-screen label through effective_side elsewhere; the W/L
+            // result now follows the pointer only. The server (reconcile.rs) agrees via the same local_pn→side map.
+            let (side_for_stats, side_ok) = { let s = snapshot().lock().unwrap(); (s.local_side, s.side_confirmed) };
             update_score(&mut ss, &game, &opp, side_for_stats, side_ok);
             write_fighters(&game);
             let sc = (ss.p1, ss.p2);
             trace_cycle(&mut prev_log, "rpm", &state, &roster, &opp, &game, sc);
+
+            // gs-102: char-select LOCKED picks (game_state+0x758). Gate = scene==5 (in a match SESSION) AND no live
+            // fighter read (game.is_none()) → that pair is EXACTLY the char-select/loading window (fighters load only
+            // for the fight). Fires the instant you lock a char, match 1 included (no netplay dependency), surfaces a
+            // FULLY-locked team too, and never shows a stale team at a real menu (scene!=5 there). Handoff to the
+            // fighter array is automatic (once fighters load, game.is_some() → picks stop, the array drives display).
+            let picks = if exe_base != 0 && fighting && game.is_none() { unsafe { read_char_picks(h, exe_base) } } else { Vec::new() };
+            let picking = !picks.is_empty();   // captured before `picks` is moved into the snapshot below
 
             // publish snapshot (tiny critical section)
             {
@@ -2437,8 +2601,12 @@ pub fn start_reader() {
                 s.opponent = if show_opp { opp.clone() } else { None };
                 s.game = game;
                 s.score = sc;
+                s.session_id = ss.session_id.clone().unwrap_or_default();
+                s.match_index = ss.match_index;
                 s.in_session = in_session;
                 s.ram_base = last_good_base;   // gs-74: publish the located array base so paint_live paints the REAL array (it relocates off the anchor per match)
+                s.picks = picks;               // gs-100: char-select locked picks (empty unless online char-select)
+                s.scene = scene;               // gs-101: game screen-state id (5=fighting)
             }
 
             // adaptive cadence: fast cheap region-tracking when we have the team; back off at menus
@@ -2447,7 +2615,15 @@ pub fn start_reader() {
             // only when truly idle at menus. (Was 2000ms idle → a match entered mid-sleep waited up to 2s.)
             // persist the anchors whenever they change, keyed to the game pid → next app restart skips the scans
             { let cur = (ram_base, opp_region, work); if cur != saved_anchors { save_anchors(cur_pid, ram_base, opp_region, work); saved_anchors = cur; } }
-            std::thread::sleep(std::time::Duration::from_millis(if !roster.is_empty() || in_session { 350 } else { 500 }));
+            // faster cadence while picking (picks present) so characters pop in near-instantly; fast with a
+            // team/session; back off only when truly idle at menus.
+            std::thread::sleep(std::time::Duration::from_millis(
+                if picking { 150 } else if !roster.is_empty() || in_session { 300 } else { 500 }));
+            }));   // end P0.3 per-cycle panic guard
+            if cycle.is_err() {
+                trace("[reader] cycle panicked — recovering, continuing");
+                std::thread::sleep(std::time::Duration::from_millis(500));   // avoid a hot-spin on repeated panics
+            }
         }
     });
 }
@@ -2460,14 +2636,30 @@ pub fn detect_state() -> serde_json::Value {
     let to_json = |r: &[Found]| serde_json::Value::Array(r.iter().map(|f| serde_json::json!({
         "cid": f.cid, "name": f.name, "addr": format!("{:x}", f.addr)
     })).collect());
-    let p1: Vec<Found> = s.roster.iter().take(3).cloned().collect();
-    let p2: Vec<Found> = s.roster.iter().skip(3).take(3).cloned().collect();
+    // Teams from the live array's OWN parity (each slot's player field) — reliable — instead of the sig-scan
+    // roster ORDER, which is by address and can put a character on the wrong side's card. char_ids were already
+    // corrected by the mis-read fill in the reader. Falls back to the roster order only when there's no live game.
+    let (mut p1, mut p2): (Vec<Found>, Vec<Found>) = (Vec::new(), Vec::new());
+    if let Some(g) = s.game.as_ref() {
+        let (sigs, _) = sigtab();
+        let mut slots: Vec<&GSlot> = g.slots.iter().collect();
+        slots.sort_by_key(|sl| (sl.player, sl.pos));
+        for sl in slots {
+            let nm = sigs.iter().find(|sg| sg.cid == sl.char_id as u32).map(|sg| sg.name.clone()).unwrap_or_default();
+            let f = Found { cid: sl.char_id as u32, name: nm, addr: sl.addr };
+            if sl.player == 1 { p1.push(f); } else if sl.player == 2 { p2.push(f); }
+        }
+    } else {
+        p1 = s.roster.iter().take(3).cloned().collect();
+        p2 = s.roster.iter().skip(3).take(3).cloned().collect();
+    }
     // exact per-fighter render-palette pointers for the paint path (NOT liveness-gated → present at match start)
     let paint_slots: Vec<serde_json::Value> = s.paint_slots.iter().map(|(pl, cid, dp)| serde_json::json!({
         "player": pl, "cid": cid, "datpal": format!("{:x}", dp)
     })).collect();
     let mut out = serde_json::json!({ "state": s.state, "count": s.roster.len(), "changed": false, "p1": to_json(&p1), "p2": to_json(&p2), "has_game": false,
         "score": { "p1": s.score.0, "p2": s.score.1 }, "local_side": s.local_side, "in_session": s.in_session,
+        "session_id": s.session_id, "match_index": s.match_index, "picks": s.picks, "scene": s.scene,
         "manual_side": s.manual_side, "side_confirmed": s.side_confirmed, "paint_slots": paint_slots });
     if let Some(g) = s.game.as_ref() {
         let slots: Vec<serde_json::Value> = g.slots.iter().map(|sl| serde_json::json!({
@@ -2488,6 +2680,11 @@ pub fn detect_state() -> serde_json::Value {
         out["frame"] = serde_json::json!(g.frame);
         out["screen"] = serde_json::json!(screen);
         out["slots"] = serde_json::json!(slots);
+        // ── battle-globals (gs-99): the game's OWN ground-truth match/round state ──
+        out["phase"] = serde_json::json!(g.phase);            // 0/2/3/4=active(<5), 5=KO, 6=win-pose, 9=results
+        out["round"] = serde_json::json!(g.round_no);         // game index within the set
+        out["win_result"] = serde_json::json!(g.win_result);  // 0=P1(even) won, 1=P2(odd) won, 0xff=draw (latched at KO)
+        out["bg_in_match"] = serde_json::json!(g.bg_in_match);// game's own in-match flag
     }
     out
 }

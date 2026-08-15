@@ -402,14 +402,15 @@ async fn install_update(app: tauri::AppHandle) -> Result<(), String> {
 }
 
 pub fn run() {
+    sync::kill_other_instances(); // an in-place update can leave the old instance running → two readers/recorders. Kill stale copies first.
     sync::start_reader(); // single background thread owns all game-memory reads (keeps the UI unblockable)
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init()) // ROM file picker for the Studio tab
         .plugin(tauri_plugin_updater::Builder::new().build()) // signed auto-update from nobd.net
         .invoke_handler(tauri::generate_handler![apply_skin, clear_skin, learn_character, capture_live, apply_sigs, apply_multi, reset_all, reset_hook_regions, set_effect, set_effect_target, detect_rom, set_rom_path, get_rom_path,
             check_update, install_update,
-            sync::sync_self, sync::detect_opponent, sync::sync_publish, sync::sync_unpublish, sync::sync_fetch_peers,
-            sync::detect_state, sync::sync_heartbeat, sync::sync_presence, sync::paint_palettes, sync::paint_live, sync::paint_signatures, sync::inject_hook, sync::get_record, sync::leaderboard, sync::profile, sync::matchup, sync::app_version, sync::set_manual_side, sync::capture_start, sync::capture_stop, sync::capture_status,
+            sync::sync_self, sync::detect_opponent, sync::sync_publish, sync::set_location, sync::search_cities, sync::sync_unpublish, sync::sync_fetch_peers,
+            sync::detect_state, sync::sync_heartbeat, sync::sync_presence, sync::paint_palettes, sync::paint_live, sync::paint_signatures, sync::inject_hook, sync::get_record, sync::leaderboard, sync::profile, sync::session_stats, sync::matchup, sync::playerstats, sync::tierlist, sync::regions, sync::app_version, sync::set_manual_side, sync::capture_start, sync::capture_stop, sync::capture_status,
             sync::get_share_gameplay, sync::set_share_gameplay, sync::record_consent, sync::suggest_stat, sync::ensure_registered, sync::fetch_changelog,
             rom::rom_size, rom::rom_read, rom::rom_write, rom::rom_backup, rom::rom_prepare, rom::bake_palette, rom::extract_char_dat])
         .run(tauri::generate_context!())
