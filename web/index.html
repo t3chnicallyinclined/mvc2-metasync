@@ -607,12 +607,30 @@ try{document.documentElement.setAttribute('data-theme', localStorage.getItem('me
     <div class="pf-body" id="clBody"></div>
   </div></div>
 
+  <style>
+  #p-regions .lb-tabs{display:flex; gap:6px; flex-wrap:wrap; margin-bottom:10px;}
+  #p-regions .lb-tabs button{padding:8px 14px; border-radius:9px; border:1px solid var(--line); background:var(--panel); color:var(--dim); font-weight:700; font-size:13px; cursor:pointer; transition:all .15s;}
+  #p-regions .lb-tabs button:hover{color:var(--ink); border-color:var(--gold-soft);}
+  #p-regions .lb-tabs button.on{color:var(--gold-ink); background:var(--gold); border-color:var(--gold);}
+  #p-regions .lb-period{display:flex; gap:6px; flex-wrap:wrap; margin:0 0 12px;}
+  #p-regions .lb-period button{padding:5px 12px; border-radius:8px; border:1px solid var(--line); background:transparent; color:var(--dim); font-weight:600; font-size:12px; cursor:pointer; transition:all .15s;}
+  #p-regions .lb-period button:hover{color:var(--ink); border-color:var(--gold-soft);}
+  #p-regions .lb-period button.on{color:var(--ink); background:var(--panel); border-color:var(--gold-soft);}
+  #p-regions .lb-explain{font-size:12px; line-height:1.5; color:var(--dim); margin:-2px 0 12px; padding:9px 12px; background:var(--panel); border:1px solid var(--line); border-radius:9px;}
+  #p-regions .lb-explain b{color:var(--ink);}
+  #p-regions .lb-list{display:flex; flex-direction:column; gap:7px;}
+  </style>
   <section class="panel" id="p-regions">
-    <div class="lb-tabs" id="regTabs">
-      <button data-rl="city" class="on">🏙️ Top Cities</button>
-      <button data-rl="country">🌎 Top Countries</button>
+    <div class="lb-tabs" id="regSort">
+      <button data-rs="wins" class="on">🏅 Wins</button>
+      <button data-rs="players">👥 Players</button>
+      <button data-rs="winrate">📈 Win %</button>
     </div>
-    <div id="regExplain" class="lb-explain" style="margin-bottom:10px;color:var(--dim);font-size:12.5px"></div>
+    <div class="lb-period" id="regTabs">
+      <button data-rl="city" class="on">🏙️ Cities</button>
+      <button data-rl="country">🌎 Countries</button>
+    </div>
+    <div id="regExplain" class="lb-explain"></div>
     <div id="regBody"><div class="lb-empty">LOADING…</div></div>
   </section>
 
@@ -1582,6 +1600,9 @@ let _updHideT=null;
 // so it can be updated without shipping a new build. This bundled copy is the offline FALLBACK — keep it
 // roughly current, but the remote is authoritative.
 let CHANGELOG = [
+  { v:'0.1.63', t:'Regions leaderboard', items:[
+    'The Regions tab is now a full leaderboard like the Hall of Fame — rank regions by wins, player count, or win %, at city or country level. Tap a region for its players and the teams that region runs.',
+  ]},
   { v:'0.1.62', t:'Cleaner boards + faces in the match view', items:[
     'Leaderboards now show country flags + names only — avatars moved to your profile and the live match view, so the ranked lists stay clean and readable.',
     'The top bar shows the live "playing MvC2" count on its own.',
@@ -2544,27 +2565,39 @@ async function openSession(sid){
 }
 $('#lbList')?.addEventListener('click',e=>{ const n=e.target.closest('.lb-click'); if(n) openProfile(n.dataset.sid,n.dataset.nm); });
 
-// ── 🌍 Regions: top cities/countries + per-region board & team-comp meta ──
+// ── 🌍 Regions: Hall-of-Fame-style board aggregated by region (rank by wins / players / win %) ──
 let regLevel='city';
+let regSort='wins';
+const REG_SORT_LABEL={wins:'wins',players:'player count',winrate:'win %'};
 async function renderRegions(){
   const body=$('#regBody'), ex=$('#regExplain'); if(!body||!invoke) return;
   $$('#regTabs button').forEach(b=>b.classList.toggle('on',b.dataset.rl===regLevel));
-  if(ex) ex.innerHTML = regLevel==='city'
-    ? 'Strongest <b>cities</b> by wins — tap one for its players and the teams that city runs. Set yours with the 📍 button up top.'
-    : 'Strongest <b>countries</b> — tap one for its players and team-comp meta.';
+  $$('#regSort button').forEach(b=>b.classList.toggle('on',b.dataset.rs===regSort));
+  const kind=regLevel==='city'?'cities':'countries';
+  if(ex) ex.innerHTML = `Top <b>${kind}</b> ranked by <b>${REG_SORT_LABEL[regSort]||'wins'}</b>`
+    + (regSort==='winrate'?' (regions with fewer than 5 games shown as —)':'')
+    + ` — tap one for its players and the teams that ${regLevel==='city'?'city':'country'} runs. Set yours with the 📍 button up top.`;
   if(!syncOn){ body.innerHTML='<div class="lb-empty">🔒 Live Sync is off — turn it on (top-right) to see regions.</div>'; return; }
   body.innerHTML='<div class="lb-empty">LOADING…</div>';
   try{
-    const r=await invoke('regions',{level:regLevel,limit:40}); const rs=(r&&r.regions)||[];
+    const r=await invoke('regions',{level:regLevel,sort:regSort,limit:40}); const rs=(r&&r.regions)||[];
+    const minGames=(r&&r.min_games)||5;
     if(!rs.length){ body.innerHTML='<div class="lb-empty">No regions yet — be the first to set your city with the 📍 button up top!</div>'; return; }
-    body.innerHTML=rs.map((x,i)=>{
-      const loc=regLevel==='city'?`${flagEmoji(x.cc)} ${esc(x.name)}${x.region?`<span style="color:var(--dim)"> · ${esc(x.region)}</span>`:''}`:`${flagEmoji(x.cc)} ${esc(x.name)}`;
+    body.innerHTML='<div class="lb-list">'+rs.map((x,i)=>{
+      const wins=x.wins||0, losses=x.losses||0, players=x.players||0;
+      const games=(x.games!=null)?x.games:(wins+losses);
+      const pct=games>0?Math.round(100*wins/games):0;
+      let stat, wl;
+      if(regSort==='players'){ stat=`${players}`; wl=`${wins}W · ${losses}L`; }
+      else if(regSort==='winrate'){ stat=games>=minGames?`${pct}%`:'<span style="color:var(--dim)">—</span>'; wl=`${wins}W · ${losses}L`; }
+      else { stat=`${wins}W`; wl=`${players} player${players===1?'':'s'}`; }
+      const sub=regLevel==='city'?(x.region||x.country||''):'';
       return `<div class="lb-row ${i===0?'r1':''} reg-click" data-cc="${esc(x.cc)}" data-city="${regLevel==='city'?esc(x.name):''}" data-nm="${esc(x.name)}" style="cursor:pointer">
         <div class="lb-rank">${i===0?'👑':(i+1)}</div>
-        <div class="lb-name">${loc}${x.top?`<span style="color:var(--dim);font-size:11px"> — top: ${x.top.cc?flagEmoji(x.top.cc)+' ':''}${esc(x.top.name||'')}</span>`:''}</div>
-        <div class="lb-wl">${x.players} player${x.players===1?'':'s'} · ${x.wins}W</div>
-        <div class="lb-stat">${x.avg_rating} ELO</div></div>`;
-    }).join('');
+        <div class="lb-name">${flagEmoji(x.cc)} ${esc(x.name||'')}${sub?`<span style="color:var(--dim);font-weight:500;font-size:12px"> · ${esc(sub)}</span>`:''}</div>
+        <div class="lb-wl">${wl}</div>
+        <div class="lb-stat">${stat}</div></div>`;
+    }).join('')+'</div>';
   }catch(e){ body.innerHTML='<div class="lb-empty">REGIONS UNAVAILABLE</div>'; }
 }
 async function openRegion(cc, city, nm){
@@ -2576,10 +2609,10 @@ async function openRegion(cc, city, nm){
       invoke('tierlist',{country:city?'':cc,city:city||''}).catch(()=>({teams:[]}))
     ]);
     const players=(lb&&lb.players)||[]; const teams=((tl&&tl.teams)||[]).slice(0,8);
-    const plHtml = players.length ? players.map((p,i)=>`<div class="lb-row ${i===0?'r1':''}">
+    const plHtml = players.length ? '<div class="lb-list">'+players.map((p,i)=>`<div class="lb-row ${i===0?'r1':''}">
       <div class="lb-rank">${i===0?'👑':(i+1)}</div>
       <div class="lb-name lb-click" data-sid="${esc(p.steamid)}" data-nm="${esc(p.name||'Player')}">${p.cc?flagEmoji(p.cc)+' ':''}${esc(p.name||'Player')}</div>
-      <div class="lb-wl">${p.wins||0}W · ${p.losses||0}L</div><div class="lb-stat">${p.rating||1000} ELO</div></div>`).join('') : '<div class="lb-empty">no players here yet</div>';
+      <div class="lb-wl">${p.wins||0}W · ${p.losses||0}L</div><div class="lb-stat">${p.rating||1000} ELO</div></div>`).join('')+'</div>' : '<div class="lb-empty">no players here yet</div>';
     const tlHtml = teams.length ? `<table class="pf-tbl"><tr><th>Team</th><th>GP</th><th>W</th><th>WR</th></tr>`+teams.map(t=>{const cids=String(t.team).split(',').map(Number);return `<tr><td>${esc(teamStr(cids))}</td><td>${t.games}</td><td>${t.wins}</td><td>${t.winrate}%</td></tr>`}).join('')+'</table>' : '<div class="lb-empty" style="padding:8px">not enough games yet</div>';
     body.innerHTML=`<button id="regBack" style="margin-bottom:10px;padding:6px 12px;border-radius:8px;border:1px solid var(--line);background:transparent;color:var(--dim);cursor:pointer">← Back</button>
       <h3 style="margin:2px 0 10px">${flagEmoji(cc)} ${esc(nm)} — players</h3>${plHtml}
@@ -2588,6 +2621,7 @@ async function openRegion(cc, city, nm){
   }catch(e){ body.innerHTML='<div class="lb-empty">REGION UNAVAILABLE</div>'; }
 }
 $('#regTabs')?.addEventListener('click',e=>{ const b=e.target.closest('button'); if(!b) return; regLevel=b.dataset.rl; renderRegions(); });
+$('#regSort')?.addEventListener('click',e=>{ const b=e.target.closest('button'); if(!b) return; regSort=b.dataset.rs; renderRegions(); });
 $('#regBody')?.addEventListener('click',e=>{ const rc=e.target.closest('.reg-click'); if(rc){ openRegion(rc.dataset.cc, rc.dataset.city, rc.dataset.nm); return; } const pc=e.target.closest('.lb-click'); if(pc&&pc.dataset.sid) openProfile(pc.dataset.sid, pc.dataset.nm); });
 // inside an open profile, clicking an opponent (head-to-head or recent) opens THEIR profile
 $('#pfBody')?.addEventListener('click',e=>{ const n=e.target.closest('.lb-click'); if(n&&n.dataset.sid&&n.dataset.sid.length===17) openProfile(n.dataset.sid,n.dataset.nm); });

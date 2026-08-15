@@ -2046,12 +2046,14 @@ pub fn tierlist(country: Option<String>, city: Option<String>) -> Result<serde_j
 }
 
 // region aggregate boards (top cities / countries) — GET /skinsync/regions
+// sort = wins (default) | players | winrate — forwarded to the server so it ranks regions by the chosen metric.
 #[tauri::command]
-pub fn regions(level: Option<String>, limit: Option<u32>) -> Result<serde_json::Value, String> {
+pub fn regions(level: Option<String>, sort: Option<String>, limit: Option<u32>) -> Result<serde_json::Value, String> {
     let lvl = level.unwrap_or_else(|| "city".into());
+    let srt = sort.unwrap_or_else(|| "wins".into());
     let lim = limit.unwrap_or(30).min(100);
     ureq::get(&format!("{}/regions", SKINSYNC))
-        .query("level", &lvl).query("limit", &lim.to_string())
+        .query("level", &lvl).query("sort", &srt).query("limit", &lim.to_string())
         .timeout(std::time::Duration::from_secs(6))
         .call().map_err(|e| e.to_string())?
         .into_json::<serde_json::Value>().map_err(|e| e.to_string())
