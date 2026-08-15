@@ -582,7 +582,6 @@ struct Snapshot {
                                          //   the game's own screen controller — FPS-guards heavy scans + drives screen UI
 }
 // The side used for team-labeling + stats: the manual override wins; else the auto-detector.
-fn effective_side(s: &Snapshot) -> u8 { if s.manual_side != 0 { s.manual_side } else { s.local_side } }
 fn snapshot() -> &'static Mutex<Snapshot> {
     static S: OnceLock<Mutex<Snapshot>> = OnceLock::new();
     S.get_or_init(|| Mutex::new(Snapshot { state: "game_off".into(), roster: Vec::new(), opponent: None, game: None, score: (0, 0), local_side: 0, manual_side: 0, side_confirmed: false, in_session: false, paint_slots: Vec::new(), ram_base: 0, session_id: String::new(), match_index: 0, picks: Vec::new(), scene: -1 }))
