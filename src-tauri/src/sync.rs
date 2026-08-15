@@ -2188,6 +2188,16 @@ pub fn contest_match(match_key: String) -> Result<serde_json::Value, String> {
         .into_json::<serde_json::Value>().map_err(|e| e.to_string())
 }
 
+/// Confirm one match's recorded result ("this is correct"). POST /skinsync/confirm {match_key}, authed.
+/// Mirror of contest_match, opposite intent. Server enforces participant-only (403 otherwise) and needs BOTH
+/// players to confirm before flipping `confirmed`. Returns the server JSON { ok, confirmed, need }.
+#[tauri::command]
+pub fn confirm_match(match_key: String) -> Result<serde_json::Value, String> {
+    auth_post(&format!("{}/confirm", SKINSYNC)).send_json(serde_json::json!({ "match_key": match_key }))
+        .map_err(|e| e.to_string())?
+        .into_json::<serde_json::Value>().map_err(|e| e.to_string())
+}
+
 /// Our contest history + resolution state for the 🔔 Result Check bell. GET /skinsync/notifications?steamid=X,
 /// authed (steamid must equal the token's). Returns { ok, mine:[…], heads_up:[…], unread:<int> }.
 #[tauri::command]

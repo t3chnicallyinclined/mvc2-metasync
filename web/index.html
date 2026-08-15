@@ -438,6 +438,17 @@ try{document.documentElement.setAttribute('data-theme', localStorage.getItem('me
     border:1px solid var(--p1-line); background:transparent; color:var(--p1); white-space:nowrap; vertical-align:middle;}
   .rc-contest:hover{filter:brightness(1.1); border-color:var(--p1);}
   .rc-contest:disabled{opacity:.55; cursor:default; filter:none;}
+  /* Match-confidence tag (✓ confirmed / ? unconfirmed) — small pill, muted green/amber pulled from tokens */
+  .mc-tag{display:inline-block; font-size:9px; font-weight:800; line-height:1.5; padding:1px 6px; border-radius:99px;
+    vertical-align:middle; letter-spacing:.02em; white-space:nowrap;}
+  .mc-tag.ok{color:var(--good); background:color-mix(in srgb,var(--good) 14%,transparent); border:1px solid color-mix(in srgb,var(--good) 42%,var(--line));}
+  .mc-tag.unc{color:var(--gold); background:var(--gold-soft); border:1px solid color-mix(in srgb,var(--gold) 34%,var(--line));}
+  /* Confirm-result action — mirrors .rc-contest but in the positive (good) tone */
+  .rc-confirm{cursor:pointer; font-size:10.5px; font-weight:700; padding:3px 8px; border-radius:7px;
+    border:1px solid color-mix(in srgb,var(--good) 45%,var(--line)); background:transparent; color:var(--good); white-space:nowrap; vertical-align:middle;}
+  .rc-confirm:hover{filter:brightness(1.1); border-color:var(--good);}
+  .rc-confirm:disabled{opacity:.55; cursor:default; filter:none;}
+  #rcModal .rc-acts{display:flex; gap:6px; flex:none; align-items:center;}
 </style>
 </head>
 <body>
@@ -1801,6 +1812,12 @@ let _updHideT=null;
 // so it can be updated without shipping a new build. This bundled copy is the offline FALLBACK — keep it
 // roughly current, but the remote is authoritative.
 let CHANGELOG = [
+  { v:'0.1.70', t:'Match confidence + verify', items:[
+    'Every match now shows a confirmed vs unconfirmed tag.',
+    'Confirm your own match results from the Result Check bell.',
+    'Cut-off / timeout recordings stay unconfirmed until both players (or the tape) confirm.',
+    'Each match now has a stable ID for cleaner tracking.',
+  ]},
   { v:'0.1.69', t:'Readable Result Check banner', items:[
     'Made the Result Check beta notice one readable color.',
   ]},
@@ -2756,9 +2773,10 @@ async function openProfile(sid,nm){
       const mk=m.match_key||m.key||'';                                  // ⚠ not currently in /profile.recent[] — see handoff
       const winId=m.won?String(sid):String(m.opp_id||''), loseId=m.won?String(m.opp_id||''):String(sid);
       const cbtn=rcContestCell(mk,winId,loseId);
+      const tag=mcTag(m.confirmed);                                     // ✓ / ? unconfirmed (blank when absent)
       return `<tr class="${m.won?'w':'l'}">
       <td>${m.won?'W':'L'}</td><td class="lb-click" data-sid="${esc(m.opp_id||'')}" data-nm="${esc(m.opp||'')}">${esc(m.opp||'?')}</td><td>${esc(teamStr(m.my_team))}</td><td>${esc(teamStr(m.opp_team))}</td>
-      ${eloCell(m)}<td>${m.combo?('🎯'+m.combo):''}${m.ocv?' 💥':''}${m.perfect?' ✨':''}${m.comeback?' 🔄':''}${cbtn?(' '+cbtn):''}</td></tr>`;
+      ${eloCell(m)}<td>${tag?tag+' ':''}${m.combo?('🎯'+m.combo):''}${m.ocv?' 💥':''}${m.perfect?' ✨':''}${m.comeback?' 🔄':''}${cbtn?(' '+cbtn):''}</td></tr>`;
     }).join('');
     const isMe = mySteam && String(mySteam.steamid)===String(sid);
     body.innerHTML=`<h3>${avatarImg(p.avatar,48)}${p.cc?flagEmoji(p.cc)+' ':''}${esc(p.name||nm||'Player')} ${repBadge(p)}</h3>
@@ -2789,7 +2807,8 @@ async function openSession(sid){
     const games=(s.games||[]).map(m=>{
       const mk=m.match_key||m.key||'';                                  // ⚠ not currently in /session.games[] — see handoff
       const cbtn=rcContestCell(mk,m.winner,m.loser);                    // winner/loser steamids ARE present on session games
-      return `<tr><td>${(m.match_index||0)+1}</td><td>${m.wcc?flagEmoji(m.wcc)+' ':''}${esc(m.wname||'?')}</td><td>${m.lcc?flagEmoji(m.lcc)+' ':''}${esc(m.lname||'?')}</td><td>${esc(teamStr(m.wteam))}</td><td>${m.combo?('🎯'+m.combo):''}${m.ocv?' 💥':''}${m.perfect?' ✨':''}${m.comeback?' 🔄':''}${m.verified?' ✓':''}${cbtn?(' '+cbtn):''}</td></tr>`;
+      const tag=mcTag(m.confirmed);                                     // ✓ / ? unconfirmed (blank when absent)
+      return `<tr><td>${(m.match_index||0)+1}</td><td>${m.wcc?flagEmoji(m.wcc)+' ':''}${esc(m.wname||'?')}</td><td>${m.lcc?flagEmoji(m.lcc)+' ':''}${esc(m.lname||'?')}</td><td>${esc(teamStr(m.wteam))}</td><td>${tag?tag+' ':''}${m.combo?('🎯'+m.combo):''}${m.ocv?' 💥':''}${m.perfect?' ✨':''}${m.comeback?' 🔄':''}${m.verified?' ✓':''}${cbtn?(' '+cbtn):''}</td></tr>`;
     }).join('');
     body.innerHTML=`<h3>Ranked set <span style="text-transform:none;letter-spacing:0;color:#8b90a5;font-weight:400">— ${s.count} game${s.count===1?'':'s'} · #${String(sid).slice(-4)}</span></h3>
       <h4>Players <span style="text-transform:none;letter-spacing:0;color:#8b90a5;font-weight:400">— click to open a profile</span></h4>
@@ -2864,7 +2883,32 @@ $('#pfModal')?.addEventListener('click',e=>{ if(e.target.id==='pfModal') e.curre
 
 // ── 🔔 Result Check — client of the server's contest/notifications API (contest a wrong W/L; see status) ──
 let rcState={mine:[],heads_up:[],unread:0};
-const rcInflight=new Set();                              // match_keys with an in-flight contest → blocks double-submit
+const rcInflight=new Set();                              // match_keys with an in-flight contest/confirm → blocks double-submit
+// match_keys this user has already confirmed (their side). Persisted so a re-poll/restart won't re-prompt them.
+const rcConfirmed=(()=>{ try{ return new Set(JSON.parse(localStorage.getItem('rc_confirmed')||'[]')); }catch(e){ return new Set(); } })();
+function rcMarkConfirmed(k){ if(!k) return; rcConfirmed.add(String(k)); try{ localStorage.setItem('rc_confirmed',JSON.stringify([...rcConfirmed])); }catch(e){} }
+// Confidence tag for a match row. `confirmed` absent (older cached data) → render nothing (never a false "unconfirmed").
+function mcTag(confirmed){
+  if(confirmed===undefined||confirmed===null) return '';
+  return confirmed
+    ? '<span class="mc-tag ok" title="Verified by tape or both players">✓</span>'
+    : '<span class="mc-tag unc" title="Result couldn\'t be auto-confirmed — cut-off or missing recording">? unconfirmed</span>';
+}
+// Human matchup label for a bell item — tolerant of both the notification shape (opponent/i_won) and match shape (names).
+function mcMatchup(m){
+  const w=m.winner_name||m.wname||m.winner_nm, l=m.loser_name||m.lname||m.loser_nm;
+  if(w||l) return `${esc(String(w||'?'))} <span style="color:var(--dim);font-weight:400">def.</span> ${esc(String(l||'?'))}`;
+  const opp=(m.opponent&&m.opponent.name)?m.opponent.name:(m.opp||'Opponent');
+  return `vs ${esc(String(opp))}`;
+}
+// Participant gate — SAME single SteamID source (mySteam.steamid) as the contest button. When the item carries
+// winner/loser steamids we apply the exact gate; bell items with no ids come from our authed notifications feed (already ours).
+function mcCandidateIsMine(m){
+  if(!(mySteam&&mySteam.steamid)) return false;
+  const w=(m.winner_id!=null?m.winner_id:m.winner), l=(m.loser_id!=null?m.loser_id:m.loser);
+  if(w!=null||l!=null) return rcParticipant(w,l);
+  return true;
+}
 function rcBannerDismissed(){ try{ return localStorage.getItem('rc_banner_seen')==='1'; }catch(e){ return false; } }
 function updBannerVisible(){ const b=$('#updBanner'); return !!b && getComputedStyle(b).display!=='none'; }
 // Show the honest beta banner unless dismissed — and NEVER stack over the update banner (defer while that's up).
@@ -2881,6 +2925,33 @@ async function pollResultChecks(){
   }catch(e){}
 }
 function rcTs(ms){ if(!ms) return ''; try{ return new Date(Number(ms)).toLocaleDateString(undefined,{month:'short',day:'numeric'}); }catch(e){ return ''; } }
+// Unconfirmed matches the signed-in user is in → an actionable "Confirm your results" block in the bell panel.
+// Sourced from the same authed notifications feed (heads_up + mine); only explicit confirmed===false surfaces.
+function mcConfirmSection(){
+  if(!(mySteam&&mySteam.steamid)) return '';
+  const seen=new Set(), items=[];
+  for(const m of [...(rcState.heads_up||[]),...(rcState.mine||[])]){
+    if(!m || m.confirmed!==false) continue;              // absent/true → not an unconfirmed action item
+    if(!mcCandidateIsMine(m)) continue;                  // participant gate (same SteamID source as contest)
+    const k=String(m.match_key||m.mid||m.key||'');
+    if(!k || seen.has(k)) continue; seen.add(k); items.push(m);
+  }
+  if(!items.length) return '';
+  const rows=items.map(m=>{
+    const k=String(m.match_key||m.mid||m.key||'');
+    const already=rcConfirmed.has(k);
+    const act=already
+      ? '<span class="rc-st pend" title="Waiting for your opponent to confirm">✓ You confirmed</span>'
+      : `<button class="rc-confirm" data-mk="${esc(k)}" title="Confirm this result is correct">✓ Confirm result</button>`
+        + ` <button class="rc-contest" data-mk="${esc(k)}" title="This result is wrong — contest it">⚑ Contest</button>`;
+    return `<div class="rc-row"><div class="rc-main"><div class="rc-opp">${mcMatchup(m)}</div><div class="rc-ts">${rcTs(m.ts)}</div></div>`
+      + `<span class="mc-tag unc" title="Result couldn't be auto-confirmed — cut-off or missing recording">? unconfirmed</span>`
+      + `<div class="rc-acts">${act}</div></div>`;
+  }).join('');
+  return `<h4 style="margin:2px 0 4px;font-size:12.5px;color:var(--ink)">Confirm your results</h4>`
+    + `<p style="font-size:12px;color:var(--dim);line-height:1.5;margin:0 0 8px">These matches couldn't be auto-confirmed. Confirm the ones that look right — once both players confirm, the result is locked in.</p>`
+    + rows + `<div style="height:14px"></div>`;
+}
 function renderRcPanel(){
   const body=$('#rcBody'); if(!body) return;
   if(!(mySteam&&mySteam.steamid)){ body.innerHTML='<h3>🔔 Result Check</h3><div class="lb-empty">Launch the game so we know your Steam ID, then turn on Live Sync.</div>'; return; }
@@ -2892,6 +2963,7 @@ function renderRcPanel(){
     return `<div class="rc-row"><div class="rc-main"><div class="rc-opp">vs ${esc(opp)}</div><div class="rc-ts">${rcTs(m.ts)}</div></div><span class="rc-st ${cls}">${st}</span></div>`;
   }).join('');
   body.innerHTML=`<h3>🔔 Result Check</h3>
+    ${mcConfirmSection()}
     <p style="font-size:12px;color:var(--dim);line-height:1.5;margin:0 0 10px">Contest a wrong win/loss and it goes to review — every match is saved as a full replay, so records settle to the truth.</p>
     ${rows||'<div class="lb-empty">No contested results. If a win/loss looks wrong, open a match and tap Contest.</div>'}`;
 }
@@ -2899,10 +2971,12 @@ function openRcPanel(){ const m=$('#rcModal'); if(!m) return; m.classList.add('s
 // A Contest action for a match row — rendered ONLY when we have the match_key AND the logged-in user is a
 // participant (winner/loser steamid). Returns '' otherwise (inert until the server exposes match_key on the
 // profile/session views — see the handoff note).
-function rcContestCell(matchKey,winnerId,loserId){
+function rcParticipant(winnerId,loserId){                 // the one participant gate — reused by contest + confirm
   const me=(mySteam&&mySteam.steamid)?String(mySteam.steamid):'';
-  const part=me && (me===String(winnerId||'') || me===String(loserId||''));
-  if(!matchKey || !part) return '';
+  return !!me && (me===String(winnerId||'') || me===String(loserId||''));
+}
+function rcContestCell(matchKey,winnerId,loserId){
+  if(!matchKey || !rcParticipant(winnerId,loserId)) return '';
   return `<button class="rc-contest" data-mk="${esc(String(matchKey))}" title="Contest this result">⚑ Contest</button>`;
 }
 async function contestMatch(matchKey,btn){
@@ -2920,8 +2994,39 @@ async function contestMatch(matchKey,btn){
     const msg=String(e); toast(msg.includes('403')?'Only a player in that match can contest it.':"Couldn't submit the contest — try again.");
   }finally{ rcInflight.delete(matchKey); }
 }
+// Confirm a match result is correct. POST /skinsync/confirm {match_key}, authed like contest (needs BOTH players).
+async function confirmMatch(matchKey,btn){
+  if(!matchKey){ toast("This match can't be confirmed yet."); return; }
+  if(rcInflight.has(matchKey)) return;                                  // already submitting this one
+  rcInflight.add(matchKey);
+  if(btn){ btn._t=btn.textContent; btn.disabled=true; btn.textContent='…'; }
+  try{
+    const r=await invoke('confirm_match',{matchKey});
+    if(r&&r.ok){
+      rcMarkConfirmed(matchKey);                                        // never re-prompt this user for this match
+      if(r.confirmed){                                                  // both players in → result locked
+        if(btn){ const row=btn.closest('.rc-row'); const tag=row&&row.querySelector('.mc-tag');
+          if(tag){ tag.className='mc-tag ok'; tag.textContent='✓'; tag.title='Verified by tape or both players'; }
+          const acts=btn.closest('.rc-acts'); if(acts) acts.innerHTML='<span class="rc-st won" title="Both players confirmed">✓ Confirmed</span>'; else btn.remove(); }
+        toast('<span class="k">Result confirmed</span> — thanks!');
+      } else {                                                          // our side in, opponent still needed
+        if(btn){ const acts=btn.closest('.rc-acts'); if(acts) acts.innerHTML='<span class="rc-st pend" title="Waiting for your opponent to confirm">✓ You confirmed</span>'; else { btn.textContent='✓ Confirmed'; btn.disabled=true; } }
+        toast('Confirmed on your side — waiting for your opponent.');
+      }
+      pollResultChecks();
+    } else { if(btn){ btn.disabled=false; btn.textContent=btn._t||'✓ Confirm result'; } toast("Couldn't confirm — try again."); }
+  }catch(e){
+    if(btn){ btn.disabled=false; btn.textContent=btn._t||'✓ Confirm result'; }
+    const msg=String(e); toast(msg.includes('403')?'Only a player in that match can confirm it.':"Couldn't confirm — try again.");
+  }finally{ rcInflight.delete(matchKey); }
+}
 // contest buttons live inside the profile / session tables (#pfBody) → one delegated handler covers both
 $('#pfBody')?.addEventListener('click',e=>{ const b=e.target.closest('.rc-contest'); if(b){ e.stopPropagation(); contestMatch(b.dataset.mk,b); } });
+// confirm + contest buttons inside the 🔔 bell panel (#rcBody) — one delegated handler covers both actions there
+$('#rcBody')?.addEventListener('click',e=>{
+  const cf=e.target.closest('.rc-confirm'); if(cf){ e.stopPropagation(); confirmMatch(cf.dataset.mk,cf); return; }
+  const ct=e.target.closest('.rc-contest'); if(ct){ e.stopPropagation(); contestMatch(ct.dataset.mk,ct); return; }
+});
 $('#rcBell')&&($('#rcBell').onclick=openRcPanel);
 $('#rcBell')&&($('#rcBell').onkeydown=e=>{ if(e.key===' '||e.key==='Enter'){ e.preventDefault(); openRcPanel(); } });
 $('#rcBannerX')&&($('#rcBannerX').onclick=dismissRcBanner);
