@@ -1812,8 +1812,11 @@ let _updHideT=null;
 // so it can be updated without shipping a new build. This bundled copy is the offline FALLBACK — keep it
 // roughly current, but the remote is authoritative.
 let CHANGELOG = [
+  { v:'0.1.72', t:'Stability fix', items:[
+    'Fixed a startup issue that could prevent the app from loading.',
+  ]},
   { v:'0.1.71', t:'Auto-confirm from the game score', items:[
-    'Matches now auto-confirm using the game'''s own WINS counter — so wins by time-out confirm too, not just KOs.',
+    'Matches now auto-confirm using the game\'s own WINS counter — so wins by time-out confirm too, not just KOs.',
     'Fewer results ever need manual confirmation.',
   ]},
   { v:'0.1.70', t:'Match confidence + verify', items:[
