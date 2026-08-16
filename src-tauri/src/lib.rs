@@ -413,7 +413,7 @@ pub fn run() {
             sync::detect_state, sync::sync_heartbeat, sync::sync_presence, sync::paint_palettes, sync::paint_live, sync::paint_signatures, sync::inject_hook, sync::get_record, sync::leaderboard, sync::profile, sync::session_stats, sync::matchup, sync::playerstats, sync::tierlist, sync::regions, sync::app_version, sync::set_manual_side, sync::capture_start, sync::capture_stop, sync::capture_status,
             sync::get_share_gameplay, sync::set_share_gameplay, sync::record_consent, sync::suggest_stat, sync::ensure_registered, sync::fetch_changelog,
             sync::contest_match, sync::confirm_match, sync::result_notifications,
-            sync::backup_skins, sync::restore_skins, sync::fetch_defaults,
+            sync::backup_skins, sync::restore_skins, sync::fetch_defaults, sync::read_my_lobby,
             rom::rom_size, rom::rom_read, rom::rom_write, rom::rom_backup, rom::backup_rom, rom::rom_prepare, rom::bake_palette, rom::read_char_palette, rom::extract_char_dat])
         .run(tauri::generate_context!())
         .expect("error while running MvC Collection Live Skins");

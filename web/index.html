@@ -558,6 +558,21 @@ try{document.documentElement.setAttribute('data-theme', localStorage.getItem('me
     <b style="color:var(--gold)">Beta — stats are still being tuned.</b> While we lock down reading the game’s memory, a win/loss or a character can occasionally be credited to the wrong player. Leaderboards will be <b>reset periodically</b> until the stable release. Thanks for testing!
   </div>
 
+  <!-- Share Lobby: appears only while the host is in a Steam lobby; shares a one-click join link + shows who's in it. Purely additive; hidden otherwise. -->
+  <div class="lobby-card" id="lobbyCard" style="display:none; margin:0 14px 12px; padding:12px 14px; border:1px solid var(--line); background:var(--panel); border-radius:10px;">
+    <div style="display:flex; align-items:center; gap:8px; margin-bottom:10px;">
+      <b style="font-size:13px; color:var(--ink);">🎮 Your lobby</b>
+      <span class="chip" id="lobbyCount" style="padding:3px 9px; font-size:11px;">—</span>
+      <div style="flex:1;"></div>
+      <button class="icon-btn" id="lobbyRefresh" title="Refresh lobby" style="width:30px; height:30px; font-size:14px;">🔄</button>
+    </div>
+    <div id="lobbyMembers" style="display:flex; flex-direction:column; gap:6px; margin-bottom:11px;"></div>
+    <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
+      <button class="btn sm" id="lobbyCopy">📋 Copy join link</button>
+      <span style="font-size:11px; color:var(--dim); line-height:1.45; flex:1; min-width:180px;">Anyone you send this to can click it to jump straight into your lobby.</span>
+    </div>
+  </div>
+
   <main class="board">
     <section class="team you" id="teamYou">
       <div class="team-hd">
@@ -1812,6 +1827,10 @@ let _updHideT=null;
 // so it can be updated without shipping a new build. This bundled copy is the offline FALLBACK — keep it
 // roughly current, but the remote is authoritative.
 let CHANGELOG = [
+  { v:'0.1.73', t:'Share your lobby', items:[
+    'New Lobby card in the match view: copy a one-click join link and see who is in your lobby.',
+    'Send the link to anyone and they jump straight into your match — no manual Steam invite.',
+  ]},
   { v:'0.1.72', t:'Stability fix', items:[
     'Fixed a startup issue that could prevent the app from loading.',
   ]},
@@ -2555,6 +2574,7 @@ async function boot(){
   renderYou(); renderOpp(); pollStatus(); setInterval(pollStatus,3000);
   pollTick();                                            // single serialized loop (state + on-demand capture)
   presenceTick(); setInterval(presenceTick, 20000);      // heartbeat + live online count
+  pollLobby(); setInterval(pollLobby, 10000);            // Share Lobby: light poll of the host's Steam lobby (in-flight-guarded; read_my_lobby scans memory, so keep it modest)
   setTimeout(()=>checkForUpdate(false), 3000);           // quiet launch check: banner only if an update is waiting
   // default OFFLINE until the user goes live + accepts Terms; auto-resume only if they'd already accepted + had it on
   if(localStorage.getItem('metasync_terms')===TERMS_VERSION && (localStorage.getItem('suite_sync')||'off')==='on' && !syncOn) doGoLive(true);
@@ -2681,6 +2701,52 @@ async function fetchOppRep(sid){
   if(sid===_oppRepId) return; _oppRepId=sid; if(pr) pr.textContent='';
   try{ const p=await invoke('profile',{steamid:String(sid)}); if(p&&p.found && _oppRepId===sid) setPor($('#p2por'), p.avatar, p.name); const t=(p&&p.found&&(p.cc||p.city))?repLine(p.cc,p.city,p.region):''; if(pr && _oppRepId===sid) pr.textContent=t; }catch(e){}
 }
+
+// ── Share Lobby: one-click join link for the host's current Steam lobby + who's in it ──
+// read_my_lobby does a memory scan, so poll modestly (~10s) and never overlap calls (in-flight guard).
+let _lobbyBusy=false, _lobbyLink='', _lobbyNameCache={};
+// Resolve a member id to {name,avatar}. Reuses the app's existing client resolver (invoke('profile')),
+// which returns {name,avatar,cc}; the webview CSP blocks a direct /skinsync/names fetch, so that HTTP
+// call lives in Rust. Falls back to the id tail when a name is missing. Cached per session.
+async function resolveLobbyName(id){
+  const key=String(id);
+  if(_lobbyNameCache[key]) return _lobbyNameCache[key];
+  let r={name:'…'+key.slice(-5), avatar:''};
+  try{ const p=await invoke('profile',{steamid:key}); if(p&&p.found){ r={name:p.name||r.name, avatar:p.avatar||''}; } }catch(e){}
+  _lobbyNameCache[key]=r; return r;
+}
+async function pollLobby(){
+  if(_lobbyBusy || !invoke) return; _lobbyBusy=true;
+  try{
+    const lob=await invoke('read_my_lobby');
+    const card=$('#lobbyCard'); if(!card) return;
+    if(!lob || !lob.in_lobby){ card.style.display='none'; _lobbyLink=''; return; }   // not in a lobby / game closed → hide
+    _lobbyLink=lob.join_link||'';
+    const owner=String(lob.owner_id||'');
+    const ids=(lob.members||[]).map(String);
+    ids.sort((a,b)=> a===owner?-1:(b===owner?1:0));                                    // host first, others keep order (stable)
+    const people=await Promise.all(ids.map(async id=>({ id, host:id===owner, ...(await resolveLobbyName(id)) })));
+    $('#lobbyMembers').innerHTML = people.map(m=>
+      `<div style="display:flex; align-items:center; gap:8px; font-size:13px;">${avatarImg(m.avatar,22)}<span style="color:var(--ink); font-weight:600;">${esc(m.name)}</span>${m.host?'<span class="chip" style="padding:1px 8px; font-size:10px; color:var(--gold); border-color:var(--gold-soft);">host</span>':''}</div>`
+    ).join('');
+    const n=people.length; $('#lobbyCount').textContent = n+(n===1?' player':' players');
+    const cp=$('#lobbyCopy'); if(cp) cp.disabled=!_lobbyLink;
+    card.style.display='block';
+  }catch(e){ /* transient scan/invoke error → keep last state (avoid flicker); the in_lobby:false path owns hiding */ }
+  finally{ _lobbyBusy=false; }
+}
+async function copyLobbyLink(){
+  const link=_lobbyLink;
+  if(!link){ toast('No join link yet — hit 🔄 to refresh.'); return; }
+  let ok=false;
+  try{ await navigator.clipboard.writeText(link); ok=true; }
+  catch(e){                                            // CSP / permission blocked clipboard API → hidden-textarea fallback
+    try{ const ta=document.createElement('textarea'); ta.value=link; ta.setAttribute('readonly',''); ta.style.position='fixed'; ta.style.top='-1000px'; document.body.appendChild(ta); ta.select(); ok=document.execCommand('copy'); document.body.removeChild(ta); }catch(e2){ ok=false; }
+  }
+  toast(ok ? 'Join link copied — send it to your opponent.' : '⚠ Couldn\'t copy — select the link and copy it manually.');
+}
+$('#lobbyRefresh')&&($('#lobbyRefresh').onclick=pollLobby);
+$('#lobbyCopy')&&($('#lobbyCopy').onclick=copyLobbyLink);
 async function renderLeaderboard(tab){
   lbTab=tab||lbTab;
   $$('#lbTabs button').forEach(b=>b.classList.toggle('on',b.dataset.lt===lbTab));

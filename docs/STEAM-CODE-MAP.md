@@ -151,4 +151,33 @@ The leaderboard's win/loss has been wrong repeatedly; two DISTINCT bugs, one fix
 - [ ] Char-select: roster grid, cursor(row/col), locked-picks array (⚠ `exe+0x9d1b16` was HarfBuzz, false lead).
 - [ ] Palette/DatPal upload (skins).
 - [ ] Match-init sub-inits `FUN_14060b550/c070/af70/b9f0` (fighter-array / battle-globals setup).
-- [ ] Steam lobby: `ISteamMatchmaking` create/join, lobby id, ranked flag (for tournament join-links).
+- [x] Steam lobby: `ISteamMatchmaking` create/join, lobby id, join-links — ✅ **SOLVED + JOIN PROVEN 2026-08-15** (see below).
+
+---
+
+## LOBBY / P2P / JOIN-LINKS (✅ solved + live-validated + join proven, 2026-08-15)
+
+Full RE + memory: `[[mvc-lobby-p2p-re]]`, `[[mvc-lobby-tournament-re]]`. appid **2634890**.
+
+### Steam interface singleton
+Resolver `FUN_14003ee40` builds a "Steam context" object (the object *is* the interface array), fetched everywhere via `(*DAT_1408db898)(&PTR_FUN_140a34d90)`. Sub-interfaces at fixed byte offsets: `+0x08` User019, `+0x10` Friends015, `+0x18` Utils009, **`+0x20` Matchmaking009 (lobbies)**, `+0x28` UserStats, **`+0x40` Networking005 (P2P)**, `+0x48` RemoteStorage, `+0x58` HTTP, `+0x68` UGC. Matchmaking vtable (canonical order confirmed): +0x68 CreateLobby, +0x70 JoinLobby, +0x80 InviteUserToLobby, +0xA0 SetLobbyData, +0x108 SetLobbyType, +0x110 SetLobbyJoinable, +0x118 GetLobbyOwner. `+connect_lobby <id>` parser = `FUN_14012f3a0`; host state machine = `FUN_14013af30`; P2P mesh dispatcher (10 msg types) = `FUN_14013d520`; P2P bring-up = `FUN_14016e8c0`; per-peer QoS/RTT = `FUN_14015c0f0`.
+
+### Lobby CSteamID extraction — use the FINGERPRINT, not the static offset
+⚠ Static offsets (`*(exe+0x2eb36a0)+0x410` etc.) read **0** live — DO NOT use them.
+✅ **WORKING (proven twice live): owner-adjacency fingerprint.** Scan committed PRIVATE heap for a **LOBBY-type CSteamID immediately followed 8 bytes later by our own USER SteamID** = the (lobby_id, owner) record; OUR lobby = the pair whose owner == our SteamID, taking the active slot (highest freq / addr `~0x2bbcXXXX`). Correctly separated a fresh lobby from a stale one on the 2nd run.
+- **Lobby CSteamID format:** universe=1, type=8(chat), instance `0x60000` (lobby|MMS) → `0x18600004XXXXXXX`. Detector: `(v>>56)&0xFF==1 && (v>>52)&0xF==8 && ((v>>32)&0xFFFFF)&0x60000`.
+- **User CSteamID:** `(v>>56)&0xFF==1 && (v>>52)&0xF==1 && (v>>32)&0xFFFFF==1`.
+- **Member list:** distinct USER CSteamIDs clustered within ~±0x800..0x4000 of the lobby-id occurrences = members (host + joiners); resolve names via Steam `GetPlayerSummaries`. Live: read exactly host + link-joiner, no noise.
+- **Room code** (short join code, e.g. `BK1V59`) is in memory as ASCII (readable, more shareable than the URL; encoding-from-id not derived).
+
+### Join link — ✅ PROVEN END-TO-END
+`steam://joinlobby/2634890/<lobbyID>/<ownerID>`. Pasted in a browser on a 2nd Steam account → launched Marvel Collections → **joined the host's lobby** (joiner cTrl_ 76561198969997427 landed in TRIS's lobby). The game only handles `+connect_lobby <id>` (via `FUN_14012f3a0`); **WE build the link** from the extracted id. `InviteUserToLobby` (mm vt+0x80) is the game's programmatic invite path.
+
+### SetLobbyData keys (host writes, `FUN_1401391e0` reads)
+`OwnerId`(%016llX), host-name, `SlotPublicMax/Open`, `SlotPrivateMax/Open`, `SearchKeyNum`/`SearchKey%d`, **`BinaryData`+`BinarySize`** (128-byte opaque **match-settings blob** → lobby-info+0x50). **FT10 is NOT a key** (social convention).
+
+### DECISIVE: P2P is player-to-player, host-INDEPENDENT
+Fight traffic runs member↔member over ISteamNetworking005 keyed on each player's CSteamID (`SendP2PPacket(memberID,…)`), NOT relayed through the owner; matchmaking is only discovery/metadata. ⟹ owner can spectate while two members fight. Owner IS the mesh **coordinator** (slot assign / ready-sync / match-start live in `FUN_14013af30`), so a present-but-spectating owner works today; **fully-headless** (no game running the coordinator) needs Steam owner-**migration** after the owner leaves — code polls `GetLobbyOwner` each tick (hints tolerated) but UNPROVEN.
+
+### Tournament-coordination status
+✅ Buildable now (game running): app reads own lobby id + members (fingerprint) → Share-lobby (link + room code) → server pairs players + distributes join links → bracket via the set-score tally (`*(exe+0x2edf628)+0xbc/0xbd`). ⏳ OPEN experiments: (1) headless lobby CREATOR = a Steamworks program as appid 2634890 calling CreateLobby+SetLobbyJoinable, no game — can a real client join it? (2) owner-migration (host leaves → match survives?) = fully-headless. (3) auto game-START = find the ready-flags + match-start trigger in memory and write them (skip the manual lobby/ready flow).

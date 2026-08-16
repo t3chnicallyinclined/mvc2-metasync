@@ -1841,7 +1841,7 @@ dependencies = [
 
 [[package]]
 name = "mvc-live-skins"
-version = "0.1.72"
+version = "0.1.73"
 dependencies = [
  "flate2",
  "serde",

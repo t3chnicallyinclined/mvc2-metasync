@@ -16,7 +16,7 @@ use std::sync::{Mutex, OnceLock};
 use serde::Serialize;
 use windows::Win32::Foundation::{CloseHandle, HANDLE, FALSE};
 use windows::Win32::System::Threading::{OpenProcess, PROCESS_VM_READ, PROCESS_VM_WRITE, PROCESS_VM_OPERATION, PROCESS_QUERY_INFORMATION, PROCESS_TERMINATE, TerminateProcess, GetCurrentProcessId};
-use windows::Win32::System::Memory::{VirtualQueryEx, MEMORY_BASIC_INFORMATION, MEM_COMMIT, PAGE_GUARD, PAGE_NOACCESS, PAGE_READWRITE};
+use windows::Win32::System::Memory::{VirtualQueryEx, MEMORY_BASIC_INFORMATION, MEM_COMMIT, MEM_PRIVATE, PAGE_GUARD, PAGE_NOACCESS, PAGE_READWRITE};
 use windows::Win32::System::Diagnostics::Debug::{ReadProcessMemory, WriteProcessMemory};
 use windows::Win32::System::Diagnostics::ToolHelp::{
     CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W, TH32CS_SNAPPROCESS,
@@ -562,6 +562,126 @@ fn find_opponent_lobby(pid: u32, my_id: u64, exe_base: usize, cache: &mut Option
         }
         let _ = CloseHandle(h);
         result.map(|(opp, _a, name)| (opp, name, side))
+    }
+}
+
+// ── READ-ONLY lobby locator (read_my_lobby command) ──────────────────────────────────────────────
+// "Owner-adjacency fingerprint": a Steam lobby's structure stores the lobby CSteamID immediately
+// followed (8 bytes later) by the OWNER's user CSteamID. OUR lobby is the one whose owner == our own
+// SteamID. We tally every (lobby-id | our-id) adjacency across the game's committed PRIVATE heap and
+// take the argmax; members = the distinct user CSteamIDs sitting within ±0x4000 of that lobby id.
+// Pure ReadProcessMemory — no writes, never panics (Option-guarded; any failure → { in_lobby:false }).
+// Reuses the same helpers as find_opponent_lobby: read_self_id / find_game_pid / read_at / the
+// committed-region VirtualQueryEx walk.
+
+// CSteamID bit layout: universe=bits56-63, type=bits52-55, instance=bits32-51.
+fn is_lobby(v: u64) -> bool {
+    (v >> 56) & 0xFF == 1 && (v >> 52) & 0xF == 8 && (((v >> 32) & 0xFFFFF) & 0x60000) != 0
+}
+fn is_user(v: u64) -> bool {
+    (v >> 56) & 0xFF == 1 && (v >> 52) & 0xF == 1 && ((v >> 32) & 0xFFFFF) == 1
+}
+
+const MVC_APPID: u32 = 2634890; // MvC Fighting Collection Steam app id (for the join link)
+
+fn not_in_lobby() -> serde_json::Value {
+    serde_json::json!({ "in_lobby": false, "lobby_id": "", "owner_id": "", "join_link": "", "members": [] })
+}
+
+/// READ-ONLY: locate the user's CURRENT Steam lobby in the running game's memory and return a
+/// shareable `steam://joinlobby/...` link + the member SteamID list. All u64 ids are serialized as
+/// STRINGS (JS loses precision above 2^53). Never panics — any failure / game-not-running maps to
+/// `{ in_lobby:false }`.
+#[tauri::command]
+pub fn read_my_lobby() -> serde_json::Value {
+    read_my_lobby_inner().unwrap_or_else(not_in_lobby)
+}
+
+fn read_my_lobby_inner() -> Option<serde_json::Value> {
+    let our_id = read_self_id()?;   // no Steam identity → treat as not-in-lobby
+    let pid = find_game_pid()?;     // game not running → not-in-lobby
+    unsafe {
+        let h = OpenProcess(PROCESS_VM_READ | PROCESS_QUERY_INFORMATION, FALSE, pid).ok()?;
+
+        // ── Pass 1: committed-PRIVATE-heap sweep (same VirtualQueryEx walk + chunked, page-safe read_at
+        // as find_opponent_lobby). Tally owner-adjacency per lobby id and remember each lobby id's addrs.
+        let mut counts: HashMap<u64, u32> = HashMap::new();          // lobby id → owner-adjacency hits
+        let mut lobby_at: HashMap<u64, Vec<usize>> = HashMap::new(); // lobby id → addresses it occupies
+        let mut addr = 0usize;
+        loop {
+            let mut mbi = MEMORY_BASIC_INFORMATION::default();
+            if VirtualQueryEx(h, Some(addr as *const c_void), &mut mbi, std::mem::size_of::<MEMORY_BASIC_INFORMATION>()) == 0 { break; }
+            let base = mbi.BaseAddress as usize; let size = mbi.RegionSize; if size == 0 { break; }
+            // committed PRIVATE heap, readable protections only (PAGE_READONLY 0x02 / READWRITE 0x04 /
+            // EXECUTE_READ 0x20 / EXECUTE_READWRITE 0x40 — excludes guarded/no-access), region ≤ 128 MB.
+            let prot_ok = matches!(mbi.Protect.0, 0x02 | 0x04 | 0x20 | 0x40);
+            if mbi.State == MEM_COMMIT && mbi.Type == MEM_PRIVATE && prot_ok && size <= 0x800_0000 {
+                let mut off = 0usize;
+                while off < size {
+                    let n = (size - off).min(0x80_0000);
+                    if let Some(buf) = read_at(h, base + off, n) {
+                        let mut i = 0usize;
+                        while i + 8 <= buf.len() {
+                            let v = u64::from_le_bytes(buf[i..i+8].try_into().unwrap());
+                            if is_lobby(v) {
+                                let e = lobby_at.entry(v).or_default();
+                                if e.len() < 512 { e.push(base + off + i); }
+                            } else if v == our_id {
+                                // our id is a user id; the OWNER field sits 8 bytes AFTER its lobby id, so
+                                // the lobby id is the 8 bytes immediately BEFORE this occurrence.
+                                let a = base + off + i;
+                                let lob = if i >= 8 {
+                                    u64::from_le_bytes(buf[i-8..i].try_into().unwrap())
+                                } else {
+                                    // chunk boundary: read the preceding 8 bytes directly (page-safe)
+                                    read_at(h, a.wrapping_sub(8), 8).filter(|b| b.len() >= 8)
+                                        .map(|b| u64::from_le_bytes(b[..8].try_into().unwrap())).unwrap_or(0)
+                                };
+                                if is_lobby(lob) { *counts.entry(lob).or_insert(0) += 1; }
+                            }
+                            i += 4;
+                        }
+                    }
+                    off += n;
+                }
+            }
+            let nx = base + size; if nx <= base { break; } addr = nx;
+        }
+
+        // our lobby = the most-tallied owner-adjacency. None → not in a lobby (free the handle first).
+        let lobby_id = match counts.into_iter().max_by_key(|&(_, c)| c).map(|(id, _)| id) {
+            Some(id) => id,
+            None => { let _ = CloseHandle(h); return None; }
+        };
+        let anchors = lobby_at.get(&lobby_id).cloned().unwrap_or_default();
+
+        // ── Pass 2: members = distinct user CSteamIDs within ±0x4000 of any occurrence of the chosen
+        // lobby id (host + joiners, includes us). Read a bounded window around each anchor (page-safe;
+        // a partial/failed read just contributes what it can).
+        let mut seen: std::collections::HashSet<u64> = std::collections::HashSet::new();
+        let mut members: Vec<String> = Vec::new();
+        for &la in anchors.iter().take(64) {
+            for (start, len) in [(la.saturating_sub(0x4000), 0x4000usize), (la, 0x4000usize)] {
+                if let Some(buf) = read_at(h, start, len) {
+                    let mut i = 0usize;
+                    while i + 8 <= buf.len() {
+                        let v = u64::from_le_bytes(buf[i..i+8].try_into().unwrap());
+                        if is_user(v) && seen.insert(v) { members.push(v.to_string()); }
+                        i += 4;
+                    }
+                }
+            }
+        }
+        if seen.insert(our_id) { members.push(our_id.to_string()); } // owner is always a member
+        let _ = CloseHandle(h);
+
+        Some(serde_json::json!({
+            "in_lobby": true,
+            "lobby_id": lobby_id.to_string(),
+            "owner_id": our_id.to_string(),
+            "join_link": format!("steam://joinlobby/{}/{}/{}", MVC_APPID, lobby_id, our_id),
+            "members": members,
+        }))
     }
 }
 
