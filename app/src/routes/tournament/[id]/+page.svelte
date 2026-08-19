@@ -481,6 +481,7 @@
 	}
 	.plist {
 		max-height: min(60vh, 640px);
+		max-height: min(60dvh, 640px);
 		overflow-y: auto;
 		overscroll-behavior: contain;
 	}

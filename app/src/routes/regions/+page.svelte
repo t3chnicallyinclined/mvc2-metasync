@@ -123,6 +123,7 @@
 	}
 	.bd-body {
 		max-height: min(74vh, 900px);
+		max-height: min(74dvh, 900px);
 		overflow-y: auto;
 		overscroll-behavior: contain;
 	}

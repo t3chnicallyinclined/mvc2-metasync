@@ -255,7 +255,8 @@
 		flex: 0 1 190px;
 		min-width: 120px;
 		font: inherit;
-		font-size: 12.5px;
+		/* 16px: below it iOS/iPadOS Safari auto-zooms the page when the field is focused. */
+		font-size: 16px;
 		color: var(--ink);
 		background: var(--panel-2);
 		border: 1px solid var(--line);

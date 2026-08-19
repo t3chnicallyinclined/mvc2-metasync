@@ -26,6 +26,7 @@
 		place-items: center;
 		gap: 14px;
 		min-height: 60vh;
+		min-height: 60dvh;
 		padding: 24px;
 	}
 	p {

@@ -105,6 +105,7 @@
 	}
 	.bd-scroll {
 		max-height: min(72vh, 880px);
+		max-height: min(72dvh, 880px);
 		overflow-y: auto;
 		overscroll-behavior: contain;
 	}

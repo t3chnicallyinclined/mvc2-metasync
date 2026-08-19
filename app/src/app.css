@@ -109,6 +109,10 @@ html,
 body {
 	margin: 0;
 	overflow-x: hidden;
+	/* Stop iOS from inflating text in landscape, and kill the grey tap-flash on touch. */
+	-webkit-text-size-adjust: 100%;
+	text-size-adjust: 100%;
+	-webkit-tap-highlight-color: transparent;
 }
 body {
 	background: radial-gradient(120% 90% at 50% -10%, color-mix(in srgb, var(--gold) 8%, transparent), transparent 55%),
@@ -116,7 +120,9 @@ body {
 	color: var(--ink);
 	font: 14px/1.45 'Segoe UI Variable Text', 'Segoe UI', system-ui, -apple-system, sans-serif;
 	-webkit-font-smoothing: antialiased;
+	/* 100dvh follows iOS Safari's shrinking address bar; 100vh is the pre-dvh fallback. */
 	min-height: 100vh;
+	min-height: 100dvh;
 	font-variant-numeric: tabular-nums;
 }
 h1,
@@ -134,6 +140,15 @@ a {
 button {
 	font: inherit;
 	color: var(--ink);
+}
+/* iOS Safari auto-zooms when a focused input's font is under 16px. Baseline for any bare field
+   (component-styled fields set their own ≥16px on mobile). */
+@media (max-width: 720px) {
+	input,
+	select,
+	textarea {
+		font-size: 16px;
+	}
 }
 
 /* ── Tier text colors (the .rk-* classes) — used by badges everywhere ── */
@@ -212,14 +227,18 @@ button {
 	font-size: 13px;
 }
 
-/* App layout scaffold */
+/* App layout scaffold. Safe-area insets keep content clear of the notch (top, standalone PWA)
+   and the rounded/notched sides in landscape; env() is 0 in a normal browser tab, so max() keeps
+   the desktop padding. Bottom clears the fixed TabBar + the home indicator. */
 .wrap {
 	max-width: 1140px;
 	margin: 0 auto;
-	padding: 8px 18px 40px;
+	padding: max(8px, env(safe-area-inset-top)) max(18px, env(safe-area-inset-right)) 40px
+		max(18px, env(safe-area-inset-left));
 }
 @media (max-width: 720px) {
 	.wrap {
-		padding: 6px 12px calc(84px + env(safe-area-inset-bottom));
+		padding: max(6px, env(safe-area-inset-top)) max(12px, env(safe-area-inset-right))
+			calc(84px + env(safe-area-inset-bottom)) max(12px, env(safe-area-inset-left));
 	}
 }
