@@ -741,6 +741,21 @@ try{document.documentElement.setAttribute('data-theme', localStorage.getItem('me
   .tny-addnm{flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-weight:600; font-size:13px; color:var(--ink)}
   .tny-addwl{font-size:11px; color:var(--dim); font-variant-numeric:tabular-nums}
   .tny-addnone{padding:10px 12px; font-size:12px; color:var(--faint)}
+  /* ── gs-207 THE GATE — arena band under the hero: red/blue corner washes ≤6%, skewed gold seam, six perk
+     chips, the page's ONE gold register cut. Renders only pre-bracket while you can still enter. ── */
+  .tny-entergate{position:relative; display:flex; align-items:center; gap:16px; margin:12px 0 10px; padding:13px 18px 15px;
+    border:1px solid var(--line); border-radius:14px; overflow:hidden;
+    background:linear-gradient(90deg,rgba(214,31,60,.06),transparent 38%),linear-gradient(270deg,rgba(74,168,255,.06),transparent 38%),var(--card)}
+  .tny-entergate::after{content:""; position:absolute; left:0; right:0; bottom:0; height:2px;
+    background:linear-gradient(90deg,transparent,var(--gold) 25%,var(--gold) 75%,transparent); transform:skewY(-.4deg); opacity:.8}
+  .teg-rail{flex:none; font-size:10px; font-weight:700; letter-spacing:.16em; text-transform:uppercase; color:var(--faint); line-height:1.5}
+  .teg-chips{display:flex; flex-wrap:wrap; gap:7px; flex:1; min-width:0}
+  .teg-chip{display:inline-flex; align-items:center; gap:6px; font-size:10px; font-weight:700; letter-spacing:.1em; text-transform:uppercase;
+    color:var(--dim); border:1px solid var(--line); background:var(--panel-2,var(--card)); border-radius:7px; padding:5px 10px; white-space:nowrap}
+  .teg-chip i{font-style:normal; opacity:.9}
+  .teg-cta{display:flex; flex-direction:column; align-items:flex-end; gap:4px; flex:none}
+  .teg-sub{font-size:10.5px; color:var(--faint)}
+  @media (max-width:860px){ .tny-entergate{flex-wrap:wrap} .teg-cta{align-items:flex-start} }
   .tny-ent-nm{flex:1}
   .tny-ent-x{margin-left:auto; background:transparent; border:0; color:var(--faint); cursor:pointer; font-size:13px; padding:2px 6px; border-radius:6px; line-height:1}
   .tny-ent-x:hover{color:#e0574f; background:color-mix(in srgb,#e0574f 14%,transparent)}
@@ -3633,8 +3648,8 @@ async function renderDetail(fromCache){
   const region = t.online? 'Online' : ([t.city,t.cc].filter(Boolean).join(', ')||'Offline');
   const nEnt = (t.registrations||[]).filter(r=>r.status==='registered'||r.status==='checked_in').length;
   let cta='';
-  if(pre && !myReg) cta+='<button class="tny-btn gold" data-act="register">'+(isTO?'Register (play too)':'Register')+'</button>';
-  else if(myReg){ if(t.status==='checkin'&&myReg.status!=='checked_in') cta+='<button class="tny-btn gold" data-act="checkin">Check in</button>'; if(pre) cta+='<button class="tny-btn ghost sm" data-act="unregister">Drop</button>'; }
+  // gs-207: register moved to THE GATE (tnyRenderTeamBar) — the hero CTA machine owns check-in → drop → start only
+  if(myReg){ if(t.status==='checkin'&&myReg.status!=='checked_in') cta+='<button class="tny-btn gold" data-act="checkin">Check in</button>'; if(pre) cta+='<button class="tny-btn ghost sm" data-act="unregister">Drop</button>'; }
   if(t.stream_url) cta+='<a class="tny-btn ghost sm" href="'+esc(t.stream_url)+'" target="_blank" rel="noopener">📺 Watch</a>';
   if(isTO && pre) cta+='<button class="tny-btn gold" data-act="start">Start bracket ▶</button>';
   // (Delete intentionally lives ONLY in Admin → Danger zone with a type-the-name confirm — a small hero 🗑 with
@@ -3892,11 +3907,23 @@ function tnyRenderAlert(t, me){
   TNY._yup=stamp;
 }
 function tnyBeep(){ try{ const A=window.AudioContext||window.webkitAudioContext; if(!A) return; const a=new A(); const o=a.createOscillator(), g=a.createGain(); o.connect(g); g.connect(a.destination); o.type='sine'; o.frequency.setValueAtTime(880,a.currentTime); g.gain.setValueAtTime(.0001,a.currentTime); g.gain.exponentialRampToValueAtTime(.09,a.currentTime+.02); o.frequency.setValueAtTime(1320,a.currentTime+.13); g.gain.exponentialRampToValueAtTime(.0001,a.currentTime+.5); o.start(); o.stop(a.currentTime+.5); setTimeout(()=>{try{a.close();}catch(_){}} ,700); }catch(_){}}
-// Team declaration REMOVED from registration — players pick their team in-game during matches, not at signup.
-// (Kept as a no-op so the renderDetail call site stays intact; the Team column still shows a team if one is
-// ever set through another path.)
+// gs-207 THE GATE — what entering unlocks. Repurposes the old (no-op) team bar: a slim arena band under
+// the hero, rendered ONLY while you can still enter (pre-bracket, not registered) — then gone forever.
+// Every perk chip maps to a SHIPPED system (ELO seeding, bracket badges, auto-report, permanence, h2h,
+// you're-up alerts) so the sell is honest. The gold cut here is the page's ONE register action (the hero
+// register half-line died in the same edit — gold budget). SSE/tick-rebuilt via tnyTry('teambar').
 function tnyRenderTeamBar(t, me, myReg){
-  const el=tId('tnyTeamBar'); if(el) el.innerHTML='';
+  const el=tId('tnyTeamBar'); if(!el) return;
+  const pre=t.status==='open'||t.status==='checkin'||t.status==='draft';
+  if(!(pre && !myReg)){ el.innerHTML=''; return; }
+  const isTO=t.to_steamid===me||(t.co_tos||[]).indexOf(me)>=0;
+  const perks=[['⚡','Seeded by your ELO'],['🛡','Your rank on the bracket'],['👁','Sets report themselves'],['🪨','Carved into the record'],['⚔','Head-to-head intel'],['📣','“You’re up” callouts']];
+  el.innerHTML='<div class="tny-entergate">'+
+    '<span class="teg-rail">Entering<br>unlocks</span>'+
+    '<div class="teg-chips">'+perks.map(p=>'<span class="teg-chip"><i>'+p[0]+'</i>'+esc(p[1])+'</span>').join('')+'</div>'+
+    '<div class="teg-cta"><button class="tny-btn gold teg-go" data-act="register">'+(isTO?'REGISTER — PLAY TOO ▸':'REGISTER — FREE ENTRY ▸')+'</button>'+
+    '<span class="teg-sub">champion takes the purse</span></div>'+
+    '</div>';
 }
 // Start-gate: ONLY for STATIONED events (the TO runs matches on dedicated host stations) — prompt the TO to
 // enroll a station. In player-host mode each pair self-hosts, so there's nothing for the TO to enroll here.
