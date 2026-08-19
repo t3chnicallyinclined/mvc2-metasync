@@ -1120,6 +1120,10 @@ try{document.documentElement.setAttribute('data-theme', localStorage.getItem('me
   .pod-chain{display:inline-flex; align-items:center; gap:5px; font-size:10px; color:var(--faint); border:1px dashed var(--line); border-radius:99px; padding:2px 9px}
   /* gs-212: per-event accent sliver on browse cards (transparent when the event has no accent) */
   .tny-card{border-left:3px solid var(--tacc,transparent)}
+  /* gs-213: SET chip on profile recent fights → the set's full breakdown; back link in the set view */
+  .ses-open{color:var(--gold); font-variant-numeric:tabular-nums; cursor:pointer; text-decoration:none; font-weight:800; font-size:10px; letter-spacing:.06em}
+  .ses-back{display:inline-block; margin:0 0 8px; color:var(--dim); text-decoration:none; font-size:11.5px; font-weight:700}
+  .ses-back:hover{color:var(--ink)}
   /* banner picker */
   .tny-banner-pick{display:flex; flex-direction:column; gap:8px}
   .tny-banner-prev{width:100%; max-width:360px; aspect-ratio:3/1; border-radius:10px; border:1px dashed var(--line); background:var(--panel-2) center/cover no-repeat; display:grid; place-items:center; color:var(--faint); font-size:12px}
@@ -5667,7 +5671,7 @@ async function openProfile(sid,nm){
         <b class="fw">${m.won?'W':'L'}</b>
         <div class="fmid"><b class="fo lb-click" data-sid="${esc(m.opp_id||'')}" data-nm="${esc(m.opp||'')}">${esc(m.opp||'?')}</b>
           <span class="ft">${esc(teamStr(m.my_team))} <i>vs</i> ${esc(teamStr(m.opp_team))}</span></div>
-        <span class="ffl">${tag?tag+' ':''}${m.combo?('<svg class="pfx-mic" style="color:var(--gold)"><use href="#ic-target"/></svg>'+m.combo):''}${m.ocv?' <svg class="pfx-mic" style="color:#ff7ae0"><use href="#ic-burst"/></svg>':''}${m.perfect?' <svg class="pfx-mic" style="color:#9fd4ef"><use href="#ic-gem"/></svg>':''}${m.comeback?' <svg class="pfx-mic" style="color:#4ade80"><use href="#ic-loop"/></svg>':''}${cbtn?(' '+cbtn):''}</span>
+        <span class="ffl">${tag?tag+' ':''}${m.combo?('<svg class="pfx-mic" style="color:var(--gold)"><use href="#ic-target"/></svg>'+m.combo):''}${m.ocv?' <svg class="pfx-mic" style="color:#ff7ae0"><use href="#ic-burst"/></svg>':''}${m.perfect?' <svg class="pfx-mic" style="color:#9fd4ef"><use href="#ic-gem"/></svg>':''}${m.comeback?' <svg class="pfx-mic" style="color:#4ade80"><use href="#ic-loop"/></svg>':''}${cbtn?(' '+cbtn):''}${(m.session||m.session_id)?` <a class="ses-open" data-ses="${esc(String(m.session||m.session_id))}" title="View this set's full breakdown">SET #${esc(String(m.session||m.session_id).slice(-4))}</a>`:''}</span>
         <b class="fe" style="color:${e>=0?'#4ade80':'#f87171'}">${e>0?'+':''}${e}</b>
       </div>`;
     }).join('');
@@ -5715,8 +5719,9 @@ async function openProfile(sid,nm){
     pfLiveSid=String(sid);                                    // push deltas patch #pfLiveSlot while this card is open
   }catch(e){ body.innerHTML='<div class="lb-empty" id="pfRetry" style="cursor:pointer">PROFILE UNAVAILABLE — tap to retry</div>'; const rb=$('#pfRetry'); if(rb) rb.onclick=()=>openProfile(sid,nm); }
 }
-// Per-session (ranked set) breakdown — reuses the profile modal. Opened by the session chip next to the set score.
-async function openSession(sid){
+// Per-session (ranked set) breakdown — reuses the profile modal. Opened by the live session chip next to the
+// set score, or (gs-213) by a SET chip on a profile's recent fights — `back` = the profile to return to.
+async function openSession(sid, back){
   const modal=$('#pfModal'), body=$('#pfBody'); if(!modal||!invoke||!sid) return;
   pfLiveSid=null;                                             // the set-result card takes over the modal
   modal.classList.add('show'); body.innerHTML='<div class="lb-empty">LOADING…</div>';
@@ -5771,7 +5776,9 @@ async function openSession(sid){
         <span class="rail-lbl" style="display:block;margin:14px 2px 6px">Games</span>
         <table class="pf-tbl"><tr><th>#</th><th>Winner</th><th>Loser</th><th>Winning team</th><th></th></tr>${games}</table>`;
     }
-  }catch(e){ body.innerHTML='<div class="lb-empty" id="sesRetry" style="cursor:pointer">SET UNAVAILABLE — tap to retry</div>'; const rb=$('#sesRetry'); if(rb) rb.onclick=()=>openSession(sid); }
+    // gs-213: opened from a profile → offer the way back (both render branches)
+    if(back&&back.sid){ body.insertAdjacentHTML('afterbegin','<a href="#" id="sesBack" class="ses-back">‹ back to profile</a>'); const bk=$('#sesBack'); if(bk) bk.onclick=ev=>{ ev.preventDefault(); openProfile(back.sid); }; }
+  }catch(e){ body.innerHTML='<div class="lb-empty" id="sesRetry" style="cursor:pointer">SET UNAVAILABLE — tap to retry</div>'; const rb=$('#sesRetry'); if(rb) rb.onclick=()=>openSession(sid, back); }
 }
 $('#lbList')?.addEventListener('click',e=>{ const n=e.target.closest('.lb-click'); if(n) openProfile(n.dataset.sid,n.dataset.nm); });
 $('#lrList')?.addEventListener('click',e=>{ const n=e.target.closest('.lb-click'); if(n&&n.dataset.sid&&String(n.dataset.sid).length===17) openProfile(n.dataset.sid,n.dataset.nm); });   // Live Results feed → click a name for their profile
@@ -5849,7 +5856,10 @@ $('#regTabs')?.addEventListener('click',e=>{ const b=e.target.closest('button');
 $('#regSort')?.addEventListener('click',e=>{ const b=e.target.closest('button'); if(!b) return; if(b.id==='regBackRanks'){ const t=$$('#tabs button[data-t="ranks"]')[0]; if(t) t.click(); return; } if(!b.dataset.rs) return; regSort=b.dataset.rs; renderRegions(); });
 $('#regBody')?.addEventListener('click',e=>{ const rc=e.target.closest('.reg-click'); if(rc){ openRegion(rc.dataset.cc, rc.dataset.city, rc.dataset.nm); return; } const pc=e.target.closest('.lb-click'); if(pc&&pc.dataset.sid) openProfile(pc.dataset.sid, pc.dataset.nm); });
 // inside an open profile, clicking an opponent (head-to-head or recent) opens THEIR profile
-$('#pfBody')?.addEventListener('click',e=>{ const n=e.target.closest('.lb-click'); if(n&&n.dataset.sid&&n.dataset.sid.length===17) openProfile(n.dataset.sid,n.dataset.nm); });
+$('#pfBody')?.addEventListener('click',e=>{
+  // gs-213: a SET chip inside the profile opens that set's full breakdown (with a way back to the profile)
+  const s=e.target.closest('.ses-open'); if(s&&s.dataset.ses){ const back=pfLiveSid?{sid:pfLiveSid}:null; openSession(s.dataset.ses, back); return; }
+  const n=e.target.closest('.lb-click'); if(n&&n.dataset.sid&&n.dataset.sid.length===17) openProfile(n.dataset.sid,n.dataset.nm); });
 $('#pfX')?.addEventListener('click',()=>{ pfLiveSid=null; $('#pfModal').classList.remove('show'); });
 $('#pfModal')?.addEventListener('click',e=>{ if(e.target.id==='pfModal'){ pfLiveSid=null; e.currentTarget.classList.remove('show'); } });
 
