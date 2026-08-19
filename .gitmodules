@@ -1,0 +1,4 @@
+[submodule "server"]
+	path = server
+	url = https://github.com/t3chnicallyinclined/metasync-server.git
+	branch = server-optimizations
