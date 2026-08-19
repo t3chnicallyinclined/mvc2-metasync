@@ -697,8 +697,26 @@ try{document.documentElement.setAttribute('data-theme', localStorage.getItem('me
   .tny-ent.wait{opacity:.6}
   /* bracket sections */
   .tny-bracket-wrap{display:flex; flex-direction:column; gap:20px; overflow-x:auto}
-  .tny-bsec .tny-blabel{font-size:10px; font-weight:700; letter-spacing:.16em; text-transform:uppercase; color:var(--faint); margin-bottom:8px}
-  .tny-bsec.grand .tny-blabel{color:var(--gold-soft)}
+  /* gs-203 THE STAGE: brackets are arena corners */
+  .tny-bsec{position:relative; padding:12px 14px 8px; border:1px solid var(--line); border-radius:14px; margin-bottom:14px; overflow:hidden; background:var(--panel)}
+  .tny-bsec.winners{background:linear-gradient(270deg,rgba(74,168,255,.06),transparent 45%),var(--panel)}
+  .tny-bsec.losers{background:linear-gradient(90deg,rgba(214,31,60,.06),transparent 45%),var(--panel)}
+  .tny-bsec.grand{border-color:color-mix(in srgb,var(--gold) 32%,var(--line)); box-shadow:inset 0 2px 0 color-mix(in srgb,var(--gold) 45%,transparent); background:linear-gradient(90deg,rgba(232,185,60,.05),transparent 30%,transparent 70%,rgba(232,185,60,.05)),var(--panel)}
+  .tny-bghost{position:absolute; right:16px; top:2px; font-size:62px; line-height:1; font-weight:900; font-style:italic; letter-spacing:-.04em; color:var(--ink); opacity:.035; pointer-events:none; user-select:none; transform:skewX(-8deg)}
+  .tny-rlabel.cutk{display:inline-block; transform:skewX(-12deg); border:1px solid var(--line); border-radius:5px; padding:3px 11px; background:var(--panel-2); margin-bottom:7px}
+  .cutk>span{display:inline-block; transform:skewX(12deg); font-size:10px; letter-spacing:.14em; font-weight:700; text-transform:uppercase; color:var(--faint)}
+  .cutk.hot{border-color:color-mix(in srgb,var(--gold) 55%,var(--line)); border-left:3px solid var(--gold)}
+  .cutk.hot>span{color:var(--gold)}
+  .cutk.gf>span{background:linear-gradient(180deg,#ffe084,#c98f0e); -webkit-background-clip:text; background-clip:text; color:transparent; font-weight:900}
+  .tny-msc{font-size:16px; font-weight:900; font-style:italic; font-variant-numeric:tabular-nums; font-family:ui-monospace,Consolas,monospace; min-width:20px; text-align:right; color:var(--dim); flex:none}
+  .tny-msc.win{color:var(--gold)} .tny-msc.lose{color:var(--faint)}
+  .tny-slot.lose{opacity:.55; border-left-width:1px}
+  .tny-match{position:relative}
+  .tny-match.scored{animation:tnyscflash .9s ease-out}
+  @keyframes tnyscflash{0%{box-shadow:0 0 0 2px var(--gold), 0 0 18px rgba(232,185,60,.35)}100%{box-shadow:none}}
+  .tny-match.islive::after{content:""; position:absolute; top:8px; right:8px; width:8px; height:8px; border-radius:50%; background:var(--live,#ff5c5c); animation:tnylivepulse 1.8s ease-in-out infinite}
+  @keyframes tnylivepulse{0%,100%{opacity:.5; transform:scale(.85)}50%{opacity:1; transform:scale(1.15)}}
+  @media (prefers-reduced-motion: reduce){ .tny-match.scored{animation:none} .tny-match.islive::after{animation:none} }
   .tny-bcols{display:flex; gap:16px; min-width:min-content}
   .tny-tbd{color:var(--faint); font-style:italic; font-size:11px}
   .tny-bye{color:var(--faint); font-size:11px}
@@ -909,7 +927,15 @@ try{document.documentElement.setAttribute('data-theme', localStorage.getItem('me
   .tny-hero{border:1px solid var(--line); border-radius:16px; overflow:hidden; box-shadow:var(--shadow); margin:14px 0 6px; background:var(--panel)}
   .tny-hero-banner{position:relative; height:132px; background:linear-gradient(105deg,#241640,#3a1d3f 32%,#4a1e2e 64%,#5a3410); background-size:cover; background-position:center}
   .tny-hero-banner::after{content:""; position:absolute; inset:0; background:repeating-linear-gradient(115deg,rgba(255,255,255,.03) 0 2px,transparent 2px 22px); pointer-events:none}
-  .tny-hero-wm{position:absolute; right:20px; bottom:8px; font-weight:900; font-size:46px; letter-spacing:-.04em; color:rgba(255,255,255,.07)}
+  .tny-hero-wm{position:absolute; right:16px; bottom:4px; font-weight:900; font-style:italic; font-size:54px; letter-spacing:-.04em; color:rgba(255,255,255,.06); transform:skewX(-8deg); max-width:78%; overflow:hidden; white-space:nowrap; pointer-events:none}
+  .tny-life{display:inline-flex; align-items:center; gap:6px; margin-left:10px; flex-wrap:wrap}
+  .tny-life i.ls{font-style:normal; font-size:9.5px; font-weight:700; letter-spacing:.13em; text-transform:uppercase; color:var(--faint); border:1px solid var(--line); border-radius:99px; padding:2px 9px; white-space:nowrap}
+  .tny-life i.ls.past{background:var(--panel-2); color:var(--dim); border-color:transparent}
+  .tny-life i.ls.now{color:var(--gold); border-color:color-mix(in srgb,var(--gold) 55%,var(--line)); background:var(--gold-soft)}
+  .tny-life u{width:8px; height:1px; background:var(--line); display:inline-block}
+  .tny-story{display:flex; align-items:center; gap:12px; padding:7px 20px; border-top:1px solid #1c2130; font-size:11.5px; color:var(--dim); background:rgba(13,16,23,.5)}
+  .tny-story .sb{flex:1; max-width:260px; height:4px; border-radius:3px; background:var(--panel-2); border:1px solid var(--line); overflow:hidden; display:block; font-style:normal}
+  .tny-story .sb i{display:block; height:100%; background:linear-gradient(90deg,var(--gold-soft),var(--gold))}
   .tny-hero-body{display:flex; align-items:flex-start; gap:16px; flex-wrap:wrap; padding:15px 20px 16px; background:linear-gradient(180deg,var(--panel),var(--panel-2))}
   .tny-hero-l{flex:1; min-width:220px}
   .tny-hero-titlerow{display:flex; align-items:center; gap:12px; flex-wrap:wrap}
@@ -2798,6 +2824,11 @@ let _updHideT=null;
 // so it can be updated without shipping a new build. This bundled copy is the offline FALLBACK — keep it
 // roughly current, but the remote is authoritative.
 let CHANGELOG = [
+  { v:'0.2.2', t:'One hero per page', items:[
+    'Rankings: the banner slimmed down to one strip — the podium is the page’s big moment now, one glance from the top.',
+    'Your pinned row on every stat board now shows YOUR real number (wins, streak, OCVs…) — it was stuck at 0 outside Ranked.',
+    'Regions and the Skin Library now wear the same arena banner as the rest of the app, and region rosters are real boards with tier badges.',
+  ]},
   { v:'0.2.1', t:'Arena polish', items:[
     'The Rankings board rail is one clean row — boards you’re not viewing collapse to their icon (hover for the name), the active board wears gold.',
     'One watermark per screen — the nav bar calmed down; the Marvel Ladder banner owns the big ghost text.',
@@ -3597,12 +3628,19 @@ async function renderDetail(fromCache){
   const bannerStyle = t.banner_url ? ' style="background-image:linear-gradient(180deg,rgba(10,12,18,.12),rgba(10,12,18,.78)),url(\''+esc(t.banner_url).replace(/'/g,'%27')+'\')"' : '';
   head.innerHTML =
     '<div class="tny-hero">'+
-      '<div class="tny-hero-banner'+(t.banner_url?' img':'')+'"'+bannerStyle+'><div class="tny-hero-wm">MvC2</div></div>'+
+      '<div class="tny-hero-banner'+(t.banner_url?' img':'')+'"'+bannerStyle+'><div class="tny-hero-wm">'+esc(String(t.name||'MvC2').toUpperCase())+'</div></div>'+
       '<div class="tny-hero-body">'+
         '<div class="tny-hero-l">'+
           '<div class="tny-hero-titlerow"><button class="tny-hero-back" data-act="back" title="Back to tournaments">‹</button>'+
             '<h1 class="tny-hero-title">'+esc(t.name)+'</h1>'+
-            '<span class="tny-status '+statusCls+'"><span class="tny-dot"></span> '+esc(statusTxt)+'</span></div>'+
+            // gs-203: lifecycle rail — where the event is in its life, at a glance (replaces the lone status pill)
+            '<span class="tny-life">'+(function(){
+              const order=[['open','REG'],['checkin','CHECK-IN'],['running','BRACKET'],['done','CHAMPION']];
+              let idx=order.findIndex(x=>x[0]===t.status); if(idx<0) idx=0;
+              return order.map((s,i)=>{ let lbl=s[1];
+                if(s[0]==='done'&&t.bracket&&t.bracket.champion){ const c=tnyNm(t.bracket.champion); lbl='🏆 '+(c.name||'CHAMPION'); }
+                return '<i class="ls'+(i<idx?' past':'')+(i===idx?' now':'')+'">'+esc(lbl)+'</i>'; }).join('<u></u>');
+            })()+'</span></div>'+
           '<div class="tny-hero-meta">'+
             '<span>🏆 <b>'+esc(tnyFmtName(t.format))+'</b></span>'+
             '<span>🎮 <b>FT'+(t.ft_winners||2)+'</b> / <b>FT'+(t.ft_grands||3)+'</b> GF</span>'+
@@ -3617,6 +3655,19 @@ async function renderDetail(fromCache){
           '<div class="tny-cta">'+cta+'</div>'+
         '</div>'+
       '</div>'+
+      // gs-203: the STORY LINE — one live sentence + fill bar; creeps forward on every SSE delta
+      (function(){
+        const ms=((t.bracket&&t.bracket.matches)||[]).filter(m=>m.state!=='void');
+        const done=ms.filter(m=>m.state==='done').length, live=ms.filter(m=>m.state==='live').length;
+        const regs=(t.registrations||[]).filter(r=>r.status==='registered'||r.status==='checked_in');
+        const ci=(t.registrations||[]).filter(r=>r.status==='checked_in').length;
+        let txt='', pct=0;
+        if(t.status==='running'&&ms.length){ txt='⚔ '+done+' / '+ms.length+' matches played'+(live?(' · '+live+' LIVE'):''); pct=Math.round(100*done/ms.length); }
+        else if(t.status==='checkin'){ txt=ci+' of '+regs.length+' checked in'; pct=regs.length?Math.round(100*ci/regs.length):0; }
+        else if(t.status==='done'&&t.bracket&&t.bracket.champion){ const c=tnyNm(t.bracket.champion); txt='🏆 Champion: '+(c.name||'—'); pct=100; }
+        else { txt=(t.starts_ms?('Starts '+tnyFmt(t.starts_ms)+' · '):'')+regs.length+' registered'+(t.cap?(' / '+t.cap):''); pct=t.cap?Math.round(100*regs.length/t.cap):0; }
+        return '<div class="tny-story"><span>'+esc(txt)+'</span><i class="sb"><i style="width:'+Math.max(0,Math.min(100,pct))+'%"></i></i></div>';
+      })()+
       (t.rules_md?'<details class="tny-hero-rules"><summary>📜 Rules</summary><div>'+tnyRulesHtml(t.rules_md)+'</div></details>':'')+
     '</div>';
   // the hero replaces the shared top bar in the detail view (avoids a duplicate title)
@@ -4025,7 +4076,10 @@ function tnyApplyDelta(d){
   if(d.seq!=null) TNY.lastSeq=d.seq;
   if(type==='match_update'){
     var m=tnyFindMatch(t, d.mid);
-    if(m){ ['state','winner','loser','score','host','lobby_id','owner','on_stream','live','p1','p2'].forEach(function(k){ if(d[k]!==undefined) m[k]=d[k]; }); }
+    if(m){ var oldScore=m.score;
+      ['state','winner','loser','score','host','lobby_id','owner','on_stream','live','p1','p2'].forEach(function(k){ if(d[k]!==undefined) m[k]=d[k]; });
+      if(d.score!==undefined && d.score!==oldScore) TNY._flash=d.mid;   // gs-203: gold score flash on the card
+    }
     tnyRepaint();
   } else if(type==='bracket_advance'){
     (d.matches||[]).forEach(function(u){
@@ -4065,16 +4119,27 @@ async function tnyAssign(mid, host){
 }
 function tnyRenderBracket(br){
   const B=tId('tnyBracket'); B.innerHTML='';
-  [['winners','Winners bracket'],['losers','Losers bracket'],['grand','Grand finals']].forEach(pair=>{
+  // gs-203 THE STAGE: brackets are ARENA CORNERS — Winners under the blue wash, Losers under the red,
+  // the Grand Final gold-framed. Round keys read like a broadcast (WINNERS SEMIS, not "Round 3").
+  [['winners','WINNERS'],['losers','LOSERS'],['grand','GRAND FINAL']].forEach(pair=>{
     const key=pair[0], ms=(br.matches||[]).filter(m=>m.bracket===key && m.state!=='void');
     if(!ms.length) return;
     const wrap=document.createElement('div'); wrap.className='tny-bsec '+key;
-    wrap.innerHTML='<div class="tny-blabel">'+pair[1]+'</div>';
+    wrap.innerHTML='<b class="tny-bghost">'+(key==='grand'?'GF':pair[1])+'</b>';
     const cols=document.createElement('div'); cols.className='tny-bcols';
     const rounds=[...new Set(ms.map(m=>m.round))].sort((a,b)=>a-b);
+    const maxR=rounds[rounds.length-1];
+    const rname=r=>{
+      if(key==='grand') return r===1?'GRAND FINAL':'BRACKET RESET';
+      const side=key==='winners'?'WINNERS':'LOSERS';
+      if(r===maxR) return side+' FINAL';
+      if(r===maxR-1 && maxR>1) return side+' SEMIS';
+      return side+' · ROUND '+r;
+    };
     rounds.forEach(r=>{
       const col=document.createElement('div'); col.className='tny-round';
-      col.innerHTML='<div class="tny-rlabel">'+(key==='grand'?(r===1?'Grand Final':'Reset'):('Round '+r))+'</div>';
+      const hot=ms.some(m=>m.round===r&&(m.state==='ready'||m.state==='live'));
+      col.innerHTML='<div class="tny-rlabel cutk'+(hot?' hot':'')+(key==='grand'?' gf':'')+'"><span>'+rname(r)+'</span></div>';
       ms.filter(m=>m.round===r).forEach(m=>col.appendChild(tnyMatchEl(m)));
       cols.appendChild(col);
     });
@@ -4098,12 +4163,23 @@ function tnyMatchEl(m){
       inner=(sd?'<span class="tny-mseed">'+sd+'</span>':'')+'<span class="nm lb-click" data-sid="'+esc(sid)+'" data-nm="'+esc(n.name)+'">'+tnyAv(n,20)+rkB(n,13)+(n.cc?' '+flagEmoji(n.cc)+' ':' ')+esc(n.name)+'</span>'; }
     else if(bye){ inner='<span class="nm"><span class="tny-bye">bye</span></span>'; }
     else { inner='<span class="nm"><span class="tny-tbd">'+esc(from||'TBD')+'</span></span>'; }
+    // gs-203: the SCORE is always a cell — dash pre-match, running number live, gold/dim when decided.
     const scoreVal = done && sc ? (isW?hi:lo) : null;
+    const isL = done && sid && m.winner && !isW;
     let right='';
-    if(done) right = scoreVal!=null ? '<span class="tny-score'+(isW?' win':'')+'">'+scoreVal+'</span>' : (isW?'<span class="tny-score win">W</span>':'');
-    else if(clk && side==='a') right = liveState?'<span class="tny-lb live">LIVE</span>':'<span class="tny-lb">READY</span>';
-    d.innerHTML+='<div class="tny-slot '+side+(isW?' win':'')+'"'+accStyle+'>'+inner+right+'</div>';
+    if(clk||done){
+      let v='–', cls='';
+      if(done){ v=(scoreVal!=null)?scoreVal:(isW?'W':'–'); cls=isW?' win':' lose'; }
+      else if(liveState){ v=sc?(side==='a'?sc[1]:sc[2]):'0'; }
+      right='<b class="tny-msc'+cls+'">'+v+'</b>';
+    }
+    d.innerHTML+='<div class="tny-slot '+side+(isW?' win':'')+(isL?' lose':'')+'"'+accStyle+'>'+inner+right+'</div>';
   });
+  // score flash: one gold pulse when a live score ticks in (set by the match_update delta)
+  if(TNY._flash!=null && String(TNY._flash)===String(m.id)){
+    TNY._flash=null; d.classList.add('scored');
+    setTimeout(()=>{ try{ d.classList.remove('scored'); }catch(_){} }, 900);
+  }
   // play button right on the card for the two seat-holders (your turn → join, or host it)
   const meId=tnyMe();
   if(meId && (m.p1===meId||m.p2===meId) && (m.state==='ready'||m.state==='live')){
