@@ -71,3 +71,6 @@ docs/REALTIME-NEXT-WORK.md
 docs/SERVER-DEPLOY-HANDOVER.md
 docs/TOURNAMENT-FEATURES-SPEC.md
 docs/BTCPAY-ECONOMY-STUDY.md
+
+# arcade-host daemon = server infra (private; deploys to the OVH box)
+arcade-host/
