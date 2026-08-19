@@ -2824,6 +2824,12 @@ let _updHideT=null;
 // so it can be updated without shipping a new build. This bundled copy is the offline FALLBACK — keep it
 // roughly current, but the remote is authoritative.
 let CHANGELOG = [
+  { v:'0.2.3', t:'The bracket becomes THE STAGE', items:[
+    'Brackets are arena corners now: Winners under the blue wash, Losers under the red, the Grand Final gold-framed with its own presence.',
+    'Round names read like a broadcast — WINNERS SEMIS, LOSERS FINAL, GRAND FINAL — and the round that’s live right now wears gold.',
+    'Every match card shows the score at all times: a dash before, the RUNNING score live (it flashes gold the moment a game lands), winner gold / loser dimmed after.',
+    'The event banner tells the story: a lifecycle rail (REG → CHECK-IN → BRACKET → 🏆 CHAMPION with the winner’s name) and a live progress line that creeps forward as matches finish.',
+  ]},
   { v:'0.2.2', t:'One hero per page', items:[
     'Rankings: the banner slimmed down to one strip — the podium is the page’s big moment now, one glance from the top.',
     'Your pinned row on every stat board now shows YOUR real number (wins, streak, OCVs…) — it was stuck at 0 outside Ranked.',
@@ -3683,12 +3689,16 @@ async function renderDetail(fromCache){
   // Real-time updates now arrive over the SSE stream (tnySubscribe). This is only a SLOW 30s SAFETY poll that
   // re-syncs the full doc in case the stream dropped a beat or never connected (graceful degradation).
   if(t.status==='running'||t.status==='checkin'){ TNY.pollTimer=setInterval(tnyPoll, 30000); }
-  // ── event-hub SUB-NAV (6 tabs, mockup parity) ──
+  // ── gs-204 THE STAGE: event sub-nav merged 6 → 3(+Admin). Overview died into the hero (lifecycle rail +
+  // story line own its job); Standings + Entrants are ONE 'Players' view (the same list at two lifecycle
+  // stages). All renderers + sections survive untouched — only the nav + reveal changed.
   const nH=(t.hosts||[]).length;
   const nActive=(t.registrations||[]).filter(r=>r.status==='registered'||r.status==='checked_in').length;
-  const tabs=[['overview','Overview'],['bracket','Bracket'],['entrants','Entrants',nActive],['stations','🎮 Stations & Stream',nH],['standings','Standings']];
+  const tabs=[['bracket','Bracket'],['players','Players',nActive],['stations','🎮 Stations & Stream',nH]];
   if(isTO) tabs.push(['admin','⚙ Admin']);
-  if(!tabs.map(x=>x[0]).includes(TNY.sub)) TNY.sub = t.bracket?'bracket':'entrants';
+  if(TNY.sub==='overview') TNY.sub='bracket';
+  if(TNY.sub==='entrants'||TNY.sub==='standings') TNY.sub='players';
+  if(!tabs.map(x=>x[0]).includes(TNY.sub)) TNY.sub = t.bracket?'bracket':'players';
   tId('tnySub').innerHTML = tabs.map(x=>'<button class="tny-subtab'+(TNY.sub===x[0]?' on':'')+'" data-sub="'+x[0]+'"><span>'+x[1]+'</span>'+(x[2]!=null?' <span class="tny-subn">'+x[2]+'</span>':'')+'</button>').join('');   // gs-201: label wrapped so the cut skew counter-rotates it
   // render EVERY tab section (each isolated — one failing section must not blank the rest), then reveal the active one
   tnyTry('overview',()=>tnyRenderOverview(t, isTO)); tnyTry('standings',()=>tnyRenderStandings(t)); tnyTry('admin',()=>tnyRenderAdmin(t, isTO, pre));
@@ -3697,9 +3707,10 @@ async function renderDetail(fromCache){
     const hostSet=new Set((t.hosts||[]).map(h=>h.steamid));
     tId('tnyEntrants').innerHTML = addRow + tnyEntrantsHtml(regs, isTO, pre, hostSet); });
   tnyTry('bracket',()=>{ if(t.bracket) tnyRenderBracket(t.bracket); else tId('tnyBracket').innerHTML='<div class="lb-empty" style="padding:22px">The bracket appears once the organizer seeds the entrants and hits <b>Start</b>.</div>'; });
-  const secOf={overview:'tnyOverview',bracket:'tnyBracket',entrants:'tnyEntrants',stations:'tnyHosts',standings:'tnyStandings',admin:'tnyAdmin'};
+  // gs-204: 'players' reveals standings (once a bracket exists) STACKED above the entrants list
+  const secOf={bracket:['tnyBracket'],players:(t.bracket?['tnyStandings','tnyEntrants']:['tnyEntrants']),stations:['tnyHosts'],admin:['tnyAdmin']};
   ['tnyOverview','tnyBracket','tnyEntrants','tnyHosts','tnyStandings','tnyAdmin','tnyEntrantsLab','tnyBracketLab'].forEach(idd=>{ const e=tId(idd); if(e) e.style.display='none'; });
-  const se=tId(secOf[TNY.sub]); if(se) se.style.display='';
+  (secOf[TNY.sub]||[]).forEach(idd=>{ const se=tId(idd); if(se) se.style.display=''; });
   tnyFlushErrs();
 }
 // ── Overview tab: at-a-glance stats + links + rules + how-it-works ──
