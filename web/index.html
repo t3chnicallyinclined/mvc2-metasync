@@ -1088,7 +1088,36 @@ try{document.documentElement.setAttribute('data-theme', localStorage.getItem('me
   .tny-admsec.danger{border-color:color-mix(in srgb,var(--live) 40%,var(--line))}
   .tny-admrow{display:flex; gap:8px; flex-wrap:wrap; align-items:center}
   .tny-admrow input{flex:1; min-width:160px; background:var(--panel-2,var(--card)); border:1px solid var(--line); border-radius:8px; color:var(--ink); font-size:12.5px; padding:8px 11px}
-  .tny-champ-banner{background:linear-gradient(135deg,var(--gold-soft),transparent); border:1px solid color-mix(in srgb,var(--gold) 40%,var(--line)); border-radius:12px; padding:14px 18px; font-size:16px; margin:6px 0 14px}
+  /* gs-211 THE PODIUM — champion moment (the one-line .tny-champ-banner died here) */
+  .tny-podium{position:relative; border:1px solid color-mix(in srgb,var(--gold) 32%,var(--line)); border-radius:16px; overflow:hidden; margin:6px 0 14px;
+    background:linear-gradient(90deg,rgba(232,185,60,.06),transparent 30%,transparent 70%,rgba(232,185,60,.06)),var(--card); padding:24px 20px 0}
+  .tny-podium::before{content:""; position:absolute; left:0; right:0; top:0; height:2px;
+    background:linear-gradient(90deg,transparent,var(--gold) 30%,var(--gold) 70%,transparent); transform:skewY(-.3deg)}
+  .pod-ghost{position:absolute; left:50%; top:4px; transform:translateX(-50%) skewX(-8deg); font-size:76px; font-weight:900; font-style:italic;
+    letter-spacing:-.05em; color:var(--ink); opacity:.04; pointer-events:none; white-space:nowrap}
+  .pod-row{position:relative; display:flex; align-items:flex-end; justify-content:center; gap:16px; flex-wrap:wrap}
+  .tny-pod{position:relative; transform:skewX(-6deg); border:1px solid var(--line); border-top:3px solid var(--pa,var(--line)); border-radius:13px;
+    background:linear-gradient(120deg,color-mix(in srgb,var(--pa,#666) 14%,transparent),transparent 70%),var(--panel-2,var(--card));
+    padding:14px 20px 12px; width:214px; text-align:center; overflow:hidden}
+  .tny-pod>*{transform:skewX(6deg)}
+  .tny-pod.champ{width:272px; border-color:color-mix(in srgb,var(--gold) 55%,var(--line)); box-shadow:0 0 32px rgba(232,185,60,.10); padding-top:18px}
+  .tny-pod.s2,.tny-pod.s3{transform:skewX(-6deg) scale(.88); transform-origin:bottom; opacity:.92}
+  .pod-ord{position:absolute; right:6px; top:-6px; font-size:44px; font-weight:900; font-style:italic; color:var(--ink); opacity:.06}
+  .pod-crown{font-size:15px; letter-spacing:.3em; margin-bottom:2px}
+  .pod-avwrap{display:flex; justify-content:center}
+  .pod-avwrap .tny-av,.pod-avwrap img{margin:0 auto}
+  .pod-nm{font-size:20px; font-weight:900; font-style:italic; letter-spacing:-.01em; line-height:1.15; cursor:pointer; margin-top:6px; padding:0 .1em}
+  .tny-pod.champ .pod-nm{font-size:23px}
+  .pod-tier{font-size:11.5px; font-weight:800; margin-top:4px; display:flex; align-items:center; justify-content:center; gap:5px}
+  .pod-elo{color:var(--faint); font-weight:600; font-variant-numeric:tabular-nums}
+  .pod-line{font-size:12px; color:var(--dim); margin-top:7px; font-variant-numeric:tabular-nums}
+  .pod-line b{color:var(--ink)}
+  .pod-purse{font-size:10px; letter-spacing:.12em; text-transform:uppercase; color:var(--gold); margin-top:7px; font-weight:700}
+  .pod-foot{position:relative; display:flex; align-items:center; gap:12px; flex-wrap:wrap; margin-top:18px; padding:10px 2px 12px;
+    border-top:1px solid var(--line); font-size:11px; color:var(--dim)}
+  .pod-stone{display:inline-flex; align-items:center; gap:7px; font-size:10px; font-weight:700; letter-spacing:.12em; text-transform:uppercase; color:var(--dim)}
+  .pod-stone b{color:var(--ink)}
+  .pod-chain{display:inline-flex; align-items:center; gap:5px; font-size:10px; color:var(--faint); border:1px dashed var(--line); border-radius:99px; padding:2px 9px}
   /* banner picker */
   .tny-banner-pick{display:flex; flex-direction:column; gap:8px}
   .tny-banner-prev{width:100%; max-width:360px; aspect-ratio:3/1; border-radius:10px; border:1px dashed var(--line); background:var(--panel-2) center/cover no-repeat; display:grid; place-items:center; color:var(--faint); font-size:12px}
@@ -3782,8 +3811,12 @@ async function renderDetail(fromCache){
     '</div>';
   // the hero replaces the shared top bar in the detail view (avoids a duplicate title)
   const topbar=document.querySelector('#p-tourney .tny-top'); if(topbar) topbar.style.display='none';
-  // champion banner
-  if(t.bracket && t.bracket.champion){ const c=tnyNm(t.bracket.champion); tId('tnyChamp').innerHTML='<div class="tny-champ-banner">🏆 &nbsp;Champion: <b>'+rkB(c,16)+(c.cc?' '+flagEmoji(c.cc)+' ':' ')+esc(c.name)+'</b></div>'; } else tId('tnyChamp').innerHTML='';
+  // gs-211: the champion moment is a PODIUM STAGE (the one-line banner died). Fallback = a minimal purse line
+  // so a derivation surprise can never blank the moment (this fill predates the tnyTry error collector).
+  if(t.bracket && t.bracket.champion){
+    let ph=''; try{ ph=tnyPodiumHtml(t); }catch(_){ const c=tnyNm(t.bracket.champion); ph='<div class="tny-purse"><span class="tp-rail">Champion</span><span class="tp-mid"><b>'+rkB(c,16)+' '+(c.cc?flagEmoji(c.cc)+' ':'')+esc(c.name)+'</b></span></div>'; }
+    tId('tnyChamp').innerHTML=ph;
+  } else tId('tnyChamp').innerHTML='';
   // player "you're up" alert + team declaration + host surfaces + command center + heartbeat + auto-report daemon
   TNY._errs=[];
   tnyTry('alert',()=>tnyRenderAlert(t, me)); tnyTry('teambar',()=>tnyRenderTeamBar(t, me, myReg)); tnyTry('gate',()=>tnyRenderGate(t, isTO));
@@ -3995,6 +4028,40 @@ function tnyRenderAlert(t, me){
   TNY._yup=stamp;
 }
 function tnyBeep(){ try{ const A=window.AudioContext||window.webkitAudioContext; if(!A) return; const a=new A(); const o=a.createOscillator(), g=a.createGain(); o.connect(g); g.connect(a.destination); o.type='sine'; o.frequency.setValueAtTime(880,a.currentTime); g.gain.setValueAtTime(.0001,a.currentTime); g.gain.exponentialRampToValueAtTime(.09,a.currentTime+.02); o.frequency.setValueAtTime(1320,a.currentTime+.13); g.gain.exponentialRampToValueAtTime(.0001,a.currentTime+.5); o.start(); o.stop(a.currentTime+.5); setTimeout(()=>{try{a.close();}catch(_){}} ,700); }catch(_){}}
+// gs-211 THE PODIUM — champion mega-plate + 2nd/3rd flanks, all derived client-side from the bracket:
+// 2nd = loser of the LAST completed grand final (reset-aware); 3rd = loser of the losers final (omitted in
+// tiny brackets where it collapses into the same player). Permanence footer ties to §Seasons — language is
+// LOCKED to carved/etched/archival ("never NFT"); the ⛓ chip renders only once the server ships results_hash.
+function tnyPodiumHtml(t){
+  const b=t.bracket, champ=b.champion;
+  const done=(b.matches||[]).filter(m=>m.state==='done'&&m.winner);
+  const rec={}; done.forEach(m=>{ const l=m.winner===m.p1?m.p2:m.p1; (rec[m.winner]=rec[m.winner]||{w:0,l:0}).w++; if(l) (rec[l]=rec[l]||{w:0,l:0}).l++; });
+  const last=arr=>arr.length?arr[arr.length-1]:null;
+  const gf=last(done.filter(m=>m.bracket==='grand').sort((x,y)=>(x.round||0)-(y.round||0)||x.id-y.id));
+  const second=gf?(gf.winner===gf.p1?gf.p2:gf.p1):null;
+  const lf=last(done.filter(m=>m.bracket==='losers').sort((x,y)=>(x.round||0)-(y.round||0)||x.id-y.id));
+  let third=lf?(lf.winner===lf.p1?lf.p2:lf.p1):null;
+  if(third===champ||third===second) third=null;
+  const seedOf=sid=>{ const r=(t.registrations||[]).find(x=>x.steamid===sid); return (r&&r.seed)||0; };
+  const gfName=second?(tnyNm(second).name||''):'';
+  const plate=(sid,cls,ord)=>{ if(!sid) return ''; const n=tnyNm(sid)||{}; const rc=rec[sid]||{w:0,l:0}; const sd=seedOf(sid);
+    const gm=(n.games||((n.wins||0)+(n.losses||0))); const r=gm?rankOf(n.rating||1000,gm):null;
+    const accent=r?((RK_PLATE[r.s]||[])[0]||'var(--gold)'):'var(--line)';
+    return '<div class="tny-pod '+cls+'" style="--pa:'+accent+'">'+
+      (cls==='champ'?'<div class="pod-crown">👑</div>':'<div class="pod-ord">'+ord+'</div>')+
+      '<div class="pod-avwrap">'+tnyAv(n,cls==='champ'?64:44)+'</div>'+
+      '<div class="pod-nm lb-click" data-sid="'+esc(sid)+'" data-nm="'+esc(n.name||'Player')+'">'+(n.cc?flagEmoji(n.cc)+' ':'')+esc(n.name||'Player')+'</div>'+
+      (r?'<div class="pod-tier rk-'+r.s+'">'+rkBadgeR(r,n.rating||1000,16)+' '+r.n+' · <span class="pod-elo">'+(n.rating||1000)+'</span></div>':'')+
+      '<div class="pod-line">'+rc.w+'–'+rc.l+(sd?(' · Seed '+sd):'')+(cls==='champ'&&gfName?(' · def. <b>'+esc(gfName)+'</b> in Grand Finals'):'')+'</div>'+
+      (cls==='champ'?'<div class="pod-purse">Purse claimed — permanent record · season etching</div>':'')+
+      '</div>'; };
+  return '<div class="tny-podium"><div class="pod-ghost">CHAMPION</div><div class="pod-row">'+
+    plate(second,'s2','2')+plate(champ,'champ','')+plate(third,'s3','3')+'</div>'+
+    '<div class="pod-foot"><span class="pod-stone">🪨 <b>Carved in stone</b> — this result is part of the permanent record</span>'+
+    '<span>Beta Season · archived at season’s end</span>'+
+    (t.results_hash?'<span class="pod-chain">⛓ etched · '+esc(String(t.results_hash).slice(0,10))+'…</span>':'')+
+    '<button class="tny-btn ghost sm" data-act="copy-result" style="margin-left:auto">⧉ Copy result</button></div></div>';
+}
 // gs-207 THE GATE — what entering unlocks. Repurposes the old (no-op) team bar: a slim arena band under
 // the hero, rendered ONLY while you can still enter (pre-bracket, not registered) — then gone forever.
 // Every perk chip maps to a SHIPPED system (ELO seeding, bracket badges, auto-report, permanence, h2h,
@@ -4513,6 +4580,24 @@ async function tnyAction(act, node){
     else if(act==='entrant-makehost'){ const sid=node&&node.dataset&&node.dataset.sid, nm=node&&node.dataset&&node.dataset.nm; if(!sid){ TNY.busy=false; return; } r=await invoke('tourney_host_add',{id,steamid:sid,name:(nm||'Host')}); if(r&&r.ok) toast('🎧 '+(nm||'Player')+' is now a host — they’ll host + play their matches'); }
     else if(act==='entrant-unhost'){ const sid=node&&node.dataset&&node.dataset.sid; if(!sid){ TNY.busy=false; return; } r=await invoke('tourney_host_remove',{id,steamid:sid}); if(r&&r.ok) toast('Removed as host'); }
     else if(act==='host-rescan'){ await tnyHostBeat(); toast('Checking for your lobby…'); }
+    else if(act==='copy-result'){
+      // gs-211: ⧉ copy the podium as a shareable text block — the seed of future card pages
+      const td=TNY.data; if(td&&td.bracket&&td.bracket.champion){
+        const nm2=s2=>{ const n2=tnyNm(s2); return (n2&&n2.name)||'Player'; };
+        const doneM=(td.bracket.matches||[]).filter(m=>m.state==='done'&&m.winner);
+        const rec2={}; doneM.forEach(m=>{ const l=m.winner===m.p1?m.p2:m.p1; (rec2[m.winner]=rec2[m.winner]||{w:0,l:0}).w++; if(l) (rec2[l]=rec2[l]||{w:0,l:0}).l++; });
+        const wl=s2=>{ const rc=rec2[s2]||{w:0,l:0}; return rc.w+'-'+rc.l; };
+        const gf2=doneM.filter(m=>m.bracket==='grand').pop(); const sec2=gf2?(gf2.winner===gf2.p1?gf2.p2:gf2.p1):null;
+        const lf2=doneM.filter(m=>m.bracket==='losers').pop(); let th2=lf2?(lf2.winner===lf2.p1?lf2.p2:lf2.p1):null;
+        if(th2===td.bracket.champion||th2===sec2) th2=null;
+        let txt='🏆 '+td.name+'\n🥇 '+nm2(td.bracket.champion)+' ('+wl(td.bracket.champion)+')';
+        if(sec2) txt+='\n🥈 '+nm2(sec2)+' ('+wl(sec2)+')';
+        if(th2) txt+='\n🥉 '+nm2(th2)+' ('+wl(th2)+')';
+        txt+='\n📅 '+new Date(td.starts_ms||Date.now()).toLocaleDateString()+' · MetaSync';
+        try{ await navigator.clipboard.writeText(txt); toast('⧉ Result copied'); }
+        catch(_){ try{ const ta=document.createElement('textarea'); ta.value=txt; document.body.appendChild(ta); ta.select(); document.execCommand('copy'); ta.remove(); toast('⧉ Result copied'); }catch(__){ toast('⚠ Could not copy'); } }
+      }
+      TNY.busy=false; return; }
     else if(act==='admin-links'){ const s=((tId('tfAdmStream')||{}).value||'').trim(); const d=((tId('tfAdmDiscord')||{}).value||'').trim(); r=await invoke('tourney_update',{body:{id,stream_url:s,discord_url:d}}); if(r&&r.ok) toast('Links saved'); }
     if(r && r.ok===false && r.error) toast('⚠ '+r.error);
   }catch(e){ toast('⚠ '+e); }
