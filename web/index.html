@@ -1141,6 +1141,10 @@ try{document.documentElement.setAttribute('data-theme', localStorage.getItem('me
   #wagerRail{display:flex; align-items:center; gap:12px; padding:8px 14px; margin:10px 0 0; min-height:40px;
     border:1px solid var(--line); border-radius:14px; background:var(--card); position:relative; overflow:hidden; flex-wrap:wrap}
   #wagerRail.locked{border-left:3px solid var(--gold)}
+  #wagerRail.ingame{border-left:3px solid var(--live,#ff3d68); background:linear-gradient(90deg,color-mix(in srgb,var(--live,#ff3d68) 9%,transparent),var(--card) 55%)}
+  .wgr-livedot{display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--live,#ff3d68);margin-right:7px;vertical-align:middle;box-shadow:0 0 7px var(--live,#ff3d68);animation:wgrpulse 1.8s ease-in-out infinite}
+  @keyframes wgrpulse{0%,100%{opacity:1}50%{opacity:.35}}
+  @media (prefers-reduced-motion: reduce){ .wgr-livedot{animation:none} }
   #wagerRail.win{border-left:3px solid var(--gold); background:linear-gradient(90deg,var(--gold-soft),var(--card) 55%)}
   .wgr-lab{flex:none; font-size:10px; font-weight:700; letter-spacing:.16em; text-transform:uppercase; color:var(--faint)}
   .wgr-line{flex:1; font-size:12.5px; color:var(--ink); min-width:180px}
@@ -3620,12 +3624,17 @@ function wgrRender(){
         '<span class="wgr-acts"><button class="tny-btn gold sm" data-wact="match" data-id="'+esc(w.id)+'">MATCH 🪙 '+w.stake+'</button><button class="tny-btn ghost sm" data-wact="decline" data-id="'+esc(w.id)+'">DECLINE</button></span>';
     } else { el.style.display='none'; return; }
   } else if(w && w.status==='locked'){
-    // gs-217: FT-N set with a running score; the JOIN link shows on BOTH rails the moment a lobby exists
+    // gs-217/218: FT-N set with a running score; JOIN shows on BOTH rails once a lobby exists; once the
+    // match is being fought (host reports session-active) the rail flips to 🔴 IN GAME and drops JOIN.
     const jl=wgrJoinLink(w);
     const sc=' · <b class="num">'+(w.cw||0)+'–'+(w.aw||0)+'</b> FT'+(w.ft||2);
-    const noLob=!jl?(w.challenger===sid?' <span class="wgr-warn">⚠ open a lobby in-game — your taker is waiting</span>':' <span class="wgr-warn">waiting for the lobby to open…</span>'):'';
-    h=rail+'<span class="wgr-line">🪙 '+(w.stake*2)+' in the machine — <b>'+esc(w.challenger_name||'?')+'</b> vs <b>'+esc(w.acceptor_name||'?')+'</b>'+sc+noLob+'</span>'+
-      '<span class="wgr-acts">'+(jl?'<button class="tny-btn gold sm" data-wact="join" data-link="'+esc(jl)+'">🎮 '+(w.challenger===sid?'MY LOBBY':'JOIN THE LOBBY')+'</button>':'')+'</span>';
+    if(w.live){
+      h=rail+'<span class="wgr-line"><span class="wgr-livedot"></span><b>IN GAME</b> — 🪙 '+(w.stake*2)+' on the line · <b>'+esc(w.challenger_name||'?')+'</b>'+sc+' <b>'+esc(w.acceptor_name||'?')+'</b> · first to '+(w.ft||2)+' takes it</span>';
+    } else {
+      const noLob=!jl?(w.challenger===sid?' <span class="wgr-warn">⚠ open a lobby in-game — your taker is waiting</span>':' <span class="wgr-warn">waiting for the lobby to open…</span>'):'';
+      h=rail+'<span class="wgr-line">🪙 '+(w.stake*2)+' in the machine — <b>'+esc(w.challenger_name||'?')+'</b> vs <b>'+esc(w.acceptor_name||'?')+'</b>'+sc+noLob+'</span>'+
+        '<span class="wgr-acts">'+(jl?'<button class="tny-btn gold sm" data-wact="join" data-link="'+esc(jl)+'">🎮 '+(w.challenger===sid?'MY LOBBY':'JOIN THE LOBBY')+'</button>':'')+'</span>';
+    }
   } else if(w && w.status==='settled' && !stale){
     const won=w.winner===sid;
     h=rail+(won?'<span class="wgr-line"><b class="wgr-big">🪙 +'+(w.stake*2)+' — purse claimed</b></span>'
@@ -3647,6 +3656,7 @@ function wgrRender(){
   }
   el.innerHTML=h; el.style.display='flex';
   el.classList.toggle('locked', !!(w&&w.status==='locked'));
+  el.classList.toggle('ingame', !!(w&&w.status==='locked'&&w.live));
   el.classList.toggle('win', !!(w&&w.status==='settled'&&w.winner===sid&&!stale));
 }
 function mqRender(){
