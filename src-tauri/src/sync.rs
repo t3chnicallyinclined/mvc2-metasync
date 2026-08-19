@@ -2478,7 +2478,7 @@ pub fn wager_open() -> Result<serde_json::Value, String> {
 /// Global leaderboard from the skinsync server for a tab (streak | wins | ocv | perfect | comeback).
 /// Returns { tab, field, players: [{ steamid, name, wins, losses, stat }] } (backend fetch → no CORS/CSP).
 #[tauri::command]
-pub fn leaderboard(tab: String, period: Option<String>, limit: Option<u32>, country: Option<String>, city: Option<String>) -> Result<serde_json::Value, String> {
+pub fn leaderboard(tab: String, period: Option<String>, limit: Option<u32>, country: Option<String>, city: Option<String>, scope: Option<String>) -> Result<serde_json::Value, String> {
     let lim = limit.unwrap_or(10).min(50);
     let period = period.unwrap_or_else(|| "all".into());
     let mut r = ureq::get(&format!("{}/leaderboard", SKINSYNC))
@@ -2486,6 +2486,8 @@ pub fn leaderboard(tab: String, period: Option<String>, limit: Option<u32>, coun
         .timeout(std::time::Duration::from_secs(6));
     if let Some(c) = country.filter(|s| !s.is_empty()) { r = r.query("country", &c); }
     if let Some(c) = city.filter(|s| !s.is_empty()) { r = r.query("city", &c); }
+    // GAME MODES board scope: ranked (default) | lobby | tourney — server allow-lists it.
+    if let Some(s) = scope.filter(|s| !s.is_empty() && s != "ranked") { r = r.query("scope", &s); }
     r.call().map_err(|e| e.to_string())?
         .into_json::<serde_json::Value>().map_err(|e| e.to_string())
 }

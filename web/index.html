@@ -1455,6 +1455,13 @@ try{document.documentElement.setAttribute('data-theme', localStorage.getItem('me
             <i class="mast-line" id="lbMastLine"></i>
             <span class="mast-desc" id="lbMastDesc"></span>
           </div>
+          <!-- gs-217 GAME MODES: board scope — which games feed the boards. Rating & tier titles are
+               RANKED artifacts, so the Lobby/Tournament scopes show pure records (no badges, no ELO). -->
+          <div class="lb-period" id="lbScope" title="Which games feed these boards — rating &amp; titles come from Ranked play only">
+            <button data-ls="ranked" class="on">⚔️ Ranked</button>
+            <button data-ls="lobby">🎮 Lobby</button>
+            <button data-ls="tourney">🏆 Tournament</button>
+          </div>
           <div class="lb-period" id="lbPeriod">
             <button data-lp="all" class="on">All-time</button>
             <button data-lp="day">Today</button>
@@ -5286,6 +5293,7 @@ $('#btnReset').onclick=async()=>{ activeSkins={}; myTeam=[]; for(let i=localStor
 
 // ── Leaderboard (Ranks tab) — global Hall of Fame from the skinsync server ──
 let lbTab='rating', lbPeriod='all', lbLoading=false, lbCache=null, lbSearch='';   // gs-108: ranked ladder is the front page
+let lbScope='ranked';   // gs-217 GAME MODES: board scope — ranked (default) | lobby | tourney
 const LB_PERIOD_LABEL={all:'all-time',day:'today',week:'this week',month:'this month'};
 const LB_STAT_LABEL={streak:'streak',wins:'wins',ocv:'OCVs',perfect:'perfects',comeback:'comebacks',combo:'max combo',damage:'dmg dealt',chip:'chip dealt',deficit:'deficit',rating:'ELO'};
 // What each leaderboard stat means + which match data decides it (shown under the tabs).
@@ -5662,7 +5670,10 @@ function paintMasthead(tab){
   if(mast) mast.style.setProperty('--lb-acc', m[2]);
   if(d) d.textContent=info?info.d:'';
 }
-function lbCycle(dir){ const i=LB_CHAN.indexOf(lbTab); if(i<0) return; renderLeaderboard(LB_CHAN[(i+dir+LB_CHAN.length)%LB_CHAN.length]); }
+function lbCycle(dir){ const i=LB_CHAN.indexOf(lbTab); if(i<0) return;
+  // gs-217: under a Lobby/Tournament scope, skip the ranked-only channels (rating ladder + tier list)
+  let n=i; do{ n=(n+dir+LB_CHAN.length)%LB_CHAN.length; }while(lbScope!=='ranked'&&(LB_CHAN[n]==='rating'||LB_CHAN[n]==='tierlist')&&n!==i);
+  renderLeaderboard(LB_CHAN[n]); }
 document.addEventListener('keydown',e=>{
   if(!document.body.classList.contains('tab-ranks')) return;
   const tag=(e.target&&e.target.tagName)||''; if(tag==='INPUT'||tag==='TEXTAREA') return;
@@ -5670,8 +5681,15 @@ document.addEventListener('keydown',e=>{
 });
 async function renderLeaderboard(tab){
   lbTab=tab||lbTab;
+  // gs-217 GAME MODES: scoped boards (Lobby / Tournament) are pure records — the rating ladder and the
+  // team tier list are RANKED-ONLY surfaces, so under a scope those tabs hide and fall back to Wins.
+  const lbScoped=lbScope!=='ranked';
+  if(lbScoped&&(lbTab==='rating'||lbTab==='tierlist')) lbTab='wins';
+  $$('#lbScope button').forEach(b=>b.classList.toggle('on',b.dataset.ls===lbScope));
+  $$('#lbTabs button').forEach(b=>{ if(b.dataset.lt==='rating'||b.dataset.lt==='tierlist') b.style.display=lbScoped?'none':''; });
   $$('#lbTabs button').forEach(b=>b.classList.toggle('on',b.dataset.lt===lbTab));
   paintMasthead(lbTab);
+  if(lbScoped){ const g=$('#lbMastGhost'); if(g) g.textContent=(lbScope==='lobby'?'LOBBY':'TOURNAMENT'); }
   // Ranked (ELO) is cumulative skill → always all-time; grey out the period switch for it (and the tier list).
   const ranked=lbTab==='rating'||lbTab==='tierlist';
   if(ranked) lbPeriod='all';
@@ -5701,36 +5719,44 @@ async function renderLeaderboard(tab){
   }
   // gs-108: Valorant/Rivals broadcast board — podium plates (rating tab), columnar rows, pinned YOU row.
   try{
-    const key=lbTab+'|'+lbPeriod;
+    const key=lbScope+'|'+lbTab+'|'+lbPeriod;
     let players;
     if(lbCache && lbCache.key===key && (Date.now()-lbCache.ts)<15000){ players=lbCache.players; }
-    else { const res=await invoke('leaderboard',{tab:lbTab,period:lbPeriod,limit:50}); players=(res&&res.players)||[]; lbCache={key,players,ts:Date.now()}; }
+    else { const res=await invoke('leaderboard',{tab:lbTab,period:lbPeriod,limit:50,scope:lbScope});
+      // version-skew guard: a pre-scope server echoes no `scope` and would hand RANKED data to a scoped
+      // view — show the honest empty state instead of the wrong board until the server update lands.
+      players=(lbScoped && (!res||res.scope!==lbScope)) ? [] : ((res&&res.players)||[]);
+      lbCache={key,players,ts:Date.now()}; }
     const mine=(mySteam&&mySteam.steamid)?String(mySteam.steamid):null;
     const q=(lbSearch||'').trim().toLowerCase();
     const shown=q?players.filter(p=>String(p.name||'').toLowerCase().includes(q)):players;
-    if(!shown.length){ list.innerHTML=`<div class="lb-empty">${q?('NO PLAYERS MATCH "'+esc(lbSearch)+'"'):('NO RANKINGS '+(lbPeriod==='all'?'YET':'FOR '+(LB_PERIOD_LABEL[lbPeriod]||'').toUpperCase())+' — WIN A MATCH TO GET ON THE BOARD')}</div>`; return; }
+    if(!shown.length){ list.innerHTML=`<div class="lb-empty">${q?('NO PLAYERS MATCH "'+esc(lbSearch)+'"'):(lbScoped?('NO '+(lbScope==='lobby'?'LOBBY':'TOURNAMENT')+' GAMES RECORDED '+(lbPeriod==='all'?'YET':(LB_PERIOD_LABEL[lbPeriod]||'').toUpperCase())+' — THEY LOG AUTOMATICALLY AS THEY HAPPEN'):('NO RANKINGS '+(lbPeriod==='all'?'YET':'FOR '+(LB_PERIOD_LABEL[lbPeriod]||'').toUpperCase())+' — WIN A MATCH TO GET ON THE BOARD'))}</div>`; return; }
     const lab=LB_STAT_LABEL[lbTab]||'';
     const gmOf=p=>(p.wins||0)+(p.losses||0);
     const wrOf=p=>{const g=gmOf(p);return g?Math.round(100*(p.wins||0)/g):0;};
     const wrCol=w=>w>=60?'#4ade80':(w>=45?'#a3e635':'#fb923c');
     const vb=p=>{const cw=(p.confirmed_wins==null)?null:Number(p.confirmed_wins);return (lbTab==='wins'&&cw!=null&&cw<(Number(p.stat)||0))?` <span class="lb-verified" title="${cw} of ${p.stat} wins verified by both-player agreement or match replay">✓${cw}</span>`:'';};
-    const rowH=(p,pos)=>{const isMe=mine&&String(p.steamid)===mine;const r=rankOf(p.rating,gmOf(p));const w=wrOf(p);
+    const rowH=(p,pos)=>{const isMe=mine&&String(p.steamid)===mine;const w=wrOf(p);
+      // gs-217: rating + tier title are RANKED artifacts — scoped rows keep the column for alignment but empty
+      const tierCell=lbScoped?'<div class="bd-tier"></div>':(()=>{const r=rankOf(p.rating,gmOf(p));return `<div class="bd-tier">${rkBadgeR(r,p.rating,16)}<span class="rk-${r.s}">${r.n}</span></div>`;})();
       return `<div class="bd-row${isMe?' me':''}"><div class="bd-rank">${pos==null?'—':pos}</div>`
       +`<div class="bd-name lb-click" data-sid="${esc(p.steamid)}" data-nm="${esc(p.name||'Player')}">${avatarImg(p.avatar,20)}${p.cc?flagEmoji(p.cc)+' ':''}<span>${esc(p.name||'Player')}${isMe?'<span class="me-tag">YOU</span>':''}</span></div>`
-      +`<div class="bd-tier">${rkBadgeR(r,p.rating,16)}<span class="rk-${r.s}">${r.n}</span></div>`
+      +tierCell
       +`<div class="bd-num">${lbTab==='rating'?(p.rating||1000):(p.stat||0)}${vb(p)}</div>`
       +`<div class="bd-num dim">${p.wins||0} – ${p.losses||0}</div>`
       +`<div class="bd-num" style="color:${wrCol(w)}">${w}%</div></div>`;};
-    const head=`<div class="bd-head"><span style="text-align:center">#</span><span>Player</span><span>Tier</span><span style="text-align:right">${lbTab==='rating'?'Rating':esc(lab||'Stat')}</span><span style="text-align:right">W – L</span><span style="text-align:right">Win %</span></div>`;
+    const head=`<div class="bd-head"><span style="text-align:center">#</span><span>Player</span><span>${lbScoped?'':'Tier'}</span><span style="text-align:right">${lbTab==='rating'?'Rating':esc(lab||'Stat')}</span><span style="text-align:right">W – L</span><span style="text-align:right">Win %</span></div>`;
     let html='', rows=shown, start=1;
     // gs-200: EVERY player board gets its podium moment — free, from the fetch already in hand.
     if(!q && shown.length>=3){
-      const pod=(p,cls,crown)=>{const r=rankOf(p.rating,gmOf(p));const a=RK_PLATE[r.s]||RK_PLATE.civilian;
+      const pod=(p,cls,crown)=>{
+        // gs-217: no tier plate accents / badge on scoped podiums — rating + title live on Ranked only
+        const r=lbScoped?null:rankOf(p.rating,gmOf(p));const a=r?(RK_PLATE[r.s]||RK_PLATE.civilian):RK_PLATE.civilian;
         return `<div class="pod ${cls} lb-click" style="--pa:${a[0]};--pb:${a[1]}" data-sid="${esc(p.steamid)}" data-nm="${esc(p.name||'Player')}">`
         +`<span class="mono" style="font-size:${crown?'16px':'12px'};font-weight:800">${crown?'👑':'#'+(cls==='c2'?2:3)}</span>`
         +(p.avatar?`<img class="pav" src="${esc(p.avatar)}" loading="lazy" referrerpolicy="no-referrer">`:'')
         +`<b class="pnm">${p.cc?flagEmoji(p.cc)+' ':''}${esc(p.name||'Player')}</b>`
-        +`<span class="bd-tier">${rkBadgeR(r,p.rating,crown?20:16)}<span class="rk-${r.s}">${r.n}</span></span>`
+        +(r?`<span class="bd-tier">${rkBadgeR(r,p.rating,crown?20:16)}<span class="rk-${r.s}">${r.n}</span></span>`:'')
         +`<b class="prt">${lbTab==='rating'?(p.rating||1000):(p.stat||0)}</b>`
         +(lbTab!=='rating'?`<span class="rail-lbl" style="color:var(--lb-acc,#e8b93c)">${LB_UNIT[lbTab]||''}</span>`:'')
         +`<span class="pwl">${p.wins||0}W · ${p.losses||0}L · ${wrOf(p)}%</span></div>`;};
@@ -5756,7 +5782,8 @@ async function renderLeaderboard(tab){
       galLine=`<div class="bd-cut" style="color:#ff7ae0"><i></i><span>🪐 GALACTUS · 1500 — UNCLAIMED</span><i></i></div>`;
     html+=`<div class="board">${head}${galLine}${bodyRows}</div>`;
     const onBoard=mine&&shown.some(p=>String(p.steamid)===mine);
-    if(mine && !onBoard && !q) html+=`<div class="board" id="lbMeRow" style="margin-top:8px"></div>`;
+    // gs-217: no pinned-YOU row on scoped boards — the profile has no per-mode best-stat fields to fill it from
+    if(mine && !onBoard && !q && !lbScoped) html+=`<div class="board" id="lbMeRow" style="margin-top:8px"></div>`;
     if(lbTab==='rating') html+=`<div style="padding:8px 4px 0;font-size:11.5px;color:var(--faint)">Play ${RANK_MIN_GAMES} games to get ranked — Civilians don't appear on this board.</div>`;
     list.innerHTML=html;
     // pinned YOU row: you're below the top 50 (or unplaced) — show your own line under the board
@@ -5783,6 +5810,11 @@ $('#lbTabs')?.addEventListener('click',e=>{ const b=e.target.closest('button'); 
   renderLeaderboard(b.dataset.lt); });
 document.addEventListener('click',e=>{ if(!e.target.closest('.lb-more')){ const m=$('#lbMenu'); if(m) m.style.display='none'; } });
 $('#lbPeriod')?.addEventListener('click',e=>{ const b=e.target.closest('button'); if(!b) return; lbPeriod=b.dataset.lp; renderLeaderboard(); });
+// gs-217 GAME MODES: board scope switch — Ranked (rating/titles) · Lobby · Tournament (pure records)
+$('#lbScope')?.addEventListener('click',e=>{ const b=e.target.closest('button'); if(!b||!b.dataset.ls) return;
+  if(lbScope===b.dataset.ls) return; lbScope=b.dataset.ls; lbCache=null;
+  if(lbScope!=='ranked'&&(lbTab==='rating'||lbTab==='tierlist')) lbTab='wins';
+  renderLeaderboard(); });
 $('#lbSearch')?.addEventListener('input',e=>{ lbSearch=e.target.value||''; renderLeaderboard(); });   // client-side filter over the cached top-50
 // (lbRefresh handled by the #lbTabs dispatcher — clears lbCache then re-renders, gs-110)
 
