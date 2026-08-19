@@ -1,14 +1,26 @@
 [package]
 name = "mvc-live-skins"
-version = "0.1.73"
+version = "0.1.99"
 description = "MvC Collection Live Skins — live palette skin changer for the Steam Marvel vs Capcom Fighting Collection"
 authors = ["tristech"]
 edition = "2021"
 rust-version = "1.77"
+default-run = "mvc-live-skins"   # the app is the default binary — never let the diagnostic `probe` bin be bundled
 
 [lib]
 name = "mvc_live_skins_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
+
+# The diagnostic memory probe (src/bin/probe.rs) is a DEV-ONLY tool. It is feature-gated so a normal
+# `cargo build` / `cargo tauri build` NEVER compiles or bundles it (that shipped a broken 0.1.90 where the
+# AppImage/installer ran the probe instead of the app). Build it explicitly with:  cargo build --release --bin probe --features probe
+[features]
+probe = []
+
+[[bin]]
+name = "probe"
+path = "src/bin/probe.rs"
+required-features = ["probe"]
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
@@ -22,6 +34,9 @@ serde_json = "1"
 ureq = { version = "2", features = ["json", "tls"] }
 zip = { version = "2", default-features = false, features = ["deflate"] }
 flate2 = "1"
+
+# Windows-only: the process-memory + registry + toolhelp APIs (mem.rs Windows backend, sync.rs identity).
+[target.'cfg(windows)'.dependencies]
 windows = { version = "0.58", features = [
   "Win32_Foundation",
   "Win32_System_Threading",
@@ -32,6 +47,10 @@ windows = { version = "0.58", features = [
   "Win32_UI_Input_XboxController",
 ] }
 
+# Unix (Linux/Proton) only: process_vm_readv/writev + kill for the /proc-based mem.rs backend.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 [profile.release]
 # Beta: tuned for FAST compiles (LTO off + parallel codegen). App is I/O-bound (memory reads + HTTP), so
 # heavy optimization buys ~nothing at runtime. Restore lto=true / codegen-units=1 / opt-level="s" for the
@@ -39,5 +58,5 @@ windows = { version = "0.58", features = [
 codegen-units = 16
 lto = false
 opt-level = 1
-panic = "abort"
+panic = "unwind"   # keep unwind so a command panic returns an error to the UI instead of aborting the app
 strip = true

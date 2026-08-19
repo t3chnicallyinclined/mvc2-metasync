@@ -26,6 +26,16 @@ consensus-verified match leaderboard, and region/represent stats. Three tiers.
      off-thread **mirror** that powers the leaderboard reads. It is never the source of truth — a wipe +
      `--migrate` fully repopulates it from the JSON SSOT.
 
+## Real-time push bus (Redis + push-gateway SSE) — the live-data transport
+
+Live app state is **pushed, not polled** (shipped 0.1.98). Full design + as-built: `docs/TOURNAMENT-REALTIME-ARCH.md`.
+
+- **Redis** (VPS localhost, AOF everysec, `noeviction`) — pub/sub for live fan-out + a **capped Stream per channel** (`XADD … MAXLEN ~ 500`; entry id = monotonic seq) for reconnect gap-fill. Transport/log only — the JSON SSOT stays authoritative; a Redis outage degrades to polling, never breaks a write.
+- **`skinsync/src/bus.rs`** — a background publisher thread; each mutating handler enqueues a minimal delta → `XADD tourney:{id}:log` + `PUBLISH tourney.{id}` (best-effort, `SKINSYNC_BUS` gated). This keeps the publish off the single request thread.
+- **`push-gateway/`** (new crate, tokio+axum+redis async, `127.0.0.1:7251`) — holds the long-lived SSE connections the single-threaded `skinsync` can't. `GET /tourney/{id}/stream` = snapshot-on-connect (fetches the doc from skinsync, unwraps the `{ok,tournament}` envelope) → live via `SUBSCRIBE` → `XRANGE` gap-fill on `Last-Event-ID`. nginx `location /skinsync/rt/` → `:7251` (buffering off, 1h read timeout).
+- **Client** — the Tauri backend holds **one SSE connection per open view** and `emit`s deltas to the webview, which patches its cached state in place. **Commands stay on HTTP; only server→client push uses SSE.** A slow poll remains as a safety-net fallback.
+- **Scope**: shipped for **tournaments**; the **intended transport for ALL live data** — leaderboard, presence / "X playing MvC2" count, and live-match/opponent each become another channel (`PUBLISH <channel>` + a gateway SSE route) on the same bus. Local game-memory reads (health/combo) are NOT server data and stay client-local.
+
 ## Server module map (reorg P3)
 
 `main.rs` was split from one ~2,500-line file into 13 behavior-neutral modules (+ `surreal.rs`, untouched),
@@ -37,6 +47,7 @@ guarded by 12 golden tests. LOC are approximate.
 | `cities.rs` | 35 | real-cities load + prefix search |
 | `elo.rs` | 55 | `apply_elo` / `replay_elo_and_verified` / `rank_tier` |
 | `mirror.rs` | 61 | SurrealDB object literals + the off-thread best-effort mirror |
+| `bus.rs` | ~90 | real-time delta publisher: background thread → Redis `XADD` (capped stream) + `PUBLISH`; best-effort, `SKINSYNC_BUS` gated |
 | `auth.rs` | 71 | `ct_eq` / `admin_ok` / `gen_token` / `auth_steamid` |
 | `http.rs` | 86 | `header` / `client_ip` / `cors` / `reply_json` / `read_body` |
 | `util.rs` | 166 | env / validation / sanitizers / query parse / base64 / `save_json` / name-rankers |

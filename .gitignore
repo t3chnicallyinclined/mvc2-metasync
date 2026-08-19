@@ -60,3 +60,4 @@ docs/*-CONTEXT*.md
 /latest.json
 latest.json
 src-tauri/latest.json
+skinsync/tokens.json
