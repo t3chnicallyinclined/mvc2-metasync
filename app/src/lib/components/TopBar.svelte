@@ -2,6 +2,7 @@
 	import { page } from '$app/state';
 	import { base } from '$app/paths';
 	import { NAV } from '$lib/nav';
+	import AuthChip from './AuthChip.svelte';
 
 	// The single global arena bar (DESIGN-SYSTEM.md hard-rule #1): brand cab + cut-tabs + gold seam.
 	// Desktop only — mobile uses the bottom TabBar.
@@ -36,7 +37,7 @@
 			</a>
 		{/each}
 	</nav>
-	<span class="brandtag">MvC2 · METASYNC</span>
+	<div class="authslot"><AuthChip /></div>
 </header>
 
 <style>
@@ -114,22 +115,16 @@
 	.cut.soon {
 		opacity: 0.72;
 	}
-	.brandtag {
+	.authslot {
 		margin-left: auto;
-		font-size: 10px;
-		letter-spacing: 0.16em;
-		text-transform: uppercase;
-		color: var(--faint);
-		font-weight: 700;
 	}
 	@media (max-width: 720px) {
-		/* the bottom TabBar carries navigation on mobile */
+		/* the bottom TabBar carries navigation on mobile; the identity chip stays */
 		.bar {
 			gap: 10px;
 		}
 		.seam,
-		.tabs,
-		.brandtag {
+		.tabs {
 			display: none;
 		}
 	}

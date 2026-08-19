@@ -4,6 +4,12 @@
 	import { TABS, PERIODS, MAST, STAT_DESC, PERIOD_LABEL, podiumOn, buildBoardItems } from '$lib/boards';
 	import Board from '$lib/components/Board.svelte';
 	import PodiumPlate from '$lib/components/PodiumPlate.svelte';
+	import RankBadge from '$lib/components/RankBadge.svelte';
+	import Avatar from '$lib/components/Avatar.svelte';
+	import { rankOf } from '$lib/ranks';
+	import { flagEmoji } from '$lib/format';
+	import { base } from '$app/paths';
+	import { auth } from '$lib/stores/auth.svelte';
 	import type { LeaderboardTab, LeaderboardPeriod } from '$lib/types';
 
 	// ── live wiring: initial fetch + subscribe to the "leaderboard" SSE channel; pause on hide ──
@@ -40,6 +46,11 @@
 	const items = $derived(buildBoardItems(shown, tab, searching));
 
 	const coldLoad = $derived(leaderboard.loading && players.length === 0);
+
+	// The signed-in user's position on the CURRENT board (‑1 if not among the loaded rows).
+	const myPos = $derived(auth.steamid ? players.findIndex((p) => p.steamid === auth.steamid) : -1);
+	const myGames = $derived((auth.me?.wins ?? 0) + (auth.me?.losses ?? 0));
+	const myTier = $derived(auth.me ? rankOf(auth.me.rating ?? 0, myGames) : null);
 </script>
 
 <svelte:head><title>Ranks · MetaSync</title></svelte:head>
@@ -105,12 +116,29 @@
 		</div>
 	{/if}
 
-	<Board {items} {tab} flashIds={leaderboard.flashIds} mySteam={null} />
+	<Board {items} {tab} flashIds={leaderboard.flashIds} mySteam={auth.steamid} />
 
-	<!-- pinned YOU row — auth arrives in Phase 2 -->
-	<div class="you empty">
-		Sign in with Steam (coming in Phase 2) to pin your own rank here.
-	</div>
+	<!-- pinned YOU row -->
+	{#if auth.authed}
+		<a class="you-card" href="{base}/u/{auth.steamid}">
+			<span class="you-tag">YOU</span>
+			<Avatar url={auth.me?.avatar} size={30} alt={auth.me?.name ?? 'You'} />
+			<span class="you-name">{#if auth.me?.cc}{flagEmoji(auth.me.cc)} {/if}{auth.me?.name || 'You'}</span>
+			{#if myTier}
+				<span class="you-tier bd-tier">
+					<RankBadge rating={auth.me?.rating ?? 0} games={myGames} size={16} />
+					<span class="rk-{myTier.s}">{myTier.n}</span>
+				</span>
+			{/if}
+			<span class="you-rt">{auth.me?.rating ?? '—'}</span>
+			<span class="you-pos">{myPos >= 0 ? '#' + (myPos + 1) : 'unranked'}</span>
+		</a>
+	{:else}
+		<div class="you-signin">
+			<span>Sign in with Steam to pin your own rank on the board.</span>
+			<button class="steam" onclick={() => auth.login()}>Sign in through Steam</button>
+		</div>
+	{/if}
 
 	{#if tab === 'rating'}
 		<p class="foot">Play 5 games to get ranked — Civilians don’t appear on this board.</p>
@@ -248,10 +276,92 @@
 		align-items: end;
 		margin-bottom: 12px;
 	}
-	.you {
+	.you-card {
+		display: flex;
+		align-items: center;
+		gap: 10px;
 		margin-top: 8px;
-		padding: 14px 16px;
-		font-size: 12px;
+		padding: 10px 14px;
+		border: 1.5px solid var(--gold);
+		border-radius: 12px;
+		background: linear-gradient(90deg, var(--gold-soft), transparent 55%), var(--panel);
+		text-decoration: none;
+		color: var(--ink);
+	}
+	.you-card:hover {
+		border-color: var(--gold);
+		background: linear-gradient(90deg, var(--gold-soft), transparent 45%), var(--panel-2);
+	}
+	.you-tag {
+		font-size: 10px;
+		font-weight: 900;
+		letter-spacing: 0.1em;
+		color: var(--gold);
+		flex: none;
+	}
+	.you-name {
+		font-weight: 800;
+		font-size: 13.5px;
+		min-width: 0;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+		flex: 1;
+	}
+	.you-tier {
+		display: flex;
+		align-items: center;
+		gap: 6px;
+		font-weight: 800;
+		font-size: 12.5px;
+		flex: none;
+	}
+	.you-rt {
+		font-weight: 800;
+		font-variant-numeric: tabular-nums;
+		flex: none;
+	}
+	.you-pos {
+		font-weight: 900;
+		color: var(--gold);
+		font-variant-numeric: tabular-nums;
+		flex: none;
+		min-width: 34px;
+		text-align: right;
+	}
+	.you-signin {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: 12px;
+		flex-wrap: wrap;
+		margin-top: 8px;
+		padding: 12px 16px;
+		border: 1px dashed var(--line);
+		border-radius: 12px;
+		font-size: 12.5px;
+		color: var(--dim);
+	}
+	.you-signin .steam {
+		font: inherit;
+		font-weight: 800;
+		font-size: 12.5px;
+		color: #dfe9f5;
+		background: linear-gradient(180deg, #2a475e, #1b2838);
+		border: 1px solid color-mix(in srgb, #66c0f4 35%, transparent);
+		border-radius: 999px;
+		padding: 8px 14px;
+		cursor: pointer;
+		white-space: nowrap;
+	}
+	.you-signin .steam:hover {
+		border-color: #66c0f4;
+		color: #fff;
+	}
+	@media (max-width: 460px) {
+		.you-tier {
+			display: none;
+		}
 	}
 	.foot {
 		padding: 8px 4px 0;
