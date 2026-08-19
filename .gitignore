@@ -65,3 +65,5 @@ skinsync/tokens.json
 # server side lives in the PRIVATE repo t3chnicallyinclined/metasync-server (split 2026-08-19)
 skinsync/
 push-gateway/
+docs/RELEASE.md
+docs/DISTRIBUTED-TOURNAMENT-SPECTATOR-TAPE.md
