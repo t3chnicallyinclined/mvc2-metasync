@@ -5070,6 +5070,7 @@ async function boot(){
   presenceTick();                                        // one immediate heartbeat + count fetch on launch
   rtSubscribe('presence');                               // top-bar "playing MvC2"/online count now live-updates via push; stays subscribed for the app's lifetime (the top bar is always visible → never unsubscribed, unlike leaderboard)
   rtSubscribe('matches');                                // APP-WIDE (like presence): the Live Results/Now Playing feed AND the profile modal's 🟢 current-match line both read this stream from any tab → subscribed once at boot, never unsubscribed
+  rtSubscribe('tourney_index');                          // APP-WIDE: the tournament BROWSE list stays live — create/update/delete/status-change on any machine patches TNY.allItems + re-renders (no re-open needed)
   setInterval(presenceTick, 60000);                      // SLOW 60s safety poll — push does the realtime work, this only backstops a dropped SSE stream. NB this heartbeat is ALSO this client's own presence keepalive, and the server's ONLINE_MS window is 75s, so the cadence must stay under 75s (60s picked, not 120s).
   // Share-Lobby poll removed — the tournament flow owns lobby joining now (no standalone card on the Match tab).
   setTimeout(()=>checkForUpdate(false), 3000);           // quiet launch check: banner only if an update is waiting
@@ -5298,6 +5299,22 @@ function rtApplyDelta(p){
   if(p.channel==='leaderboard') rtLeaderboardRefresh();
   else if(p.channel==='presence') rtPresenceApply(p.data);
   else if(p.channel==='matches') rtMatchesApply(p.data);
+  else if(p.channel==='tourney_index') tnyIndexApply(p.data);
+}
+// Live tournament browse index: the server publishes tournament summaries to the 'tourney_index' channel on
+// create/update/delete/status-change → patch TNY.allItems so the browse list updates live on every machine (no re-open).
+function tnyIndexApply(d){
+  if(!d || typeof d!=='object' || !d.id) return;
+  if(!Array.isArray(TNY.allItems)) return;              // browse list not fetched yet — the next renderTourney fetch will include it
+  const id=d.id;
+  if(d.type==='tourney_deleted'){
+    const i=TNY.allItems.findIndex(t=>t.id===id); if(i<0) return; TNY.allItems.splice(i,1);
+  } else if(d.type==='tourney_created' || d.type==='tourney_updated'){
+    const sum={id:d.id, name:d.name, status:d.status, cc:d.cc, format:d.format, to_steamid:d.to_steamid, cap:d.cap, updated_ms:d.updated_ms};
+    const it=TNY.allItems.find(t=>t.id===id);
+    if(it) Object.assign(it, sum); else TNY.allItems.unshift(sum);
+  } else return;
+  if(TNY.view==='browse' && $('#p-tourney')?.classList.contains('on')) tnyRenderList();  // re-render only when the browse list is on screen
 }
 // Presence channel → the live top-bar count. A real delta carries the SAME fields the sync_heartbeat count
 // returns (online, game_players); apply them exactly like presenceTick does, then re-render the Live Sync chip.
