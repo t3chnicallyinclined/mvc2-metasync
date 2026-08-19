@@ -10,18 +10,19 @@
 // query candidate opponent SteamIDs — whichever candidate has a live loadout IS the
 // opponent running the app. The frontend merges their skins into skins.dat (the hook
 // repaints them live, exactly like our own).
-use std::ffi::c_void;
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use serde::Serialize;
-use windows::Win32::Foundation::{CloseHandle, HANDLE, FALSE};
-use windows::Win32::System::Threading::{OpenProcess, PROCESS_VM_READ, PROCESS_VM_WRITE, PROCESS_VM_OPERATION, PROCESS_QUERY_INFORMATION, PROCESS_TERMINATE, TerminateProcess, GetCurrentProcessId};
-use windows::Win32::System::Memory::{VirtualQueryEx, MEMORY_BASIC_INFORMATION, MEM_COMMIT, MEM_PRIVATE, PAGE_GUARD, PAGE_NOACCESS, PAGE_READWRITE};
-use windows::Win32::System::Diagnostics::Debug::{ReadProcessMemory, WriteProcessMemory};
-use windows::Win32::System::Diagnostics::ToolHelp::{
-    CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W, TH32CS_SNAPPROCESS,
-    Module32FirstW, MODULEENTRY32W, TH32CS_SNAPMODULE,
-};
+use tauri::Emitter; // AppHandle::emit — bridges SSE deltas to the webview (tourney_subscribe)
+// Cross-platform process-memory layer (Windows: Win32 APIs; Linux: /proc + process_vm_*). ALL game-memory
+// reads/writes/region-walks + pid/module-base lookups go through this, so every offset + algorithm below is
+// byte-identical on both OSes. See src/mem.rs.
+use crate::mem;
+// c_void is only needed by the Windows-only registry helpers (reg_dword / reg_string) below.
+#[cfg(windows)]
+use std::ffi::c_void;
 
 const SKINSYNC: &str = "https://nobd.net/skinsync";
 const STEAMID_HI: u32 = 0x0110_0001; // universe=public, type=individual, instance=desktop
@@ -40,6 +41,9 @@ const STEAMID_HI: u32 = 0x0110_0001; // universe=public, type=individual, instan
 const STRIDE: usize = 0x738;          // fighter-slot stride; even slot = P1, odd = P2
 const OFF_COLOR:  usize = 0x6;        // palette/button-colour index
 const OFF_DATPAL: usize = 0x4c;       // → this fighter's 16-colour ARGB4444 palette pointer (working-buffer range)
+// Effect-safe paint window: skin ONLY the 6 base button-color groups [0, 0x600) in the DatPal block; PRESERVE
+// [0x600, …) — the shared Status-Effects block + Extras (grenade/armor/lightning). 6 groups × 0x100 = 0x600.
+const PAL_BASE_REGION: usize = 0x600;
 const OFF_COMBO:  usize = 0x1ca;      // combo this fighter is DEALING (confirmed correct)
 const OFF_HITSTUN: usize = 0x1d1;     // hitstun flag (u8): 0xFF = in hitstun/real hit, 0 = neutral-or-blocking.
                                       // ⚠ WAS 0x909 (= 0x1d1 + STRIDE) → read the NEXT slot's flag (same >stride
@@ -176,6 +180,7 @@ const CHAR_SIGS: &str = include_str!("../char_sigs.json");
 pub struct Candidate { pub steamid: String, pub name: String }
 
 // Read a REG_DWORD from HKCU. None if missing/wrong type.
+#[cfg(windows)]
 fn reg_dword(subkey: &str, value: &str) -> Option<u32> {
     use windows::Win32::System::Registry::{RegGetValueW, HKEY_CURRENT_USER, RRF_RT_REG_DWORD};
     use windows::core::HSTRING;
@@ -187,6 +192,7 @@ fn reg_dword(subkey: &str, value: &str) -> Option<u32> {
     }
 }
 // Read a REG_SZ from HKCU. None if missing.
+#[cfg(windows)]
 fn reg_string(subkey: &str, value: &str) -> Option<String> {
     use windows::Win32::System::Registry::{RegGetValueW, HKEY_CURRENT_USER, RRF_RT_REG_SZ};
     use windows::core::HSTRING;
@@ -203,6 +209,8 @@ fn reg_string(subkey: &str, value: &str) -> Option<String> {
 }
 // Our persona name from Steam's OWN config (config/loginusers.vdf), keyed by SteamID64. Lowercased for the
 // "opponent isn't us" name compare. None if Steam path / entry not found.
+// Windows-only: on Linux the persona comes straight from linux_self_ident's loginusers.vdf parse.
+#[cfg(windows)]
 fn steam_persona_name(id64: u64) -> Option<String> {
     let steam_path = reg_string("Software\\Valve\\Steam", "SteamPath")?;
     let vdf = std::fs::read_to_string(format!("{}/config/loginusers.vdf", steam_path)).ok()?;
@@ -222,12 +230,12 @@ fn self_ident() -> (u64, String) {
     let m = CACHE.get_or_init(|| Mutex::new(None));
     let mut g = m.lock().unwrap();
     if let Some(v) = g.as_ref() { return v.clone(); }
-    if let Some(acct) = reg_dword("Software\\Valve\\Steam\\ActiveProcess", "ActiveUser").filter(|&a| a != 0) {
-        let id = 0x0110_0001_0000_0000u64 + acct as u64;
-        let v = (id, steam_persona_name(id).unwrap_or_default());
+    // PRIMARY: Steam's own record of the signed-in user (platform-split, see active_user_ident).
+    if let Some(v) = active_user_ident().filter(|(id, _)| *id != 0) {
         *g = Some(v.clone()); return v;
     }
-    if let Ok(s) = std::fs::read_to_string("C:\\g\\steam_self.txt") {
+    // LAST-RESORT fallback: the hook's legacy steam_self.txt (Windows path; absent on Linux → skipped).
+    if let Ok(s) = std::fs::read_to_string(crate::runtime_dir().join("steam_self.txt")) {
         let mut it = s.lines();
         if let Some(id) = it.next().and_then(|l| l.trim().parse::<u64>().ok()) {
             let v = (id, it.next().map(|l| l.trim().to_string()).unwrap_or_default());
@@ -236,33 +244,98 @@ fn self_ident() -> (u64, String) {
     }
     (0, String::new())
 }
+
+// Steam's signed-in user (id64, persona) — the primary self-identity source, platform-split.
+// Windows: HKCU\...\ActiveProcess\ActiveUser (32-bit account id) → SteamID64 + persona from loginusers.vdf.
+#[cfg(windows)]
+fn active_user_ident() -> Option<(u64, String)> {
+    let acct = reg_dword("Software\\Valve\\Steam\\ActiveProcess", "ActiveUser").filter(|&a| a != 0)?;
+    let id = 0x0110_0001_0000_0000u64 + acct as u64;   // SteamID64 = 0x110000100000000 + account id
+    Some((id, steam_persona_name(id).unwrap_or_default()))
+}
+// Linux: the MostRecent signed-in user in Steam's loginusers.vdf (no registry). ⚠ live-validate on the Beelink.
+#[cfg(unix)]
+fn active_user_ident() -> Option<(u64, String)> { linux_self_ident() }
+
+// ── Linux Steam config helpers (used only by the identity path; live-validate on the Beelink) ──
+#[cfg(unix)]
+fn linux_steam_root() -> Option<String> {
+    let home = std::env::var("HOME").ok()?;
+    // native install, Flatpak, and the classic symlink roots — first with a readable loginusers.vdf wins.
+    for cand in [
+        format!("{}/.steam/steam", home),
+        format!("{}/.local/share/Steam", home),
+        format!("{}/.steam/root", home),
+        format!("{}/.var/app/com.valvesoftware.Steam/.local/share/Steam", home),
+    ] {
+        if std::path::Path::new(&format!("{}/config/loginusers.vdf", cand)).exists() {
+            return Some(cand);
+        }
+    }
+    None
+}
+// Extract the value from a VDF `"Key"  "Value"` line (case-insensitive key). None if the line isn't that key.
+#[cfg(unix)]
+fn vdf_kv(line: &str, key: &str) -> Option<String> {
+    let mut parts = line.split('"').filter(|s| !s.trim().is_empty());
+    let k = parts.next()?;
+    if !k.eq_ignore_ascii_case(key) { return None; }
+    Some(parts.next()?.to_string())
+}
+// Parse loginusers.vdf: each 17-digit SteamID64 is a block key holding "PersonaName" + "MostRecent". Return
+// the MostRecent="1" user (id64, persona); fall back to the first user seen.
+#[cfg(unix)]
+fn linux_self_ident() -> Option<(u64, String)> {
+    let root = linux_steam_root()?;
+    let vdf = std::fs::read_to_string(format!("{}/config/loginusers.vdf", root)).ok()?;
+    let mut cur_id: Option<u64> = None;
+    let mut cur_name = String::new();
+    let mut best: Option<(u64, String)> = None;   // MostRecent="1"
+    let mut first: Option<(u64, String)> = None;  // fallback: first block
+    for line in vdf.lines() {
+        let t = line.trim();
+        // a bare `"7656..."` line (no whitespace inside the quotes) = a user-id block key
+        if t.starts_with('"') && t.ends_with('"') && !t.trim_matches('"').contains(char::is_whitespace) {
+            let inner = t.trim_matches('"');
+            if inner.len() == 17 && inner.bytes().all(|b| b.is_ascii_digit()) {
+                cur_id = inner.parse::<u64>().ok();
+                cur_name = String::new();
+                continue;
+            }
+        }
+        if let Some(id) = cur_id {
+            if let Some(v) = vdf_kv(t, "PersonaName") {
+                cur_name = v;
+                if first.is_none() { first = Some((id, cur_name.clone())); }
+            }
+            if let Some(v) = vdf_kv(t, "MostRecent") {
+                if v == "1" { best = Some((id, cur_name.clone())); }
+            }
+        }
+    }
+    best.or(first)
+}
 fn read_self_id() -> Option<u64> { let id = self_ident().0; if id != 0 { Some(id) } else { None } }
 // Used so the OPPONENT is never us — the friends/persona cache smears our name next to other players'
 // SteamIDs, so a scan can otherwise return a candidate wearing our own name and show "us" on both sides.
 fn read_self_name() -> String { self_ident().1.to_lowercase() }
 
-fn find_game_pid() -> Option<u32> {
-    unsafe {
-        let snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0).ok()?;
-        let mut pe = PROCESSENTRY32W { dwSize: std::mem::size_of::<PROCESSENTRY32W>() as u32, ..Default::default() };
-        let mut pid = None;
-        if Process32FirstW(snap, &mut pe).is_ok() {
-            loop {
-                let end = pe.szExeFile.iter().position(|&c| c == 0).unwrap_or(pe.szExeFile.len());
-                let name = String::from_utf16_lossy(&pe.szExeFile[..end]);
-                if name.starts_with("MarvelVsCapcom") { pid = Some(pe.th32ProcessID); break; }
-                if Process32NextW(snap, &mut pe).is_err() { break; }
-            }
-        }
-        let _ = CloseHandle(snap);
-        pid
-    }
-}
+// Locate the running game process (Windows: Toolhelp by exe name; Linux: /proc/*/cmdline + the PE at
+// 0x140000000). Thin wrapper so every call site is unchanged.
+fn find_game_pid() -> Option<u32> { mem::find_game_pid() }
 
 /// Kill any OTHER running instance of this app on startup. An in-place update relaunches the app before the
 /// old process fully exits, leaving two instances that BOTH read game memory and record — the flip-flopping
 /// score / conflicting records we observed. The freshly-launched (updated) instance wins; the stale one dies.
+#[cfg(windows)]
 pub fn kill_other_instances() {
+    use windows::Win32::Foundation::{CloseHandle, FALSE};
+    use windows::Win32::System::Threading::{
+        GetCurrentProcessId, OpenProcess, TerminateProcess, PROCESS_TERMINATE,
+    };
+    use windows::Win32::System::Diagnostics::ToolHelp::{
+        CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W, TH32CS_SNAPPROCESS,
+    };
     unsafe {
         let me = GetCurrentProcessId();
         let snap = match CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) { Ok(s) => s, Err(_) => return };
@@ -292,6 +365,30 @@ pub fn kill_other_instances() {
     }
 }
 
+// Linux: SIGTERM any OTHER process running our own executable (stale copies left by an in-place update).
+// Identify processes by the basename of their /proc/<pid>/exe symlink (comm is truncated). ⚠ validate on the Beelink.
+#[cfg(unix)]
+pub fn kill_other_instances() {
+    let me = std::process::id();
+    let my_name = match std::env::current_exe().ok()
+        .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned())) {
+        Some(n) => n,
+        None => return,   // couldn't resolve our own name → don't risk killing anything
+    };
+    let rd = match std::fs::read_dir("/proc") { Ok(r) => r, Err(_) => return };
+    for entry in rd.flatten() {
+        let pid: u32 = match entry.file_name().to_str().and_then(|s| s.parse().ok()) { Some(p) => p, None => continue };
+        if pid == me { continue; }
+        let same = std::fs::read_link(format!("/proc/{}/exe", pid)).ok()
+            .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
+            .map(|n| n == my_name).unwrap_or(false);
+        if same {
+            unsafe { libc::kill(pid as libc::pid_t, libc::SIGTERM); }
+            trace(&format!("[startup] terminated stale instance pid={} ({})", pid, my_name));
+        }
+    }
+}
+
 // How persona-like a Fighter-ID string is. Real handles ("NaCherO", "Satsui No Tanden") score high;
 // random bytes read as ASCII ("db!Q", "%3#R2D") score low. This + tight co-location is what isolates
 // the actual opponent from the ~59 SteamID-shaped values a broad scan turns up (mostly friends cache).
@@ -304,17 +401,16 @@ fn name_quality(s: &str) -> i32 {
     letters * 2 + spaces.min(3) - junk * 3
 }
 
-// Read `len` bytes at `addr` from an already-open handle. None on short/failed read.
-unsafe fn read_window(h: HANDLE, addr: usize, len: usize) -> Option<Vec<u8>> {
-    let mut buf = vec![0u8; len]; let mut got = 0usize;
-    if ReadProcessMemory(h, addr as *const c_void, buf.as_mut_ptr() as *mut c_void, len, Some(&mut got)).is_ok() && got == len { Some(buf) } else { None }
+// Read exactly `len` bytes at `addr` from an already-open Proc. None on short/failed read (full-length only).
+unsafe fn read_window(h: &mem::Proc, addr: usize, len: usize) -> Option<Vec<u8>> {
+    h.read(addr, len).filter(|b| b.len() == len)
 }
 
 // Persona run near an address — the opponent's name sits right beside its SteamID in the session.
 // Steam stores personas as UTF-8, so a name byte is printable ASCII OR any UTF-8 multibyte byte (>=0x80).
 // The old ASCII-only scan cut the name at the first non-ASCII byte (★/emoji/accents/CJK) — or, when the ASCII
 // remainder was too short, grabbed a different nearby ASCII string entirely → the wrong opponent name.
-fn name_near_rpm(h: HANDLE, addr: usize) -> String {
+fn name_near_rpm(h: &mem::Proc, addr: usize) -> String {
     let buf = match unsafe { read_window(h, addr.saturating_sub(0x40), 0xC0) } { Some(b) => b, None => return String::new() };
     let (mut best, mut cur): (Vec<u8>, Vec<u8>) = (Vec::new(), Vec::new());
     for &c in &buf {
@@ -331,7 +427,7 @@ fn name_near_rpm(h: HANDLE, addr: usize) -> String {
 // CHUNKED reads (a whole-region read fails if ANY page inside is unreadable → silently drops the region that
 // holds the session struct). STEP BY 4: the paired SteamIDs are 4-aligned but NOT 8-aligned (ours @ 0x..2ac,
 // opp @ 0x..41c), so an i+=8 walk from an 8-aligned base steps right over every pairing.
-unsafe fn scan_region_sids(h: HANDLE, base: usize, size: usize, my_id: u64,
+unsafe fn scan_region_sids(h: &mem::Proc, base: usize, size: usize, my_id: u64,
                            my_addrs: &mut Vec<usize>, cand: &mut HashMap<u64, Vec<usize>>) {
     if size == 0 || size > 0x4000_0000 { return; }
     let mut off = 0usize;
@@ -376,22 +472,21 @@ fn detect_side(my_addrs: &[usize], opp_addrs: &[usize]) -> u8 {
 // Opponent display name = the MOST COMMON plausible string across ALL of its id copies. The real gamertag recurs
 // at several copies; one-off garbage (e.g. "cjU>") appears once → the mode filters it out. (Taking the first
 // non-empty string grabbed whichever copy we hit first, which was sometimes junk.)
-unsafe fn name_of_opp(h: HANDLE, opp_addrs: &[usize]) -> String {
+unsafe fn name_of_opp(h: &mem::Proc, opp_addrs: &[usize]) -> String {
     let mut counts: HashMap<String, u32> = HashMap::new();
     for &a in opp_addrs { let nm = name_near_rpm(h, a); if !nm.is_empty() { *counts.entry(nm).or_insert(0) += 1; } }
     counts.into_iter().max_by_key(|(_, c)| *c).map(|(n, _)| n).unwrap_or_default()
 }
 // Turn a completed scan (my id addresses + candidate opp ids) into (opp_id, name, side) + refresh the caches.
-unsafe fn finish_opp(h: HANDLE, my_addrs: &[usize], cand: &HashMap<u64, Vec<usize>>,
+unsafe fn finish_opp(h: &mem::Proc, my_addrs: &[usize], cand: &HashMap<u64, Vec<usize>>,
                      region: &mut Option<(usize, usize)>, cache: &mut Option<(usize, u8, String, u64)>) -> Option<(u64, String, u8)> {
     best_pair(my_addrs, cand).map(|(sid, na)| {
         let opp_addrs = cand.get(&sid).cloned().unwrap_or_default();
         let side = detect_side(my_addrs, &opp_addrs);
         let name = name_of_opp(h, &opp_addrs);   // resolved once from the most-common copy; cached below
         *cache = Some((na, side, name.clone(), sid));   // store the id too → fast-path can detect a CHANGED opponent
-        let mut mbi = MEMORY_BASIC_INFORMATION::default();
-        if VirtualQueryEx(h, Some(na as *const c_void), &mut mbi, std::mem::size_of::<MEMORY_BASIC_INFORMATION>()) != 0 && mbi.RegionSize != 0 {
-            *region = Some((mbi.BaseAddress as usize, mbi.RegionSize));
+        if let Some(r) = h.region_at(na) {
+            *region = Some((r.base, r.size));
         }
         (sid, name, side)
     })
@@ -401,8 +496,9 @@ unsafe fn finish_opp(h: HANDLE, my_addrs: &[usize], cand: &HashMap<u64, Vec<usiz
 // region scan) → COLD (full sweep, first lock of a launch). Returns (opp_id, name, local_side 1/2/0).
 fn find_opponent_netplay(pid: u32, my_id: u64, cache: &mut Option<(usize, u8, String, u64)>, region: &mut Option<(usize, usize)>) -> Option<(u64, String, u8)> {
     if pid == 0 || my_id == 0 { return None; }
+    let proc = mem::Proc::open_read(pid)?;
+    let h = &proc;
     unsafe {
-        let h = OpenProcess(PROCESS_VM_READ | PROCESS_QUERY_INFORMATION, FALSE, pid).ok()?;
         // 1. FAST PATH — cached slot, RE-VALIDATING THE PAIRING: the opponent is live only while OUR id is still
         //    co-located within 0x400 (a freed-but-not-zeroed slot lingers → returned the GHOST opponent forever).
         //    Returns the CACHED name (resolved once from the best copy) — don't re-scrape a single slot each cycle
@@ -423,7 +519,7 @@ fn find_opponent_netplay(pid: u32, my_id: u64, cache: &mut Option<(usize, u8, St
                     }
                     false
                 });
-                if paired { let _ = CloseHandle(h); return Some((v, cached_name, side)); }
+                if paired { return Some((v, cached_name, side)); }
             }
             *cache = None;   // pairing gone / opponent CHANGED → fall through to WARM / COLD (re-resolves id + name)
         }
@@ -432,32 +528,23 @@ fn find_opponent_netplay(pid: u32, my_id: u64, cache: &mut Option<(usize, u8, St
             let mut my_addrs: Vec<usize> = Vec::new();
             let mut cand: HashMap<u64, Vec<usize>> = HashMap::new();
             scan_region_sids(h, rb, rs, my_id, &mut my_addrs, &mut cand);
-            if let Some(r) = finish_opp(h, &my_addrs, &cand, region, cache) { let _ = CloseHandle(h); return Some(r); }
+            if let Some(r) = finish_opp(h, &my_addrs, &cand, region, cache) { return Some(r); }
             // stale region (new session elsewhere) → fall through to the full sweep, which refreshes it
         }
-        // 3. COLD PATH — full committed-memory sweep.
+        // 3. COLD PATH — full committed-memory sweep (readable regions, exactly as the old VirtualQueryEx walk).
         let mut my_addrs: Vec<usize> = Vec::new();
         let mut cand: HashMap<u64, Vec<usize>> = HashMap::new();
-        let mut addr = 0usize;
-        loop {
-            let mut mbi = MEMORY_BASIC_INFORMATION::default();
-            if VirtualQueryEx(h, Some(addr as *const c_void), &mut mbi, std::mem::size_of::<MEMORY_BASIC_INFORMATION>()) == 0 { break; }
-            let base = mbi.BaseAddress as usize; let size = mbi.RegionSize; if size == 0 { break; }
-            let p = mbi.Protect.0;
-            let ok = mbi.State == MEM_COMMIT && (p & PAGE_GUARD.0) == 0 && (p & PAGE_NOACCESS.0) == 0 && (p & 0xEE) != 0;
-            if ok { scan_region_sids(h, base, size, my_id, &mut my_addrs, &mut cand); }
-            let nx = base + size; if nx <= base { break; } addr = nx;
+        for r in h.regions() {
+            if r.readable { scan_region_sids(h, r.base, r.size, my_id, &mut my_addrs, &mut cand); }
         }
-        let out = finish_opp(h, &my_addrs, &cand, region, cache);
-        let _ = CloseHandle(h);
-        out
+        finish_opp(h, &my_addrs, &cand, region, cache)
     }
 }
 
 // A persona that STARTS exactly at `addr` — the lobby MemberInfo stores the name inline at a fixed field offset,
 // unlike the ranked session cache where the name sits *near* the id (name_near_rpm). Read a forward window and
 // take the LEADING printable/UTF-8 run (Steam personas are UTF-8, same handling as name_near_rpm).
-fn name_fwd_rpm(h: HANDLE, addr: usize) -> String {
+fn name_fwd_rpm(h: &mem::Proc, addr: usize) -> String {
     let buf = match unsafe { read_window(h, addr, 0x80) } { Some(b) => b, None => return String::new() };
     let mut run: Vec<u8> = Vec::new();
     for &c in &buf {
@@ -479,18 +566,19 @@ fn name_fwd_rpm(h: HANDLE, addr: usize) -> String {
 // read-only. Returns (opp_id, name, local_side 1/2/0) — side comes from localPlayerNum, exactly like ranked.
 fn find_opponent_lobby(pid: u32, my_id: u64, exe_base: usize, cache: &mut Option<(usize, u8, String, u64)>) -> Option<(u64, String, u8)> {
     if pid == 0 || my_id == 0 || exe_base == 0 { return None; }
+    let proc = mem::Proc::open_read(pid)?;
+    let h = &proc;
     unsafe {
-        let h = OpenProcess(PROCESS_VM_READ | PROCESS_QUERY_INFORMATION, FALSE, pid).ok()?;
-        // ── O(1) hosted-lobby gate ── two cheap derefs; bail (freeing the handle) unless we're hosting a versus
-        // lobby, so this path is nearly free in ranked/offline and never runs the full sweep there.
+        // ── O(1) hosted-lobby gate ── two cheap derefs; bail unless we're hosting a versus lobby, so this
+        // path is nearly free in ranked/offline and never runs the full sweep there.
         let session = read_at(h, exe_base + SESSION_PTR_OFF, 8).filter(|b| b.len() >= 8)
             .map(|b| u64::from_le_bytes([b[0],b[1],b[2],b[3],b[4],b[5],b[6],b[7]]) as usize)
             .filter(|&s| s > 0x10000);
-        let session = match session { Some(s) => s, None => { let _ = CloseHandle(h); return None; } };
+        let session = match session { Some(s) => s, None => { return None; } };
         let hosted = rpm_u32(h, session + LOBBY_HOSTED_OFF) == Some(1);
         let net_ok = read_at(h, session + LOBBY_NETSESS_OFF, 4).filter(|b| b.len() >= 4)
             .map(|b| i32::from_le_bytes([b[0],b[1],b[2],b[3]])).map_or(false, |v| v >= 0);
-        if !(hosted && net_ok) { let _ = CloseHandle(h); return None; }
+        if !(hosted && net_ok) { return None; }
 
         // side from flycast localPlayerNum (0=P1→1, 1=P2→2; else unknown). Downstream ignores this for stats
         // (manual gate) but uses it for the team label, same as the ranked path.
@@ -503,14 +591,9 @@ fn find_opponent_lobby(pid: u32, my_id: u64, exe_base: usize, cache: &mut Option
         let mut id_only: Option<(u64, usize)> = None;        // valid opp id but junk/no name at +0x184 (fallback)
         let mut id_only_conflict = false;                    // >1 distinct id-only candidate → don't trust it
         let mut probes = 0u32;                               // cap the per-hit probe reads (worst-case bound)
-        let mut addr = 0usize;
-        'sweep: loop {
-            let mut mbi = MEMORY_BASIC_INFORMATION::default();
-            if VirtualQueryEx(h, Some(addr as *const c_void), &mut mbi, std::mem::size_of::<MEMORY_BASIC_INFORMATION>()) == 0 { break; }
-            let base = mbi.BaseAddress as usize; let size = mbi.RegionSize; if size == 0 { break; }
-            let p = mbi.Protect.0;
-            let ok = mbi.State == MEM_COMMIT && (p & PAGE_GUARD.0) == 0 && (p & PAGE_NOACCESS.0) == 0 && (p & 0xEE) != 0;
-            if ok && size <= 0x4000_0000 {
+        'sweep: for r in h.regions() {
+            if r.readable && r.size <= 0x4000_0000 {
+                let (base, size) = (r.base, r.size);
                 let mut off = 0usize;
                 while off < size {
                     let n = (size - off).min(0x80_0000);
@@ -544,7 +627,6 @@ fn find_opponent_lobby(pid: u32, my_id: u64, exe_base: usize, cache: &mut Option
                     off += n;
                 }
             }
-            let nx = base + size; if nx <= base { break; } addr = nx;
         }
         // Prefer the named hit; else a SINGLE unambiguous id-only record (name resolves next cycle / isn't needed
         // for the /peers skin fetch, which keys on the id).
@@ -560,7 +642,6 @@ fn find_opponent_lobby(pid: u32, my_id: u64, exe_base: usize, cache: &mut Option
             // well within the fast path's ±0x400 pairing window, so next cycle re-validates cheaply (no sweep).
             *cache = Some((*a + LOBBY_OPP_GAP, side, name.clone(), *opp));
         }
-        let _ = CloseHandle(h);
         result.map(|(opp, _a, name)| (opp, name, side))
     }
 }
@@ -600,22 +681,18 @@ pub fn read_my_lobby() -> serde_json::Value {
 fn read_my_lobby_inner() -> Option<serde_json::Value> {
     let our_id = read_self_id()?;   // no Steam identity → treat as not-in-lobby
     let pid = find_game_pid()?;     // game not running → not-in-lobby
+    let proc = mem::Proc::open_read(pid)?;
+    let h = &proc;
     unsafe {
-        let h = OpenProcess(PROCESS_VM_READ | PROCESS_QUERY_INFORMATION, FALSE, pid).ok()?;
-
-        // ── Pass 1: committed-PRIVATE-heap sweep (same VirtualQueryEx walk + chunked, page-safe read_at
-        // as find_opponent_lobby). Tally owner-adjacency per lobby id and remember each lobby id's addrs.
+        // ── Pass 1: committed-PRIVATE-heap sweep (same region walk + chunked, page-safe read_at as
+        // find_opponent_lobby). Tally owner-adjacency per lobby id and remember each lobby id's addrs.
+        // The old predicate `Type==MEM_PRIVATE && matches!(prot, 0x02|0x04|0x20|0x40)` (committed readable
+        // private heap) maps EXACTLY to `r.private && r.readable` (WRITECOPY can't occur on private commit).
         let mut counts: HashMap<u64, u32> = HashMap::new();          // lobby id → owner-adjacency hits
         let mut lobby_at: HashMap<u64, Vec<usize>> = HashMap::new(); // lobby id → addresses it occupies
-        let mut addr = 0usize;
-        loop {
-            let mut mbi = MEMORY_BASIC_INFORMATION::default();
-            if VirtualQueryEx(h, Some(addr as *const c_void), &mut mbi, std::mem::size_of::<MEMORY_BASIC_INFORMATION>()) == 0 { break; }
-            let base = mbi.BaseAddress as usize; let size = mbi.RegionSize; if size == 0 { break; }
-            // committed PRIVATE heap, readable protections only (PAGE_READONLY 0x02 / READWRITE 0x04 /
-            // EXECUTE_READ 0x20 / EXECUTE_READWRITE 0x40 — excludes guarded/no-access), region ≤ 128 MB.
-            let prot_ok = matches!(mbi.Protect.0, 0x02 | 0x04 | 0x20 | 0x40);
-            if mbi.State == MEM_COMMIT && mbi.Type == MEM_PRIVATE && prot_ok && size <= 0x800_0000 {
+        for r in h.regions() {
+            if r.private && r.readable && r.size <= 0x800_0000 {
+                let (base, size) = (r.base, r.size);
                 let mut off = 0usize;
                 while off < size {
                     let n = (size - off).min(0x80_0000);
@@ -645,13 +722,12 @@ fn read_my_lobby_inner() -> Option<serde_json::Value> {
                     off += n;
                 }
             }
-            let nx = base + size; if nx <= base { break; } addr = nx;
         }
 
-        // our lobby = the most-tallied owner-adjacency. None → not in a lobby (free the handle first).
+        // our lobby = the most-tallied owner-adjacency. None → not in a lobby.
         let lobby_id = match counts.into_iter().max_by_key(|&(_, c)| c).map(|(id, _)| id) {
             Some(id) => id,
-            None => { let _ = CloseHandle(h); return None; }
+            None => { return None; }
         };
         let anchors = lobby_at.get(&lobby_id).cloned().unwrap_or_default();
 
@@ -673,7 +749,6 @@ fn read_my_lobby_inner() -> Option<serde_json::Value> {
             }
         }
         if seen.insert(our_id) { members.push(our_id.to_string()); } // owner is always a member
-        let _ = CloseHandle(h);
 
         Some(serde_json::json!({
             "in_lobby": true,
@@ -907,9 +982,9 @@ struct GameSt { in_match: u8, match_state: u8, stage: u8, timer: u32, frame: u32
 // (All MvC2 memory offsets — STRIDE / OFF_* / MET_* / exe globals / the anchor — live in the ONE table
 //  near the top of this file. The array BASE is VOLATILE per match; see find_array / pointer_follow_array.)
 
-unsafe fn rpm_u8(h: HANDLE, a: usize) -> Option<u8> { read_at(h, a, 1).filter(|b| b.len() >= 1).map(|b| b[0]) }
-unsafe fn rpm_u16(h: HANDLE, a: usize) -> Option<u16> { read_at(h, a, 2).filter(|b| b.len() >= 2).map(|b| b[0] as u16 | ((b[1] as u16) << 8)) }
-unsafe fn rpm_u32(h: HANDLE, a: usize) -> Option<u32> { read_at(h, a, 4).filter(|b| b.len() >= 4).map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]])) }
+unsafe fn rpm_u8(h: &mem::Proc, a: usize) -> Option<u8> { read_at(h, a, 1).filter(|b| b.len() >= 1).map(|b| b[0]) }
+unsafe fn rpm_u16(h: &mem::Proc, a: usize) -> Option<u16> { read_at(h, a, 2).filter(|b| b.len() >= 2).map(|b| b[0] as u16 | ((b[1] as u16) << 8)) }
+unsafe fn rpm_u32(h: &mem::Proc, a: usize) -> Option<u32> { read_at(h, a, 4).filter(|b| b.len() >= 4).map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]])) }
 
 // ── Tier-3 set-score read (read-only RPM, ADDITIVE observation) ──────────────────────────────────────
 // Deref *(exe_base+SET_SCORE_PTR_OFF) → the set-score block, validate the pointer, then read the game's own
@@ -917,7 +992,7 @@ unsafe fn rpm_u32(h: HANDLE, a: usize) -> Option<u32> { read_at(h, a, 4).filter(
 // so the SERVER can auto-confirm the winner from the delta — covering timeouts the health-KO judge misses.
 // Every read is Option-returning (read_at/rpm_u8) and the pointer bytes are length-guarded → CANNOT panic.
 // Any bad/short read (or a null-ish pointer) → None, so a failed read is simply absent downstream.
-unsafe fn read_set_score(h: HANDLE, exe_base: usize) -> Option<(u8, u8)> {
+unsafe fn read_set_score(h: &mem::Proc, exe_base: usize) -> Option<(u8, u8)> {
     if exe_base == 0 { return None; }
     let b = read_at(h, exe_base + SET_SCORE_PTR_OFF, 8).filter(|b| b.len() >= 8)?;
     let sc = u64::from_le_bytes([b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7]]) as usize;
@@ -947,10 +1022,9 @@ fn cap_state() -> &'static Mutex<CapState> {
 // stored only every 10th frame → 6Hz. We now sample FAST (~22ms): the fine counter ticks every sample by a
 // small amount; the coarse one reads flat between its jumps → rejected. If nothing qualifies we return None,
 // and the caller's synthetic per-poll index is ALSO dense (~60Hz) — so the capture is never decimated.
-unsafe fn hunt_frame_counter(h: HANDLE, array: usize) -> Option<usize> {
-    let mut mbi = MEMORY_BASIC_INFORMATION::default();
-    if VirtualQueryEx(h, Some(array as *const c_void), &mut mbi, std::mem::size_of::<MEMORY_BASIC_INFORMATION>()) == 0 { return None; }
-    let rbase = mbi.BaseAddress as usize; let rend = rbase + mbi.RegionSize;
+unsafe fn hunt_frame_counter(h: &mem::Proc, array: usize) -> Option<usize> {
+    let r = h.region_at(array)?;
+    let rbase = r.base; let rend = r.base + r.size;
     let lo = array.saturating_sub(0x80_0000).max(rbase);
     let hi = (array + 0x80_0000).min(rend);
     if hi <= lo + 0x1000 { return None; }
@@ -991,7 +1065,8 @@ fn cap_set_status(s: &str) { cap_state().lock().unwrap().status = s.to_string();
 fn capture_loop() {
     use std::sync::atomic::Ordering::SeqCst;
     let pid = match find_game_pid() { Some(p) => p, None => { cap_set_status("game not running"); CAPTURING.store(false, SeqCst); return; } };
-    let h = match unsafe { OpenProcess(PROCESS_VM_READ | PROCESS_QUERY_INFORMATION, FALSE, pid) } { Ok(h) => h, Err(_) => { cap_set_status("open failed"); CAPTURING.store(false, SeqCst); return; } };
+    let proc = match mem::Proc::open_read(pid) { Some(p) => p, None => { cap_set_status("open failed"); CAPTURING.store(false, SeqCst); return; } };
+    let h = &proc;
     let exe = game_exe_base(pid);
     cap_set_status("waiting for match");
     let mut tries = 0u32;
@@ -1089,7 +1164,7 @@ static SHARE_GAMEPLAY: std::sync::atomic::AtomicBool = std::sync::atomic::Atomic
 // TRUE while a live match is actively being recorded. The uploader NEVER runs while this is set, so a big
 // spooled upload can never compete with the game for CPU/IO — recordings are drained only between matches.
 static GS_IN_MATCH: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-const SHARE_FILE: &str = "C:\\g\\share_gameplay.txt";
+fn share_file() -> std::path::PathBuf { crate::runtime_dir().join("share_gameplay.txt") }
 const GS_CAP: usize = 20_000;                       // max unique frames buffered per game (~5.5 min @60fps)
 const GS_SPOOL_CAP: usize = 300;                    // max pending recordings on disk (soft backpressure)
 const SKINSYNC_GAMESTATE: &str = "https://nobd.net/skinsync/gamestate";
@@ -1115,7 +1190,7 @@ const GS_SCHEMA: &str = "[frame,p1_in,p2_in,kcode,hp[6],px[6],py[6],p1_meter,p2_
 fn gs_now_ms() -> u64 { std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0) }
 
 fn load_share_setting() {
-    if let Ok(s) = std::fs::read_to_string(SHARE_FILE) {
+    if let Ok(s) = std::fs::read_to_string(share_file()) {
         let t = s.trim();
         if t == "0" || t.eq_ignore_ascii_case("false") || t.eq_ignore_ascii_case("off") {
             SHARE_GAMEPLAY.store(false, std::sync::atomic::Ordering::SeqCst);
@@ -1131,8 +1206,8 @@ pub fn get_share_gameplay() -> bool { SHARE_GAMEPLAY.load(std::sync::atomic::Ord
 #[tauri::command]
 pub fn set_share_gameplay(on: bool) -> Result<(), String> {
     SHARE_GAMEPLAY.store(on, std::sync::atomic::Ordering::SeqCst);
-    let _ = std::fs::create_dir_all("C:\\g");
-    let _ = std::fs::write(SHARE_FILE, if on { "1" } else { "0" });
+    let _ = std::fs::create_dir_all(crate::runtime_dir());
+    let _ = std::fs::write(share_file(), if on { "1" } else { "0" });
     Ok(())
 }
 
@@ -1220,7 +1295,7 @@ fn gs_match_load(r: &GsRow) -> bool {
 
 // Read one full per-frame row off the located array. 6 slot reads (0xB48 each, covers every field) + the
 // 3 global-meter reads. Read-only RPM; runs on the dedicated capture thread only.
-unsafe fn read_gs_row(h: HANDLE, base: usize, frame: u32, exe_base: usize) -> Option<GsRow> {
+unsafe fn read_gs_row(h: &mem::Proc, base: usize, frame: u32, exe_base: usize) -> Option<GsRow> {
     let mut s: Vec<Vec<u8>> = Vec::with_capacity(6);
     for i in 0..6 {
         let buf = read_at(h, base + i * STRIDE, 0xB50)?;   // 0xB50 (was 0xB48) to include red_health @ +0xb48
@@ -1265,7 +1340,8 @@ fn start_gamestate_capture() {
         loop {
             if !SHARE_GAMEPLAY.load(SeqCst) { std::thread::sleep(std::time::Duration::from_millis(500)); continue; }
             let pid = match find_game_pid() { Some(p) => p, None => { std::thread::sleep(std::time::Duration::from_millis(600)); continue; } };
-            let h = match unsafe { OpenProcess(PROCESS_VM_READ | PROCESS_QUERY_INFORMATION, FALSE, pid) } { Ok(h) => h, Err(_) => { std::thread::sleep(std::time::Duration::from_millis(600)); continue; } };
+            let proc = match mem::Proc::open_read(pid) { Some(p) => p, None => { std::thread::sleep(std::time::Duration::from_millis(600)); continue; } };
+            let h = &proc;
             let exe_base = game_exe_base(pid);   // for the local pad (kcode) recorded per frame → offline side-attribution
             // wait for a live match with BOTH teams alive (a fresh game start, not a mid-KO/loading copy).
             // Prefer the base the MAIN reader already located via find_array (struct-layout scan → the LIVE copy,
@@ -1277,9 +1353,9 @@ fn start_gamestate_capture() {
                 // rely SOLELY on the main reader's located (most-animating) base — never the fixed anchor, which on
                 // this relocating build points at stale savestate copies (the between-match "random Ryu" source).
                 if rb != 0 && unsafe { array_valid(h, rb) } { rb }
-                else { unsafe { let _ = CloseHandle(h); } std::thread::sleep(std::time::Duration::from_millis(300)); continue; }
+                else { std::thread::sleep(std::time::Duration::from_millis(300)); continue; }
             };
-            let start_row = match unsafe { read_gs_row(h, base, 0, exe_base) } { Some(r) => r, None => { unsafe { let _ = CloseHandle(h); } std::thread::sleep(std::time::Duration::from_millis(200)); continue; } };
+            let start_row = match unsafe { read_gs_row(h, base, 0, exe_base) } { Some(r) => r, None => { std::thread::sleep(std::time::Duration::from_millis(200)); continue; } };
             // TRUE match-load gate. Ideal: catch the +-213 spawn during the intro (gs_match_load) so the tape
             // starts at frame 0 of the FIGHT. Fallback: if all real chars have been full for ~1.5s but we never
             // caught the spawn (attached mid-intro), start anyway so a match is never entirely missed. The 50ms
@@ -1288,7 +1364,7 @@ fn start_gamestate_capture() {
             if full { full_since.get_or_insert_with(std::time::Instant::now); } else { full_since = None; }
             let ready = gs_match_load(&start_row)
                 || (full && full_since.map_or(false, |t| t.elapsed().as_millis() > 1500));
-            if !ready { unsafe { let _ = CloseHandle(h); } std::thread::sleep(std::time::Duration::from_millis(50)); continue; }
+            if !ready { std::thread::sleep(std::time::Duration::from_millis(50)); continue; }
             full_since = None; // consumed → re-arm the fallback timer for the next match
 
             // ── a game is starting → reset the buffer, locate the guest frame counter (one-time, ~1s), and
@@ -1361,7 +1437,7 @@ fn start_gamestate_capture() {
                 let n = gs_capture().lock().unwrap().frames.len();
                 trace(&format!("[gamestate] recording END frames={n} (held for upload on win-report)"));
             }
-            unsafe { let _ = CloseHandle(h); }
+            // handle (proc) is dropped at the end of this outer-loop iteration → its Drop closes it
             // don't immediately re-lock the just-ended game: the both-alive gate at the top of the loop already
             // holds until the next game loads both teams, so a brief pause here is all we need.
             std::thread::sleep(std::time::Duration::from_millis(300));
@@ -1538,7 +1614,7 @@ fn is_wb(v: u32) -> bool { v >= WB_LO && v < WB_HI }
 // Cheap re-validation of a cached base: >=5 of the 6 slots have a working-buffer DatPal pointer at
 // cl+0x4c. That single fixed-offset pointer is the array's strongest cheap fingerprint (16k loose
 // clusters exist, but only the real 6-run keeps a WB pointer at exactly +0x4c across every slot).
-unsafe fn array_valid(h: HANDLE, base: usize) -> bool {
+unsafe fn array_valid(h: &mem::Proc, base: usize) -> bool {
     if base == 0 { return false; }
     // >=5 WB DatPals AND no garbage health (>144). The health clause is essential: without it a STALE savestate
     // copy that still holds WB DatPals but reads garbage health passes validation, PINS ram_base, and
@@ -1557,16 +1633,16 @@ unsafe fn array_valid(h: HANDLE, base: usize) -> bool {
 // (ARRAY_OFF = reservation_base + this fixed offset — defined in the ONE offsets table at the top of the file.)
 // The reservation base: the >=128MB committed PAGE_READWRITE block that contains the working-buffer window
 // (host 0x10000000). ASLR'd per launch, but found deterministically by region enumeration (no content scan).
-unsafe fn flycast_base(h: HANDLE) -> usize {
-    let mut addr = 0usize;
-    loop {
-        let mut mbi = MEMORY_BASIC_INFORMATION::default();
-        if VirtualQueryEx(h, Some(addr as *const c_void), &mut mbi, std::mem::size_of::<MEMORY_BASIC_INFORMATION>()) == 0 { break; }
-        let base = mbi.BaseAddress as usize; let size = mbi.RegionSize;
-        if size == 0 { break; }
-        if mbi.State == MEM_COMMIT && mbi.Protect.0 == PAGE_READWRITE.0 && size >= 0x0800_0000 && base <= 0x1000_0000 && 0x1000_0000 < base + size { return base; }
-        let n = base + size; if n <= addr { break; } addr = n;
-        if addr > 0x7FFF_FFFF_FFFF { break; }
+unsafe fn flycast_base(h: &mem::Proc) -> usize {
+    // The old predicate was `State==COMMIT && Protect == PAGE_READWRITE` (exact). For committed PRIVATE memory
+    // that is EXACTLY `private && readable && writable && !executable` (a private commit can't be WRITECOPY), and
+    // on Linux that is the guest reservation's `rw-p` anonymous mapping — same region, same semantics.
+    for r in h.regions() {
+        let (base, size) = (r.base, r.size);
+        if r.private && r.readable && r.writable && !r.executable
+            && size >= 0x0800_0000 && base <= 0x1000_0000 && 0x1000_0000 < base + size {
+            return base;
+        }
     }
     0
 }
@@ -1578,7 +1654,7 @@ unsafe fn flycast_base(h: HANDLE) -> usize {
 // out; that was the "not applied right away / keeps un-applying" bug). Reject only the between-games
 // [0,1,2,3,4,5] template. Health at this fixed offset is savestate-noisy — fine for painting; live
 // health/score come from the find_array copy. O(1), no scan.
-unsafe fn anchor_array(h: HANDLE) -> Option<usize> {
+unsafe fn anchor_array(h: &mem::Proc) -> Option<usize> {
     let fb = flycast_base(h);
     if fb == 0 { return None; }
     let cand = fb + ARRAY_OFF;
@@ -1600,7 +1676,7 @@ unsafe fn anchor_array(h: HANDLE) -> Option<usize> {
 // [0..3]=P1 and [3..6]=P2, matching the signature-scan roster it replaces. Returns the six real slots (so a
 // mirror correctly reads 6, unlike the sig-scan's unique-dedup which broke the n>=6 "match" gate). Empty when
 // the array isn't live → the caller falls back to the signature scan (which still covers character-select).
-unsafe fn anchor_roster(h: HANDLE) -> Vec<Found> {
+unsafe fn anchor_roster(h: &mem::Proc) -> Vec<Found> {
     let base = match anchor_array(h) { Some(b) => b, None => return Vec::new() };
     let (sigs, _) = sigtab();
     let mut out = Vec::new();
@@ -1620,7 +1696,7 @@ unsafe fn anchor_roster(h: HANDLE) -> Vec<Found> {
 // uses — it finds the live array every time; the OLD pointer-density heuristic (>=14 WB pointers clustered per
 // slot) matched 0 real candidates in a live fight (find_array_replica confirmed). Returns the array base
 // (volatile — never cache across matches blindly).
-unsafe fn find_array(h: HANDLE) -> Option<usize> {
+unsafe fn find_array(h: &mem::Proc) -> Option<usize> {
     const STRIDE_W: usize = STRIDE / 4;      // 0x738 in words
     const DP_W: usize  = OFF_DATPAL / 4;     // DatPal  @ +0x4c
     const CID_W: usize = OFF_CHARID / 4;     // char_id @ +0x554
@@ -1630,17 +1706,10 @@ unsafe fn find_array(h: HANDLE) -> Option<usize> {
                                              // 0x40c (< char_id 0x554), char_id became the furthest field — using
                                              // HP_W here indexed char_id past the buffer → OOB panic in find_array.
     let mut raw: Vec<usize> = Vec::new();
-    let mut addr = 0usize;
-    loop {
-        let mut mbi = MEMORY_BASIC_INFORMATION::default();
-        if VirtualQueryEx(h, Some(addr as *const c_void), &mut mbi, std::mem::size_of::<MEMORY_BASIC_INFORMATION>()) == 0 { break; }
-        let base = mbi.BaseAddress as usize; let size = mbi.RegionSize;
-        if size == 0 { break; }
-        let prot = mbi.Protect.0;
-        let readable = mbi.State == MEM_COMMIT && (prot & PAGE_GUARD.0) == 0 && (prot & PAGE_NOACCESS.0) == 0 && (prot & 0xEE) != 0;
-        addr = base + size; if addr <= base { break; }
+    for r in h.regions() {
+        let base = r.base; let size = r.size;
         // include the ~512MB guest-RAM virtmem blocks (earlier scans wrongly capped at 256MB and missed them)
-        if !(readable && size >= 0x10000 && size <= 0x5000_0000) { continue; }
+        if !(r.readable && size >= 0x10000 && size <= 0x5000_0000) { continue; }
         // Read in bounded CHUNKS: a whole-region read of a ~512MB..1.25GB block allocates that entire size at once
         // (read_at does vec![0u8; len]); find_array now runs frequently, so repeated giant allocations are an
         // OOM/abort hazard. 64MB base windows + a `tail` overlap (so a base near the window end can still index all
@@ -1760,7 +1829,7 @@ unsafe fn find_array(h: HANDLE) -> Option<usize> {
 // Cheap (~6 small reads/slot) — read the six fighters from a located base. side = slot parity (VALIDATED:
 // even=P1, odd=P2); pos = C1/C2/C3 by pair. in_match is derived (any present fighter with live health):
 // the array only exists once fighters are loaded, so this reliably distinguishes an active fight.
-unsafe fn read_fighters(h: HANDLE, base: usize) -> Option<GameSt> {
+unsafe fn read_fighters(h: &mem::Proc, base: usize) -> Option<GameSt> {
     if base == 0 { return None; }
     let mut slots = Vec::new();
     let mut any_live = false;
@@ -1823,7 +1892,7 @@ unsafe fn read_fighters(h: HANDLE, base: usize) -> Option<GameSt> {
 /// partial selection — ≥1 char locked AND ≥1 slot still unlocked. A settled state (all 3 locked, or a stale
 /// menu team with no in-team -1) returns empty, so we never flash a stale team here — the live fighter array
 /// drives menus/matches. Cheap: one pointer deref + one 12-byte read.
-unsafe fn read_char_picks(h: HANDLE, exe_base: usize) -> Vec<u8> {
+unsafe fn read_char_picks(h: &mem::Proc, exe_base: usize) -> Vec<u8> {
     if exe_base == 0 { return Vec::new(); }
     let gs = match read_at(h, exe_base + GSTATE_PTR_OFF, 8).filter(|b| b.len() >= 8) {
         Some(b) => u64::from_le_bytes([b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7]]) as usize,
@@ -1839,7 +1908,7 @@ unsafe fn read_char_picks(h: HANDLE, exe_base: usize) -> Vec<u8> {
     picks   // NO -1 requirement (a fully-locked team has no in-team -1). The CALLER gates on scene==5 && no live
             // fighters (= char-select), so a settled menu/in-fight state never surfaces a stale team here.
 }
-unsafe fn pointer_follow_array(h: HANDLE, exe_base: usize) -> Option<usize> {
+unsafe fn pointer_follow_array(h: &mem::Proc, exe_base: usize) -> Option<usize> {
     if exe_base == 0 { return None; }
     let blk = read_at(h, exe_base + MATCH_PTR_OFF, 8)
         .filter(|b| b.len() >= 8)
@@ -1870,7 +1939,7 @@ unsafe fn pointer_follow_array(h: HANDLE, exe_base: usize) -> Option<usize> {
 // gs-101 OVERKILL: pointer-follow with NO liveness sleep. Used ONLY when scene==5 (game_state+0x8) already
 // GUARANTEES we're in a live fight, so the game's own match-block pointer necessarily points at the current
 // (rendered) block — never a frozen savestate. Pure O(1): two reads + a validate, microseconds, no scan.
-unsafe fn pointer_follow_fast(h: HANDLE, exe_base: usize) -> Option<usize> {
+unsafe fn pointer_follow_fast(h: &mem::Proc, exe_base: usize) -> Option<usize> {
     if exe_base == 0 { return None; }
     let blk = read_at(h, exe_base + MATCH_PTR_OFF, 8)
         .filter(|b| b.len() >= 8)
@@ -1887,7 +1956,8 @@ unsafe fn pointer_follow_fast(h: HANDLE, exe_base: usize) -> Option<usize> {
 // read. `allow_find` gates the heavy scan to when fighters are likely loaded (sig-scan roster non-empty).
 fn read_gamestate_rpm(pid: u32, ram_base: &mut usize, last_find: &mut std::time::Instant, fighting: bool, live_ctx: bool, hint: usize) -> Option<GameSt> {
     if pid == 0 { return None; }
-    let h = unsafe { OpenProcess(PROCESS_VM_READ | PROCESS_QUERY_INFORMATION, FALSE, pid).ok()? };
+    let proc = mem::Proc::open_read(pid)?;
+    let h = &proc;
     let out = unsafe {
         if *ram_base != 0 && !array_valid(h, *ram_base) { *ram_base = 0; }       // volatile → dropped
         // ANCHOR (gs-70): compute the array from flycast's reservation base + ARRAY_OFF when we don't already
@@ -1932,7 +2002,6 @@ fn read_gamestate_rpm(pid: u32, ram_base: &mut usize, last_find: &mut std::time:
             match read_fighters(h, *ram_base) { Some(g) => Some(g), None => { *ram_base = 0; None } }
         } else { None }
     };
-    unsafe { let _ = CloseHandle(h); }
     out
 }
 
@@ -1948,7 +2017,7 @@ fn write_fighters(game: &Option<GameSt>) {
             .collect::<Vec<_>>().join("\n"),
         _ => String::new(),
     };
-    let _ = std::fs::write("C:\\g\\fighters.txt", body);
+    let _ = std::fs::write(crate::runtime_dir().join("fighters.txt"), body);
 }
 
 
@@ -1983,7 +2052,7 @@ struct ScoreState { set_opp: Option<String>, p1: u32, p2: u32, was_in: bool, la1
     session_id: Option<String>, match_index: u32, session_started_ms: u64 }
 
 const SESSION_CAP: u32 = 10;                    // a ranked set is at most 10 games; the 11th opens a new session
-const SESSION_FILE: &str = "C:\\g\\mvc_session.txt";
+fn session_file() -> std::path::PathBuf { crate::runtime_dir().join("mvc_session.txt") }
 
 // Unique per set: reporter + opponent + start-ms (+ a cheap nonce so two sets vs the same opp in the same ms differ).
 fn new_session_id(my_id: u64, opp_id: &str) -> String {
@@ -1995,10 +2064,10 @@ fn save_session(st: &ScoreState) {
     let (Some(sid), Some(opp)) = (st.session_id.as_deref(), st.set_opp.as_deref()) else { return };
     let body = serde_json::json!({ "opp": opp, "session_id": sid, "p1": st.p1, "p2": st.p2,
         "match_index": st.match_index, "started_ms": st.session_started_ms });
-    let _ = std::fs::write(SESSION_FILE, serde_json::to_vec(&body).unwrap_or_default());
+    let _ = std::fs::write(session_file(), serde_json::to_vec(&body).unwrap_or_default());
 }
 fn load_session() -> Option<serde_json::Value> {
-    std::fs::read_to_string(SESSION_FILE).ok().and_then(|s| serde_json::from_str(&s).ok())
+    std::fs::read_to_string(session_file()).ok().and_then(|s| serde_json::from_str(&s).ok())
 }
 
 // A finished game held until the side is confirmed. winner = the side (1/2) that won; my_side is resolved at commit.
@@ -2019,7 +2088,7 @@ fn rich_of(st: &ScoreState) -> GameRich {
 // the deterministic side (local_side: 1=P1, 2=P2; 0=unknown → skip, don't guess). Accumulates across sets.
 fn record_result(steamid: &str, name: &str, i_won: bool) {
     if steamid.is_empty() || steamid == "0" { return; }
-    let mut r = std::fs::read_to_string("C:\\g\\records.json").ok()
+    let mut r = std::fs::read_to_string(crate::runtime_dir().join("records.json")).ok()
         .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
         .unwrap_or_else(|| serde_json::json!({}));
     if let Some(obj) = r.as_object_mut() {
@@ -2028,7 +2097,7 @@ fn record_result(steamid: &str, name: &str, i_won: bool) {
         let k = if i_won { "wins" } else { "losses" };
         let c = e[k].as_u64().unwrap_or(0); e[k] = serde_json::json!(c + 1);
     }
-    let _ = std::fs::write("C:\\g\\records.json", serde_json::to_string_pretty(&r).unwrap_or_default());
+    let _ = std::fs::write(crate::runtime_dir().join("records.json"), serde_json::to_string_pretty(&r).unwrap_or_default());
     trace(&format!("[record] {} vs {} ({steamid})", if i_won { "WIN" } else { "LOSS" }, name));
 }
 // Is `nm` a plausible gamertag vs memory junk? The SteamID scan sometimes glues a random ASCII run next to a
@@ -2102,7 +2171,8 @@ fn on_game_win(winner: u8, opp: &Option<(String, String)>, my_side: u8, ocv: boo
 // failure → None. Panic-safe: every read is Option-returning (read_set_score never panics). Additive only.
 fn read_set_end(set_start: Option<(u8, u8)>) -> Option<(u8, u8)> {
     let pid = find_game_pid()?;
-    let h = unsafe { OpenProcess(PROCESS_VM_READ | PROCESS_QUERY_INFORMATION, FALSE, pid) }.ok()?;
+    let proc = mem::Proc::open_read(pid)?;
+    let h = &proc;
     let exe = game_exe_base(pid);
     let clean = |s: (u8, u8), e: (u8, u8)| {
         let (d1, d2) = (e.0 as i32 - s.0 as i32, e.1 as i32 - s.1 as i32);
@@ -2116,7 +2186,6 @@ fn read_set_end(set_start: Option<(u8, u8)>) -> Option<(u8, u8)> {
         }
         if i < 2 { std::thread::sleep(std::time::Duration::from_millis(50)); }
     }
-    unsafe { let _ = CloseHandle(h); }
     out
 }
 
@@ -2330,7 +2399,7 @@ fn update_score(st: &mut ScoreState, game: &Option<GameSt>, opp: &Option<(String
 /// Head-to-head record vs a SteamID: { name, wins, losses }. 0-0 if none yet.
 #[tauri::command]
 pub fn get_record(steamid: String) -> serde_json::Value {
-    std::fs::read_to_string("C:\\g\\records.json").ok()
+    std::fs::read_to_string(crate::runtime_dir().join("records.json")).ok()
         .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
         .and_then(|r| r.get(&steamid).cloned())
         .unwrap_or_else(|| serde_json::json!({ "wins": 0, "losses": 0 }))
@@ -2423,6 +2492,695 @@ pub fn playerstats(steamid: String) -> Result<serde_json::Value, String> {
         .into_json::<serde_json::Value>().map_err(|e| e.to_string())
 }
 
+/// Increment 3 Phase B: report the local player's IN-PROGRESS match to the server so it appears under
+/// "🟢 Now Playing" in the live feed. The Match tab re-invokes this on a ~20s keepalive cadence while the fight
+/// is live (server TTL is 60s; `/result` also closes the entry). POST /skinsync/match/live, Bearer-authed — the
+/// caller's own SteamID is derived from the token server-side, so we send only the opponent's id + both teams'
+/// char ids. Best-effort and fully swallowed: a failed live-match ping must NEVER surface or disturb the UI. We
+/// still gate on a real 17-digit opponent SteamID here as a backstop (the JS gate does the same) so we never
+/// broadcast a CPU/local/unknown "opponent". Short timeout so a slow server can't park a worker thread.
+#[tauri::command]
+pub fn report_live_match(opp: String, my_chars: Vec<i64>, opp_chars: Vec<i64>) {
+    if opp.len() != 17 || !opp.bytes().all(|b| b.is_ascii_digit()) { return; } // real SteamID only
+    let body = serde_json::json!({ "opp": opp, "my_chars": my_chars, "opp_chars": opp_chars });
+    let _ = auth_post(&format!("{}/match/live", SKINSYNC))
+        .timeout(std::time::Duration::from_secs(5))
+        .send_json(body); // fire-and-forget: errors intentionally ignored
+}
+
+// ── tournament platform (Phase 1) — thin proxies to /skinsync/tourney/* ────────────────────────────
+// Writes carry the Bearer token (auth_post): the server enforces that the caller acts only as their own
+// SteamID and TO-gates organizer actions. A 4xx from the server carries a JSON {ok:false,error:…} body — we
+// surface it (Ok) rather than dropping it to a bare status string, so the tab can show the real message.
+fn json_or_err(res: Result<ureq::Response, ureq::Error>) -> Result<serde_json::Value, String> {
+    match res {
+        Ok(r) => r.into_json::<serde_json::Value>().map_err(|e| e.to_string()),
+        Err(ureq::Error::Status(_, r)) => r.into_json::<serde_json::Value>().map_err(|e| e.to_string()),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
+/// Batch SteamID → {name, avatar, cc} resolver (the shared profile source; server route is OPEN + cache-first).
+/// Used to label bracket seats / entrants in one call instead of N profile fetches.
+#[tauri::command]
+pub fn names(ids: Vec<String>) -> Result<serde_json::Value, String> {
+    json_or_err(ureq::post(&format!("{}/names", SKINSYNC)).timeout(std::time::Duration::from_secs(6)).send_json(serde_json::json!({ "ids": ids })))
+}
+
+/// Browse the tournament feed (public). Optional filters mirror the server's list route.
+#[tauri::command]
+pub fn tourney_list(status: Option<String>, country: Option<String>, city: Option<String>, online: Option<bool>) -> Result<serde_json::Value, String> {
+    let mut r = ureq::get(&format!("{}/tourney/list", SKINSYNC)).timeout(std::time::Duration::from_secs(6));
+    if let Some(s) = status.filter(|s| !s.is_empty()) { r = r.query("status", &s); }
+    if let Some(c) = country.filter(|s| !s.is_empty()) { r = r.query("country", &c); }
+    if let Some(c) = city.filter(|s| !s.is_empty()) { r = r.query("city", &c); }
+    if let Some(o) = online { r = r.query("online", if o { "1" } else { "0" }); }
+    json_or_err(r.call())
+}
+
+/// Full tournament view (tournament + registrations + bracket). Public.
+#[tauri::command]
+pub fn tourney_get(id: String) -> Result<serde_json::Value, String> {
+    json_or_err(ureq::get(&format!("{}/tourney/get?id={}", SKINSYNC, id)).timeout(std::time::Duration::from_secs(6)).call())
+}
+
+// ── real-time tournament push (SSE) ───────────────────────────────────────────────────────────────────
+// The Rust backend holds ONE long-lived SSE connection to the push gateway and bridges every event to the
+// webview via `app.emit("tourney-delta", <data json>)`. Only one subscription is live at a time (the
+// currently-open tournament); opening a new one cancels the previous. Commands (writes) stay on plain HTTP.
+// Self-healing: on any disconnect it reconnects with capped backoff, replaying the gap via the
+// `Last-Event-ID` header (the gateway resumes from that seq, or resends a fresh snapshot if the gap fell out
+// of the log window). See docs/TOURNAMENT-REALTIME-ARCH.md §2 / §2.1. Reuses `ureq` (already a dep) for the
+// streaming body read — no new HTTP client needed.
+struct TourneySub { id: String, stop: Arc<AtomicBool> }
+static TOURNEY_SUB: OnceLock<Mutex<Option<TourneySub>>> = OnceLock::new();
+fn tourney_sub_slot() -> &'static Mutex<Option<TourneySub>> { TOURNEY_SUB.get_or_init(|| Mutex::new(None)) }
+
+/// Open (or switch to) the real-time stream for tournament `id`. Cancels any previous subscription so only the
+/// open tournament streams. Returns immediately; events arrive on the `tourney-delta` webview event (the
+/// parsed SSE `data` json — a snapshot first, then deltas).
+#[tauri::command]
+pub fn tourney_subscribe(app: tauri::AppHandle, id: String) -> Result<(), String> {
+    let stop = Arc::new(AtomicBool::new(false));
+    {
+        let mut slot = tourney_sub_slot().lock().unwrap();
+        if let Some(prev) = slot.take() { prev.stop.store(true, Ordering::SeqCst); } // cancel the previous stream
+        *slot = Some(TourneySub { id: id.clone(), stop: stop.clone() });
+    }
+    spawn_tourney_sse(app, id, stop);
+    Ok(())
+}
+
+/// Stop streaming tournament `id` (leaving the detail view). Id-matched so a stale unsubscribe from a
+/// just-closed tournament can't kill a newer subscription that already replaced it.
+#[tauri::command]
+pub fn tourney_unsubscribe(id: String) -> Result<(), String> {
+    let mut slot = tourney_sub_slot().lock().unwrap();
+    if slot.as_ref().map(|s| s.id == id).unwrap_or(false) {
+        if let Some(sub) = slot.take() { sub.stop.store(true, Ordering::SeqCst); }
+    }
+    Ok(())
+}
+
+// The shared SSE pump: connect → parse SSE frames → hand each event's (frame-id, parsed-`data`-json) to
+// `dispatch`, with auto-reconnect (Last-Event-ID resume + capped backoff) until the stop flag is set. Reuses
+// `ureq` (already a dep) for the streaming body read — no new HTTP client. Used by BOTH the tournament sub and
+// the generic multi-channel `rt_*` subs; the only per-subscriber difference is what `dispatch` emits.
+fn run_sse_pump<F: FnMut(&str, serde_json::Value)>(url: &str, stop: &Arc<AtomicBool>, mut dispatch: F) {
+    use std::io::BufRead;
+    // No overall timeout (SSE is long-lived); a connect timeout so a dead server can't hang the connect, and a
+    // read timeout that doubles as a keepalive-gap / dead-peer detector — on it we simply reconnect and resume
+    // via Last-Event-ID (no data lost: a half-read, undispatched frame's id was never recorded).
+    let agent = ureq::builder()
+        .timeout_connect(std::time::Duration::from_secs(10))
+        .timeout_read(std::time::Duration::from_secs(60))
+        .build();
+    let mut last_seq: Option<String> = None;
+    let mut backoff_ms: u64 = 500;
+    while !stop.load(Ordering::SeqCst) {
+        let mut req = agent.get(url).set("Accept", "text/event-stream");
+        if let Some(t) = auth_token() { req = req.set("Authorization", &format!("Bearer {}", t)); }
+        if let Some(seq) = &last_seq { req = req.set("Last-Event-ID", seq); } // resume from the gap on reconnect
+        match req.call() {
+            Ok(resp) => {
+                backoff_ms = 500; // healthy connection → reset backoff
+                let reader = std::io::BufReader::new(resp.into_reader());
+                let mut ev_id = String::new();
+                let mut data = String::new();
+                for line in reader.lines() {
+                    if stop.load(Ordering::SeqCst) { break; }
+                    let line = match line { Ok(l) => l, Err(_) => break }; // read timeout / disconnect → reconnect
+                    if line.is_empty() {
+                        // blank line = dispatch the accumulated event
+                        if !data.is_empty() {
+                            if !ev_id.is_empty() { last_seq = Some(ev_id.clone()); }
+                            if let Ok(val) = serde_json::from_str::<serde_json::Value>(&data) {
+                                dispatch(&ev_id, val);
+                            }
+                        }
+                        ev_id.clear(); data.clear();
+                        continue;
+                    }
+                    if line.starts_with(':') { continue; } // comment / keepalive line
+                    if let Some(rest) = line.strip_prefix("id:") { ev_id = rest.trim_start().to_string(); }
+                    else if let Some(rest) = line.strip_prefix("data:") {
+                        if !data.is_empty() { data.push('\n'); } // SSE allows multi-line data → join with \n
+                        data.push_str(rest.strip_prefix(' ').unwrap_or(rest));
+                    }
+                    // `event:` and other fields are ignored — the data json carries its own `type`.
+                }
+            }
+            Err(_) => {} // connect failed → fall through to backoff
+        }
+        if stop.load(Ordering::SeqCst) { break; }
+        std::thread::sleep(std::time::Duration::from_millis(backoff_ms));
+        backoff_ms = (backoff_ms * 2).min(15000); // exponential backoff, capped at 15s
+    }
+}
+
+// Guarantee the JS sees a `seq` even if the payload omitted it (fall back to the SSE frame id) — shared by both
+// pumps so every delta carries its sequence number for the webview's gap tracking.
+fn sse_ensure_seq(val: &mut serde_json::Value, ev_id: &str) {
+    if val.get("seq").is_none() && !ev_id.is_empty() {
+        if let Some(o) = val.as_object_mut() {
+            o.insert("seq".into(), serde_json::Value::String(ev_id.to_string()));
+        }
+    }
+}
+
+// The background tournament SSE pump: emit each event's `data` json to the webview on the `tourney-delta` event.
+fn spawn_tourney_sse(app: tauri::AppHandle, id: String, stop: Arc<AtomicBool>) {
+    std::thread::spawn(move || {
+        let url = format!("{}/rt/tourney/{}/stream", SKINSYNC, id);
+        run_sse_pump(&url, &stop, |ev_id, mut val| {
+            sse_ensure_seq(&mut val, ev_id);
+            let _ = app.emit("tourney-delta", val);
+        });
+        // clear the slot iff it's still us (a newer subscription may already own it)
+        let mut slot = tourney_sub_slot().lock().unwrap();
+        if slot.as_ref().map(|s| Arc::ptr_eq(&s.stop, &stop)).unwrap_or(false) { *slot = None; }
+    });
+}
+
+// ── generic multi-channel real-time push (SSE) ────────────────────────────────────────────────────────────
+// Increment 1 of "all live app data on the bus": the SAME transport as the tournament sub, generalized to ANY
+// named channel and MANY channels at once. Each active channel gets its own background SSE pump + stop-flag,
+// keyed in RT_SUBS. Every event is bridged to the webview as `app.emit("rt-delta", { channel, data })` — where
+// `data` is the parsed SSE `data` json (a `connected` event on connect, then `delta` events). The gateway URL
+// is `…/skinsync/rt/stream/{channel}`. Reconnect resumes via Last-Event-ID (handled inside run_sse_pump). See
+// docs/TOURNAMENT-REALTIME-ARCH.md §2. `tourney_*` above stays a separate, unchanged path (0.1.98 depends on it).
+static RT_SUBS: OnceLock<Mutex<HashMap<String, Arc<AtomicBool>>>> = OnceLock::new();
+fn rt_subs() -> &'static Mutex<HashMap<String, Arc<AtomicBool>>> { RT_SUBS.get_or_init(|| Mutex::new(HashMap::new())) }
+
+// Minimal percent-encoding for a channel used as a URL path segment (unreserved chars pass through; everything
+// else becomes %XX). Channel names are app-controlled identifiers, but this keeps an odd name from breaking the
+// URL — and avoids pulling in a urlencoding dep.
+fn rt_enc(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for b in s.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => out.push(b as char),
+            _ => out.push_str(&format!("%{:02X}", b)),
+        }
+    }
+    out
+}
+
+/// Subscribe to the real-time stream for `channel`. Many channels stream concurrently; subscribing to an
+/// already-active channel is a no-op (won't double-connect). Returns immediately; events arrive on the
+/// `rt-delta` webview event as `{ channel, data }` (a `connected` event first, then deltas).
+#[tauri::command]
+pub fn rt_subscribe(app: tauri::AppHandle, channel: String) -> Result<(), String> {
+    let stop = {
+        let mut subs = rt_subs().lock().unwrap();
+        if subs.contains_key(&channel) { return Ok(()); } // already streaming this channel → no-op
+        let stop = Arc::new(AtomicBool::new(false));
+        subs.insert(channel.clone(), stop.clone());
+        stop
+    };
+    spawn_rt_sse(app, channel, stop);
+    Ok(())
+}
+
+/// Stop streaming just `channel` (any other channels keep running).
+#[tauri::command]
+pub fn rt_unsubscribe(channel: String) -> Result<(), String> {
+    let mut subs = rt_subs().lock().unwrap();
+    if let Some(stop) = subs.remove(&channel) { stop.store(true, Ordering::SeqCst); }
+    Ok(())
+}
+
+// The background pump for one channel: emit each event to the webview on the `rt-delta` event, wrapped with its
+// channel name so the single JS listener can route it.
+fn spawn_rt_sse(app: tauri::AppHandle, channel: String, stop: Arc<AtomicBool>) {
+    std::thread::spawn(move || {
+        let url = format!("{}/rt/stream/{}", SKINSYNC, rt_enc(&channel));
+        let ch = channel.clone();
+        run_sse_pump(&url, &stop, |ev_id, mut val| {
+            sse_ensure_seq(&mut val, ev_id);
+            let _ = app.emit("rt-delta", serde_json::json!({ "channel": ch.clone(), "data": val }));
+        });
+        // remove our entry iff it's still us (unsubscribe already removed us if it fired; this also covers the
+        // pump exiting on its own, which today only happens once the stop flag is set).
+        let mut subs = rt_subs().lock().unwrap();
+        if subs.get(&channel).map(|s| Arc::ptr_eq(s, &stop)).unwrap_or(false) { subs.remove(&channel); }
+    });
+}
+
+/// Create a tournament (the caller becomes the TO). `body` is the create form, forwarded verbatim — the server
+/// sanitizes + clamps every field.
+#[tauri::command]
+pub fn tourney_create(body: serde_json::Value) -> Result<serde_json::Value, String> {
+    json_or_err(auth_post(&format!("{}/tourney/create", SKINSYNC)).send_json(body))
+}
+
+/// Patch a tournament (TO-only, server-enforced). `body` includes {id, …fields}.
+#[tauri::command]
+pub fn tourney_update(body: serde_json::Value) -> Result<serde_json::Value, String> {
+    json_or_err(auth_post(&format!("{}/tourney/update", SKINSYNC)).send_json(body))
+}
+
+/// Register the caller into a tournament (one-click; optional declared team).
+#[tauri::command]
+pub fn tourney_register(id: String, team: Option<Vec<i64>>) -> Result<serde_json::Value, String> {
+    json_or_err(auth_post(&format!("{}/tourney/register", SKINSYNC)).send_json(serde_json::json!({ "id": id, "team": team.unwrap_or_default() })))
+}
+
+/// Permanently delete a tournament (TO-only, server-enforced). Irreversible; the UI double-confirms.
+#[tauri::command]
+pub fn tourney_delete(id: String) -> Result<serde_json::Value, String> {
+    json_or_err(auth_post(&format!("{}/tourney/delete", SKINSYNC)).send_json(serde_json::json!({ "id": id })))
+}
+
+#[tauri::command]
+pub fn tourney_unregister(id: String) -> Result<serde_json::Value, String> {
+    json_or_err(auth_post(&format!("{}/tourney/unregister", SKINSYNC)).send_json(serde_json::json!({ "id": id })))
+}
+
+#[tauri::command]
+pub fn tourney_checkin(id: String) -> Result<serde_json::Value, String> {
+    json_or_err(auth_post(&format!("{}/tourney/checkin", SKINSYNC)).send_json(serde_json::json!({ "id": id })))
+}
+
+/// Seed the bracket (TO-only). `method` = "elo" | "random" | "manual" (+ optional `order` SteamID list).
+#[tauri::command]
+pub fn tourney_seed(id: String, method: String, order: Option<Vec<String>>) -> Result<serde_json::Value, String> {
+    json_or_err(auth_post(&format!("{}/tourney/seed", SKINSYNC)).send_json(serde_json::json!({ "id": id, "method": method, "order": order.unwrap_or_default() })))
+}
+
+/// Finalize seeds + generate the double-elim bracket, status → running (TO-only).
+#[tauri::command]
+pub fn tourney_start(id: String) -> Result<serde_json::Value, String> {
+    json_or_err(auth_post(&format!("{}/tourney/start", SKINSYNC)).send_json(serde_json::json!({ "id": id })))
+}
+
+/// Report a match winner → advances the bracket (TO-only in Phase 1; the daemon uses the same path in Phase 3).
+#[tauri::command]
+pub fn tourney_report(id: String, match_id: u32, winner_steamid: String) -> Result<serde_json::Value, String> {
+    json_or_err(auth_post(&format!("{}/tourney/report", SKINSYNC)).send_json(serde_json::json!({ "id": id, "match_id": match_id, "winner_steamid": winner_steamid })))
+}
+
+/// TO adds a player to the field by SteamID (no self-registration needed). TO-only, server-enforced.
+#[tauri::command]
+pub fn tourney_add_entrant(id: String, steamid: String, team: Option<Vec<i64>>) -> Result<serde_json::Value, String> {
+    json_or_err(auth_post(&format!("{}/tourney/add_entrant", SKINSYNC)).send_json(serde_json::json!({ "id": id, "steamid": steamid, "team": team.unwrap_or_default() })))
+}
+
+/// TO run-control: undo a reported/live match back to Ready (the live-console "redo"). Refused if a later match
+/// already played. Undoing the grand final re-opens the event. TO-only, server-enforced.
+#[tauri::command]
+pub fn tourney_match_reset(id: String, match_id: u32) -> Result<serde_json::Value, String> {
+    json_or_err(auth_post(&format!("{}/tourney/match_reset", SKINSYNC)).send_json(serde_json::json!({ "id": id, "match_id": match_id })))
+}
+
+/// TO run-control: set a match LIVE (call players to a station) and/or ON-STREAM (queue onto the broadcast),
+/// with no result change. Omit a flag to leave it unchanged. TO-only, server-enforced.
+#[tauri::command]
+pub fn tourney_match_run(id: String, match_id: u32, live: Option<bool>, on_stream: Option<bool>) -> Result<serde_json::Value, String> {
+    json_or_err(auth_post(&format!("{}/tourney/match_run", SKINSYNC)).send_json(serde_json::json!({ "id": id, "match_id": match_id, "live": live, "on_stream": on_stream })))
+}
+
+/// TO check-in management: action = "open" | "close" | "finalize" (finalize drops — or DQs, with dq_noshows —
+/// every entrant who never checked in). TO-only, server-enforced.
+#[tauri::command]
+pub fn tourney_checkin_ctl(id: String, action: String, close_ms: Option<u64>, dq_noshows: Option<bool>) -> Result<serde_json::Value, String> {
+    json_or_err(auth_post(&format!("{}/tourney/checkin_ctl", SKINSYNC)).send_json(serde_json::json!({
+        "id": id, "action": action, "close_ms": close_ms.unwrap_or(0), "dq_noshows": dq_noshows.unwrap_or(false)
+    })))
+}
+
+/// TO run-control: remove/DQ a specific entrant before the bracket starts (`drop:true` = voluntary withdrawal,
+/// else a DQ). After start, a DQ is a forfeit handled by reporting the opponent. TO-only, server-enforced.
+#[tauri::command]
+pub fn tourney_entrant_dq(id: String, steamid: String, drop: Option<bool>) -> Result<serde_json::Value, String> {
+    json_or_err(auth_post(&format!("{}/tourney/entrant_dq", SKINSYNC)).send_json(serde_json::json!({ "id": id, "steamid": steamid, "drop": drop.unwrap_or(false) })))
+}
+
+/// TO per-entrant edit before the bracket starts: set a manual `seed`, toggle `checked_in`, or re-slot via
+/// `status` ("registered" promotes off the waitlist; "waitlisted"/"dropped"/"dq"). Only provided fields change.
+#[tauri::command]
+pub fn tourney_entrant_update(id: String, steamid: String, seed: Option<u32>, checked_in: Option<bool>, status: Option<String>) -> Result<serde_json::Value, String> {
+    let mut body = serde_json::json!({ "id": id, "steamid": steamid });
+    if let Some(s) = seed { body["seed"] = serde_json::json!(s); }
+    if let Some(c) = checked_in { body["checked_in"] = serde_json::json!(c); }
+    if let Some(s) = status { body["status"] = serde_json::json!(s); }
+    json_or_err(auth_post(&format!("{}/tourney/entrant_update", SKINSYNC)).send_json(body))
+}
+
+/// Open an external URL in the OS default handler — used for one-click `steam://joinlobby` join. STRICT
+/// allow-list: only our own MvC2 join links (`steam://joinlobby/2634890/<digits>/<digits>`) or `https://`
+/// links, so a malicious tournament payload can't launch an arbitrary protocol/command.
+#[tauri::command]
+pub fn open_external(url: String) -> Result<(), String> {
+    let steam_ok = url.starts_with("steam://joinlobby/2634890/")
+        && url.len() < 96
+        && url["steam://joinlobby/".len()..].chars().all(|c| c.is_ascii_digit() || c == '/');
+    if !(steam_ok || url.starts_with("https://")) {
+        return Err("blocked scheme".into());
+    }
+    #[cfg(windows)]
+    { std::process::Command::new("cmd").args(["/C", "start", "", &url]).spawn().map_err(|e| e.to_string())?; }
+    #[cfg(not(windows))]
+    { std::process::Command::new("xdg-open").arg(&url).spawn().map_err(|e| e.to_string())?; }
+    Ok(())
+}
+
+// ── tournament host nodes (machines that host the lobbies matches are played in) ──────────────────────
+/// TO registers/relabels a host node by SteamID (a machine that will host lobbies). A host may also be a
+/// player. TO-only, server-enforced.
+#[tauri::command]
+pub fn tourney_host_add(id: String, steamid: String, name: Option<String>) -> Result<serde_json::Value, String> {
+    json_or_err(auth_post(&format!("{}/tourney/host_add", SKINSYNC)).send_json(serde_json::json!({ "id": id, "steamid": steamid, "name": name.unwrap_or_default() })))
+}
+
+/// TO removes a host node (and unassigns any match pointing at it). TO-only, server-enforced.
+#[tauri::command]
+pub fn tourney_host_remove(id: String, steamid: String) -> Result<serde_json::Value, String> {
+    json_or_err(auth_post(&format!("{}/tourney/host_remove", SKINSYNC)).send_json(serde_json::json!({ "id": id, "steamid": steamid })))
+}
+
+/// TO assigns match `match_id` to a host (copies that host's live lobby into the match so both players get a
+/// one-click join). `host_steamid` "" = unassign. TO-only, server-enforced.
+#[tauri::command]
+pub fn tourney_host_assign(id: String, match_id: u32, host_steamid: String) -> Result<serde_json::Value, String> {
+    json_or_err(auth_post(&format!("{}/tourney/host_assign", SKINSYNC)).send_json(serde_json::json!({ "id": id, "match_id": match_id, "host_steamid": host_steamid })))
+}
+
+/// The LOCAL host machine posts its live lobby to the server so its host node stays "online" and its assigned
+/// matches keep a current join link. Server resolves the SteamID from the auth token (a machine can only
+/// heartbeat its own host node).
+///
+/// ⚠ PERFORMANCE: `read_my_lobby` is a heavy fingerprint SCAN of the game's committed memory. We only need it
+/// to *find* the lobby (in standby/lobby), never during the actual fight. `scan=false` (passed while the
+/// client sees an active match) SKIPS the scan entirely and just keeps the node online — so nothing burns
+/// CPU/bandwidth next to the game mid-match (matters on Steam Deck / Bazzite). The server keeps the previously
+/// posted lobby id when we send an empty one.
+#[tauri::command]
+/// Read the game's own match-active flag (session+0x1cd): 0 = standby/lobby/menu, 1 = a game is being fought,
+/// -1 = unreadable. Probed live 2026-08-17: correctly 0 on the main menu (unlike the lobby member list, which
+/// the game leaves stale). This is the authoritative "in match" signal — read per-machine, reported by the host.
+pub fn read_session_active() -> i32 {
+    (|| {
+        let pid = find_game_pid()?;
+        let proc = mem::Proc::open_read(pid)?;
+        let exe = game_exe_base(pid);
+        unsafe {
+            let b = read_at(&proc, exe + SESSION_PTR_OFF, 8).filter(|b| b.len() >= 8)?;
+            let sess = u64::from_le_bytes([b[0],b[1],b[2],b[3],b[4],b[5],b[6],b[7]]) as usize;
+            if sess <= 0x10000 { return None; }
+            rpm_u8(&proc, sess + 0x1cd).map(|v| v as i32)
+        }
+    })().unwrap_or(-1)
+}
+
+#[tauri::command]
+pub fn tourney_host_heartbeat(id: String, scan: Option<bool>) -> Result<serde_json::Value, String> {
+    let scanned = scan.unwrap_or(true);
+    let active = read_session_active();   // cheap (a couple derefs) — always report so viewers see "in match"
+    let lob = if scanned { read_my_lobby() } else { not_in_lobby() };
+    let lobby_id = lob.get("lobby_id").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let owner = lob.get("owner_id").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    // the SteamIDs in our lobby — the server uses this to know when both match players are present.
+    let members: Vec<String> = lob.get("members").and_then(|v| v.as_array())
+        .map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect()).unwrap_or_default();
+    // `scanned` tells the server this is an authoritative lobby read: when we scanned and found no lobby, it
+    // clears our stored members (we left / went back to the menu). A non-scan beat leaves the last state intact.
+    let r = json_or_err(auth_post(&format!("{}/tourney/host_heartbeat", SKINSYNC)).send_json(
+        serde_json::json!({ "id": id, "lobby_id": lobby_id, "owner": owner, "members": members, "scanned": scanned, "active": active })))?;
+    Ok(serde_json::json!({ "ok": r.get("ok").and_then(|v| v.as_bool()).unwrap_or(false), "lobby": lob, "active": active }))
+}
+
+/// Read the live per-set WINS tally from the running game (P1 @ sc+0xbc, P2 @ sc+0xbd — the game's own HUD
+/// counter, proven-live; bumps on any game win incl. timeouts, persists between games + in the lobby). The host
+/// UI shows this as the live score and uses it to carry the set result back. `{ok:false}` if the game/tally
+/// isn't readable. Read-only; never panics.
+#[tauri::command]
+pub fn tourney_set_score() -> serde_json::Value {
+    let out = (|| {
+        let pid = find_game_pid()?;
+        let proc = mem::Proc::open_read(pid)?;
+        let exe = game_exe_base(pid);
+        let (p1, p2) = unsafe { read_set_score(&proc, exe) }?;
+        Some(serde_json::json!({ "ok": true, "p1_wins": p1, "p2_wins": p2 }))
+    })();
+    out.unwrap_or_else(|| serde_json::json!({ "ok": false, "p1_wins": 0, "p2_wins": 0 }))
+}
+
+/// One-shot read for the host-plays AUTO-REPORT daemon — all confirmed offsets, read-only, never panics:
+///   - `p1_wins`/`p2_wins`: the set-score tally (`sc+0xbc`/`+0xbd`; `sc = *(exe+0x2edf628)`), P1=EVEN, P2=ODD.
+///   - `side`: `localPlayerNum` (`exe+0xac7230`) mapped 0=P1 / 1=P2 / -1=spectator-or-none.
+///   - `active`: match-active gate (`*(*(exe+0xacd3a8)+0x1cd)`; 0=standby/lobby, 1=in-match; -1 unreadable).
+/// The daemon arms on a fresh `0-0`, then reports once `max(p1,p2) >= FTn` while `side ∈ {0,1}` (see the JS
+/// daemon for the exactly-once-per-set state machine). `{ok:false}` if the game/tally isn't readable.
+/// DIAGNOSTIC (probe only): prove whether we can find + read the game process at all (pid, exe base, and the
+/// 'MZ' PE header at the base — 0x5a4d if reads work). Isolates find_game_pid vs memory-read failures on Linux.
+#[tauri::command]
+pub fn diag_raw() -> serde_json::Value {
+    let pid = find_game_pid();
+    let exe = pid.map(game_exe_base);
+    let (mz, sess_ptr) = match (pid, exe) {
+        (Some(p), Some(e)) => {
+            match mem::Proc::open_read(p) {
+                Some(proc) => unsafe {
+                    let mz = read_at(&proc, e, 2).filter(|b| b.len() >= 2).map(|b| u16::from_le_bytes([b[0], b[1]]));
+                    let sp = read_at(&proc, e + SESSION_PTR_OFF, 8).filter(|b| b.len() >= 8)
+                        .map(|b| format!("0x{:x}", u64::from_le_bytes([b[0],b[1],b[2],b[3],b[4],b[5],b[6],b[7]])));
+                    (mz, sp)
+                },
+                None => (None, None),
+            }
+        }
+        _ => (None, None),
+    };
+    serde_json::json!({
+        "pid": pid, "exe_base": exe.map(|e| format!("0x{:x}", e)),
+        "mz_header": mz.map(|v| format!("0x{:04x}", v)), "reads_ok": mz == Some(0x5a4d),
+        "session_ptr_raw": sess_ptr,
+    })
+}
+
+/// DIAGNOSTIC (probe only): dump each live fighter's palette layout to VERIFY the base-bank offset rule on the
+/// Steam build — per slot: cid, color (cl+0x6), datpal ptr, and the hex of the CLAIMED base bank
+/// (`datpal + color*0x100`, one 32-byte row) plus a sample effect-region row (`datpal + 0x600`). Run it twice
+/// with a DIFFERENT character-select color: if base = color*0x100, the "base row" contents track the color and
+/// the datpal-relative base offset shifts by 0x100. Read-only, never panics.
+#[tauri::command]
+pub fn diag_palette() -> serde_json::Value {
+    let out = (|| {
+        let pid = find_game_pid()?;
+        let proc = mem::Proc::open_read(pid)?;
+        let h = &proc;
+        // The probe is a SEPARATE process from the app, so snapshot().ram_base is empty here — locate the array
+        // ourselves via the deterministic pointer-follow (works only while a round is LIVE/advancing), anchor as
+        // a last resort.
+        let exe = game_exe_base(pid);
+        let base = unsafe { pointer_follow_array(h, exe) }.or_else(|| unsafe { anchor_array(h) })?;
+        let hex = |a: usize, n: usize| -> String {
+            unsafe { read_at(h, a, n) }.map(|b| b.iter().map(|x| format!("{:02x}", x)).collect()).unwrap_or_default()
+        };
+        let mut slots = Vec::new();
+        for i in 0..6 {
+            let cl = base + i * STRIDE;
+            let cid = unsafe { rpm_u8(h, cl + OFF_CHARID) }.unwrap_or(255);
+            if cid > MAX_CID { continue; }
+            let color = unsafe { rpm_u8(h, cl + OFF_COLOR) }.unwrap_or(0) as usize;
+            let dp = unsafe { rpm_u32(h, cl + OFF_DATPAL) }.unwrap_or(0) as usize;
+            if dp == 0 { continue; }
+            // DISTINCT-palette map of the whole 0x2000 block (ALL slots now): group every "real" 32-byte row by
+            // content → n_distinct==1 means the slot is PAINTED uniform; >1 means STOCK (shows base vs effect rows).
+            let mut distinct: Vec<(String, Vec<usize>)> = Vec::new();
+            let mut off = 0usize;
+            while off < 0x2000 {
+                if let Some(r) = unsafe { read_at(h, dp + off, 0x20) } {
+                    if r.len() >= 0x20 && is_real_row(&r) {
+                        let hx: String = r.iter().map(|x| format!("{:02x}", x)).collect();
+                        match distinct.iter_mut().find(|(h, _)| *h == hx) {
+                            Some((_, offs)) => offs.push(off),
+                            None => distinct.push((hx, vec![off])),
+                        }
+                    }
+                }
+                off += 0x20;
+            }
+            let distinct_json: Vec<serde_json::Value> = distinct.iter().map(|(hx, offs)| serde_json::json!({
+                "hex": hx, "count": offs.len(),
+                "offs": offs.iter().take(8).map(|o| format!("0x{:x}", o)).collect::<Vec<_>>(),
+            })).collect();
+            slots.push(serde_json::json!({
+                "slot": i, "side": if i % 2 == 0 { "P1" } else { "P2" }, "cid": cid, "color": color,
+                "datpal": format!("0x{:x}", dp), "n_distinct": distinct.len(),
+                "distinct_palettes_0x2000": distinct_json,
+            }));
+        }
+        Some(serde_json::json!({ "ok": true, "array": format!("0x{:x}", base), "slots": slots }))
+    })();
+    out.unwrap_or_else(|| serde_json::json!({ "ok": false }))
+}
+
+/// DIAGNOSTIC (probe only): WATCH slot-0's palette block for ~3s and report every 32-byte offset whose contents
+/// CHANGED during the window (with the distinct values seen). Run it while triggering an effect (get hit, Storm
+/// lightning, Colossus armor) → the offsets that change are where the effect palette lives (or proves it's not
+/// an in-block palette at all). Read-only, never panics.
+#[tauri::command]
+pub fn diag_palette_watch() -> serde_json::Value {
+    let out = (|| {
+        let pid = find_game_pid()?;
+        let proc = mem::Proc::open_read(pid)?;
+        let h = &proc;
+        let exe = game_exe_base(pid);
+        let base = unsafe { pointer_follow_array(h, exe) }.or_else(|| unsafe { anchor_array(h) })?;
+        let dp = unsafe { rpm_u32(h, base + OFF_DATPAL) }.unwrap_or(0) as usize;   // slot 0
+        if dp == 0 { return None; }
+        let cid = unsafe { rpm_u8(h, base + OFF_CHARID) }.unwrap_or(255);
+        // per-offset set of distinct real-row values across the window
+        let mut seen: std::collections::HashMap<usize, Vec<String>> = std::collections::HashMap::new();
+        for _ in 0..36 {                                   // ~36 samples × ~85ms ≈ 3s
+            if let Some(block) = unsafe { read_at(h, dp, 0x2000) } {
+                let mut off = 0usize;
+                while off + 0x20 <= block.len() {
+                    let r = &block[off..off + 0x20];
+                    if is_real_row(r) {
+                        let hx: String = r.iter().map(|x| format!("{:02x}", x)).collect();
+                        let e = seen.entry(off).or_default();
+                        if !e.contains(&hx) { e.push(hx); }
+                    }
+                    off += 0x20;
+                }
+            }
+            std::thread::sleep(std::time::Duration::from_millis(85));
+        }
+        let mut changed: Vec<serde_json::Value> = seen.iter().filter(|(_, v)| v.len() > 1)
+            .map(|(off, vals)| serde_json::json!({ "off": format!("0x{:x}", off), "n_values": vals.len(),
+                "values": vals.iter().take(4).cloned().collect::<Vec<_>>() })).collect();
+        changed.sort_by_key(|v| v.get("off").and_then(|s| s.as_str()).map(String::from).unwrap_or_default());
+        Some(serde_json::json!({ "ok": true, "cid": cid, "datpal": format!("0x{:x}", dp),
+            "changed_offsets": changed.len(), "changed": changed }))
+    })();
+    out.unwrap_or_else(|| serde_json::json!({ "ok": false }))
+}
+
+/// DIAGNOSTIC (probe only): hex-dump session-relative windows so we can DIFF menu-vs-fighting and find the byte
+/// that actually flips (the real "in match" flag) + the set-score block. Read-only, never panics.
+#[tauri::command]
+pub fn diag_dump() -> serde_json::Value {
+    let out = (|| {
+        let pid = find_game_pid()?;
+        let proc = mem::Proc::open_read(pid)?;
+        let exe = game_exe_base(pid);
+        unsafe {
+            let sb = read_at(&proc, exe + SESSION_PTR_OFF, 8).filter(|b| b.len() >= 8)?;
+            let sess = u64::from_le_bytes([sb[0],sb[1],sb[2],sb[3],sb[4],sb[5],sb[6],sb[7]]) as usize;
+            if sess <= 0x10000 { return None; }
+            let hexwin = |off: usize, len: usize| -> String {
+                read_at(&proc, sess + off, len).map(|b| b.iter().map(|x| format!("{:02x}", x)).collect::<String>()).unwrap_or_default()
+            };
+            // set-score block (sc = *(exe+SET_SCORE_PTR_OFF)) — window around the P1/P2 tally
+            let sc = read_at(&proc, exe + SET_SCORE_PTR_OFF, 8).filter(|b| b.len() >= 8)
+                .map(|b| u64::from_le_bytes([b[0],b[1],b[2],b[3],b[4],b[5],b[6],b[7]]) as usize).filter(|&p| p > 0x10000);
+            let sc_hex = sc.map(|p| read_at(&proc, p + 0xa0, 0x40).map(|b| b.iter().map(|x| format!("{:02x}", x)).collect::<String>()).unwrap_or_default());
+            Some(serde_json::json!({
+                "ok": true, "session_ptr": format!("0x{:x}", sess), "sc_ptr": sc.map(|p| format!("0x{:x}", p)),
+                "win_1c0": hexwin(0x1c0, 0x40),     // 0x1c0..0x200 — covers 0x1cd (the claimed active flag)
+                "win_d0300": hexwin(0xd0300, 0x40), // 0xd0300..0xd0340 — hosted(0xd0320)/pcount(0xd0328) region
+                "sc_a0": sc_hex,                    // set-score block 0xa0..0xe0 — covers 0xbc/0xbd tally
+            }))
+        }
+    })();
+    out.unwrap_or_else(|| serde_json::json!({ "ok": false }))
+}
+
+/// DIAGNOSTIC (probe only): dump the raw online-session flags so we can see which one actually resets when the
+/// user returns to the menu (vs. a stale lobby structure lingering in the heap). Read-only, never panics.
+#[tauri::command]
+pub fn diag_session() -> serde_json::Value {
+    let out = (|| {
+        let pid = find_game_pid()?;
+        let proc = mem::Proc::open_read(pid)?;
+        let exe = game_exe_base(pid);
+        unsafe {
+            let sb = read_at(&proc, exe + SESSION_PTR_OFF, 8).filter(|b| b.len() >= 8)?;
+            let sess = u64::from_le_bytes([sb[0],sb[1],sb[2],sb[3],sb[4],sb[5],sb[6],sb[7]]) as usize;
+            let net = read_at(&proc, sess + LOBBY_NETSESS_OFF, 4).filter(|b| b.len() >= 4)
+                .map(|b| i32::from_le_bytes([b[0],b[1],b[2],b[3]]));
+            let active = rpm_u8(&proc, sess + 0x1cd).map(|v| v as i32);
+            let hosted = rpm_u32(&proc, sess + LOBBY_HOSTED_OFF).map(|v| v as i64);
+            let pcount = rpm_u32(&proc, sess + 0xd0328).map(|v| v as i64);
+            let lp = rpm_u32(&proc, exe + LOCALPLAYER_OFF).map(|v| v as i64);
+            // Candidate NON-STALE "am I in a lobby right now" signal: the live Steam lobby-handle pointer chain
+            // *(*(exe+0x2eb36a0)+0x410). Steam clears the handle on LeaveLobby, so this should read a valid
+            // lobby CSteamID while in a lobby and 0 / invalid on the menu — unlike the stale heap structures.
+            let lobby_handle = read_at(&proc, exe + 0x2eb36a0, 8).filter(|b| b.len() >= 8)
+                .map(|b| u64::from_le_bytes([b[0],b[1],b[2],b[3],b[4],b[5],b[6],b[7]]) as usize)
+                .filter(|&p| p > 0x10000)
+                .and_then(|p| read_at(&proc, p + 0x410, 8).filter(|b| b.len() >= 8))
+                .map(|b| u64::from_le_bytes([b[0],b[1],b[2],b[3],b[4],b[5],b[6],b[7]]));
+            Some(serde_json::json!({
+                "ok": true, "session_ptr": format!("0x{:x}", sess),
+                "netsess_0x1b8": net, "active_0x1cd": active,
+                "hosted_0xd0320": hosted, "pcount_0xd0328": pcount, "localplayer": lp,
+                "lobby_handle": lobby_handle.map(|v| v.to_string()),
+                "lobby_handle_is_lobby": lobby_handle.map(|v| is_lobby(v)),
+            }))
+        }
+    })();
+    out.unwrap_or_else(|| serde_json::json!({ "ok": false }))
+}
+
+#[tauri::command]
+pub fn tourney_match_read() -> serde_json::Value {
+    let out = (|| {
+        let pid = find_game_pid()?;
+        let proc = mem::Proc::open_read(pid)?;
+        let exe = game_exe_base(pid);
+        let (p1, p2) = unsafe { read_set_score(&proc, exe) }?; // ptr-guarded; None if the block isn't live
+        let side = unsafe { read_at(&proc, exe + LOCALPLAYER_OFF, 4) }
+            .filter(|b| b.len() >= 4)
+            .map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+            .map(|v| if v == 0 { 0i32 } else if v == 1 { 1 } else { -1 })
+            .unwrap_or(-1);
+        let active = unsafe {
+            (|| {
+                let b = read_at(&proc, exe + SESSION_PTR_OFF, 8).filter(|b| b.len() >= 8)?;
+                let sess = u64::from_le_bytes([b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7]]) as usize;
+                if sess <= 0x10000 { return None; }
+                rpm_u8(&proc, sess + 0x1cd).map(|v| v as i32)
+            })()
+        }.unwrap_or(-1);
+        Some(serde_json::json!({ "ok": true, "p1_wins": p1, "p2_wins": p2, "side": side, "active": active }))
+    })();
+    out.unwrap_or_else(|| serde_json::json!({ "ok": false, "p1_wins": 0, "p2_wins": 0, "side": -1, "active": -1 }))
+}
+
+/// HOST-authed auto-report: the host machine assigned to a match carries the winner back (determined from the
+/// set-score tally + its own side). The server gates on caller == the match's assigned host and reuses the same
+/// bracket advancer as the TO report. `p1_wins`/`p2_wins` are the tally (stored as the display score).
+#[tauri::command]
+pub fn tourney_lobby_report(id: String, match_id: u32, winner_steamid: String, p1_wins: Option<u32>, p2_wins: Option<u32>) -> Result<serde_json::Value, String> {
+    json_or_err(auth_post(&format!("{}/tourney/lobby/report", SKINSYNC)).send_json(serde_json::json!({
+        "id": id, "match_id": match_id, "winner_steamid": winner_steamid,
+        "p1_wins": p1_wins.unwrap_or(0), "p2_wins": p2_wins.unwrap_or(0)
+    })))
+}
+
+// ── cloud skin vault (private per-user; skins follow you across devices) ─────────────────────────────
+/// Save (or update) a skin in your cloud vault. `id` empty = new; else updates that skin. Returns {id}.
+#[tauri::command]
+pub fn skins_save(cid: String, name: String, palette: Vec<i64>, author: Option<String>, id: Option<String>) -> Result<serde_json::Value, String> {
+    json_or_err(auth_post(&format!("{}/skins/save", SKINSYNC)).send_json(serde_json::json!({
+        "cid": cid, "name": name, "palette": palette, "author": author.unwrap_or_default(), "id": id.unwrap_or_default()
+    })))
+}
+/// List your own cloud vault (the server keys it off your token). Returns {skins:[…]}.
+#[tauri::command]
+pub fn skins_list() -> Result<serde_json::Value, String> {
+    json_or_err(auth_get(&format!("{}/skins/list", SKINSYNC)).call())
+}
+/// Delete a skin from your vault by id.
+#[tauri::command]
+pub fn skins_delete(id: String) -> Result<serde_json::Value, String> {
+    json_or_err(auth_post(&format!("{}/skins/delete", SKINSYNC)).send_json(serde_json::json!({ "id": id })))
+}
+
 /// gs-104 global character tier list (win rate per character across all games). Backend fetch (no CORS/CSP).
 #[tauri::command]
 pub fn tierlist(country: Option<String>, city: Option<String>) -> Result<serde_json::Value, String> {
@@ -2467,9 +3225,9 @@ pub fn fetch_changelog() -> Result<serde_json::Value, String> {
 // exactly what the app saw and did at each moment — no guessing about the ranked flow.
 fn trace(msg: &str) {
     use std::io::Write;
-    let path = "C:\\g\\suite_trace.log";
-    if std::fs::metadata(path).map(|m| m.len() > 1_000_000).unwrap_or(false) { let _ = std::fs::write(path, b""); }
-    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
+    let path = crate::runtime_dir().join("suite_trace.log");
+    if std::fs::metadata(&path).map(|m| m.len() > 1_000_000).unwrap_or(false) { let _ = std::fs::write(&path, b""); }
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
         let t = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs_f64()).unwrap_or(0.0);
         let _ = writeln!(f, "{:.3} {}", t, msg);
     }
@@ -2487,32 +3245,20 @@ fn trace_cycle(prev: &mut String, src: &str, state: &str, roster: &[Found], opp:
     if line != *prev { *prev = line.clone(); trace(&line); }
 }
 
-unsafe fn read_at(h: HANDLE, addr: usize, len: usize) -> Option<Vec<u8>> {
-    let mut buf = vec![0u8; len];
-    let mut read: usize = 0;
-    if ReadProcessMemory(h, addr as *const c_void, buf.as_mut_ptr() as *mut c_void, len, Some(&mut read)).is_ok() && read > 0 {
-        buf.truncate(read);
-        Some(buf)
-    } else { None }
+unsafe fn read_at(h: &mem::Proc, addr: usize, len: usize) -> Option<Vec<u8>> {
+    h.read(addr, len)
 }
 
 fn roster_ids(r: &[Found]) -> Vec<u32> { r.iter().map(|f| f.cid).collect() }
 
 // All sig occurrences in committed readable regions overlapping [lo,hi), via RPM (crash-safe: RPM
 // returns an error on bad memory — it never faults the game or us, unlike in-process pointer reads).
-unsafe fn rpm_occurrences(h: HANDLE, lo: usize, hi: usize) -> Vec<(usize, u32, String)> {
+unsafe fn rpm_occurrences(h: &mem::Proc, lo: usize, hi: usize) -> Vec<(usize, u32, String)> {
     let (sigs, buckets) = sigtab();
     let mut occ = Vec::new();
-    let mut addr = lo;
-    while addr < hi {
-        let mut mbi = MEMORY_BASIC_INFORMATION::default();
-        if VirtualQueryEx(h, Some(addr as *const c_void), &mut mbi, std::mem::size_of::<MEMORY_BASIC_INFORMATION>()) == 0 { break; }
-        let base = mbi.BaseAddress as usize;
-        let size = mbi.RegionSize;
-        if size == 0 { break; }
-        let prot = mbi.Protect.0;
-        let readable = mbi.State == MEM_COMMIT && (prot & PAGE_GUARD.0) == 0 && (prot & PAGE_NOACCESS.0) == 0 && (prot & 0xEE) != 0;
-        if readable && base < hi && base + size > lo {
+    for r in h.regions() {
+        let base = r.base; let size = r.size;
+        if r.readable && base < hi && base + size > lo {
             let a = base.max(lo); let b = (base + size).min(hi);
             if let Some(buf) = read_at(h, a, b - a) {
                 if buf.len() >= 64 {
@@ -2528,8 +3274,6 @@ unsafe fn rpm_occurrences(h: HANDLE, lo: usize, hi: usize) -> Vec<(usize, u32, S
                 }
             }
         }
-        addr = base + size;
-        if addr <= base { break; }
     }
     occ
 }
@@ -2571,15 +3315,9 @@ fn pick_working(mut occ: Vec<(usize, u32, String)>) -> Vec<Found> {
     out
 }
 
-fn game_exe_base(pid: u32) -> usize {
-    unsafe {
-        let snap = match CreateToolhelp32Snapshot(TH32CS_SNAPMODULE, pid) { Ok(s) => s, Err(_) => return 0 };
-        let mut me = MODULEENTRY32W { dwSize: std::mem::size_of::<MODULEENTRY32W>() as u32, ..Default::default() };
-        let base = if Module32FirstW(snap, &mut me).is_ok() { me.modBaseAddr as usize } else { 0 };
-        let _ = CloseHandle(snap);
-        base
-    }
-}
+// Game module base (Windows: Toolhelp Module32; Linux: first exe mapping ~0x140000000). Thin wrapper so
+// every call site (game_exe_base(pid)) is unchanged.
+fn game_exe_base(pid: u32) -> usize { mem::exe_base(pid) }
 
 // ── Anchor persistence ── the heap-located addresses (fighter-array base, opponent session region, roster
 // region) are ASLR'd PER GAME-LAUNCH but stable for the game's whole run. Persisting them means an APP restart
@@ -2587,10 +3325,10 @@ fn game_exe_base(pid: u32) -> usize {
 // WARM pairing scan / the roster re-scan), so a stale file after a game relaunch just falls back to one scan.
 fn save_anchors(pid: u32, ram: usize, opp: Option<(usize, usize)>, work: Option<(usize, usize)>) {
     let (ob, os) = opp.unwrap_or((0, 0)); let (wl, wh) = work.unwrap_or((0, 0));
-    let _ = std::fs::write("C:\\g\\mvc_anchors.txt", format!("{:x} {:x} {:x} {:x} {:x} {:x}", pid, ram, ob, os, wl, wh));
+    let _ = std::fs::write(crate::runtime_dir().join("mvc_anchors.txt"), format!("{:x} {:x} {:x} {:x} {:x} {:x}", pid, ram, ob, os, wl, wh));
 }
 fn load_anchors() -> (u32, usize, Option<(usize, usize)>, Option<(usize, usize)>) {
-    let s = std::fs::read_to_string("C:\\g\\mvc_anchors.txt").unwrap_or_default();
+    let s = std::fs::read_to_string(crate::runtime_dir().join("mvc_anchors.txt")).unwrap_or_default();
     let v: Vec<usize> = s.split_whitespace().filter_map(|x| usize::from_str_radix(x, 16).ok()).collect();
     if v.len() >= 6 {
         (v[0] as u32, v[1], if v[2] != 0 && v[3] != 0 { Some((v[2], v[3])) } else { None },
@@ -2605,7 +3343,8 @@ fn u16le(b: &[u8], o: usize) -> u16 { (b[o] as u16) | ((b[o + 1] as u16) << 8) }
 // base still pointing at an old match), so we must NOT report it as a live match — that is the root of the
 // "detects old matches" bug. Returns 0 if nothing readable.
 fn game_liveness_hash(pid: u32, game: &GameSt) -> u64 {
-    let h = match unsafe { OpenProcess(PROCESS_VM_READ | PROCESS_QUERY_INFORMATION, FALSE, pid) } { Ok(h) => h, Err(_) => return 0 };
+    let proc = match mem::Proc::open_read(pid) { Some(p) => p, None => return 0 };
+    let h = &proc;
     let mut hh = 0xcbf2_9ce4_8422_2325u64;
     let mut any = false;
     for s in &game.slots {
@@ -2616,7 +3355,6 @@ fn game_liveness_hash(pid: u32, game: &GameSt) -> u64 {
             }
         }
     }
-    unsafe { let _ = CloseHandle(h); }
     if any { hh } else { 0 }
 }
 
@@ -2646,7 +3384,7 @@ pub fn start_reader() {
         let mut injected_pid: u32 = 0;   // gs-75: auto-inject the render hook once per game session (pid)
         let mut side_seen: u8 = 0;       // gs-77: localPlayerNum debounce — last side value read
         let mut side_stable: u32 = 0;    // consecutive reads of the SAME side; confirm only when stable (kills the stale-read first-match flash)
-        let mut handle: Option<HANDLE> = None;
+        let mut handle: Option<mem::Proc> = None;   // dropping/reassigning this closes the previous handle
         let mut roster: Vec<Found> = Vec::new();
         let mut stable: u32 = 0;
         let mut work: Option<(usize, usize)> = None; // located team region (cheap-tracked between relocates)
@@ -2683,23 +3421,27 @@ pub fn start_reader() {
             match find_game_pid() {
                 Some(p) => {
                     if p != cur_pid || handle.is_none() {
-                        if let Some(old) = handle.take() { unsafe { let _ = CloseHandle(old); } }
-                        handle = unsafe { OpenProcess(PROCESS_VM_READ | PROCESS_QUERY_INFORMATION, FALSE, p).ok() };
+                        handle = mem::Proc::open_read(p);   // reassignment drops+closes any previous handle
                         cur_pid = p; roster.clear(); work = None; opp = None; opp_addr = None; opp_region = None; in_session = false; opp_lost = None; sess_key.clear(); ram_base = 0; exe_base = game_exe_base(p);
                         // SAME game as our persisted anchors → restore them (skip cold scans on an app restart)
                         if p == anchor_pid { ram_base = anchor_ram; opp_region = anchor_opp; work = anchor_work; }
                         last_good_base = ram_base;   // sticky base = restored anchor (same game) or 0 (new game)
                     }
-                    // gs-75: AUTO-INJECT the render-layer palette hook once for this game session (off-thread so
-                    // it never blocks the reader). The hook self-guards a double-inject, so this is safe.
-                    if p != injected_pid {
+                    // 2026-08-18: the render-layer D3D hook is now OFF by default. Live Paint (out-of-process
+                    // paint_live) is the sole painter and already covers round-start, so the injected DLL is
+                    // redundant — and NOT injecting it removes the only in-process / render-thread component
+                    // (de-risks input/frame timing and drops the per-palette-copy interception). This matches
+                    // Linux/Proton, which never had a hook. Opt back into the old path with METASYNC_RENDER_HOOK=1.
+                    #[cfg(windows)]
+                    if p != injected_pid && std::env::var("METASYNC_RENDER_HOOK").ok().as_deref() == Some("1") {
                         injected_pid = p;
-                        trace(&format!("[inject] game pid {} detected → auto-inject render hook", p));
+                        trace(&format!("[inject] METASYNC_RENDER_HOOK=1 → auto-inject render hook for pid {}", p));
                         std::thread::spawn(move || { let _ = do_inject_hook(); });
                     }
+                    let _ = &mut injected_pid; // silence unused (hook off by default / Linux has none)
                 }
                 None => {
-                    if let Some(old) = handle.take() { unsafe { let _ = CloseHandle(old); } }
+                    handle = None;   // drops+closes the previous handle
                     cur_pid = 0; injected_pid = 0; roster.clear(); work = None; opp = None; opp_addr = None; opp_region = None; in_session = false; opp_lost = None; ss = ScoreState::default();
                     { let mut s = snapshot().lock().unwrap(); s.state = "game_off".into(); s.roster.clear(); s.opponent = None; s.game = None; s.score = (0, 0); s.paint_slots.clear(); }
                     if prev_log != "GAME_OFF" { prev_log = "GAME_OFF".into(); trace("[game_off] game closed → cleared roster/opponent/score"); }
@@ -2707,7 +3449,7 @@ pub fn start_reader() {
                     continue;
                 }
             }
-            let h = match handle { Some(h) => h, None => { std::thread::sleep(std::time::Duration::from_millis(1000)); continue; } };
+            let h = match handle.as_ref() { Some(h) => h, None => { std::thread::sleep(std::time::Duration::from_millis(1000)); continue; } };
 
             // P0.3: guard the ENTIRE per-cycle body (all game-memory reads + parsing + the snapshot publish) so
             // one panicking frame can't kill the reader/detection/painting thread — it logs and continues to the
@@ -3130,6 +3872,97 @@ fn skin_row(colors: &[u32]) -> [u8; 32] {
     }
     row
 }
+// ── PHASE 2: effect-safe skin regeneration (learn from the game's OWN stock palettes) ────────────────
+// A character's DatPal block = 6 base costume groups [0,0x600) + a shared Status-Effects block + Extras
+// (grenade / lightning / hyper-armor / body-tint frames). Some Extras are DERIVED from the base (a copy or a
+// mild luminance/tint of it — e.g. Storm's body-tint frames, used constantly during her attacks); others are
+// INDEPENDENT authored palettes (Cable's grenade, lightning projectile, the fire/electrocute status tints).
+// We must recolor the DERIVED ones to follow the skin (so the body stays skinned through attacks) but PRESERVE
+// the INDEPENDENT ones (or their effects vanish / go wrong). We learn which is which, per character, straight
+// from the game data: while the block is still STOCK (many distinct real rows; a painted block is uniform),
+// match each effect row to the base row it's closest to and store the per-colour delta. A row that isn't close
+// to ANY base row is independent → we never touch it. At paint time: base → skin; derived → skin+delta;
+// independent → left alone. No per-character tables — the recipe IS PalMod's copy/lum/tint recovered from data.
+struct PalRecipe { deltas: Vec<(usize, [[i8; 3]; 16])> }   // (effect-row offset, per-colour 4-bit RGB delta)
+fn pal_recipes() -> &'static Mutex<HashMap<u8, std::sync::Arc<PalRecipe>>> {
+    static R: OnceLock<Mutex<HashMap<u8, std::sync::Arc<PalRecipe>>>> = OnceLock::new();
+    R.get_or_init(|| Mutex::new(HashMap::new()))
+}
+/// Reset learned recipes (call on new match/select alongside clear_row_cache, in case a char's block was
+/// captured mid-paint — the next stock sighting re-learns cleanly).
+pub fn clear_pal_recipes() { pal_recipes().lock().unwrap().clear(); }
+// A 32-byte ARGB4444 row → 16 × [r,g,b] in the native 4-bit channel space (0..15).
+fn decode_row4(b: &[u8]) -> [[u8; 3]; 16] {
+    let mut out = [[0u8; 3]; 16];
+    for i in 0..16 {
+        let v = (b[i * 2] as u16) | ((b[i * 2 + 1] as u16) << 8);
+        out[i] = [((v >> 8) & 0xf) as u8, ((v >> 4) & 0xf) as u8, (v & 0xf) as u8];
+    }
+    out
+}
+const PAL_DERIVE_THRESHOLD: i32 = 150;  // max Σ|Δ| (over 15 colours × 3 chans, each 0..15; max 675) to call a row DERIVED
+const PAL_EFFECT_DISTINCT:  i32 = 20;   // a row Σ|Δ| above this from every base = a genuinely different palette
+/// Classify a STOCK block into a recipe, or None if the block doesn't look stock (too few base palettes, or no
+/// distinct effect palettes → it's already painted/uniform, so it's not a valid reference to learn from).
+fn classify_stock(block: &[u8]) -> Option<PalRecipe> {
+    let mut bases: Vec<[[u8; 3]; 16]> = Vec::new();
+    let mut off = 0usize;
+    while off < PAL_BASE_REGION && off + 32 <= block.len() {
+        let r = &block[off..off + 32];
+        if is_real_row(r) { bases.push(decode_row4(r)); }
+        off += 0x20;
+    }
+    if bases.len() < 3 { return None; }   // a stock block has the 6 costume palettes; too few = not stock
+    if bases.iter().all(|b| b == &bases[0]) { return None; }   // uniform base = already painted, not a stock ref
+    let mut deltas = Vec::new();
+    let mut n_distinct = 0i32;
+    off = PAL_BASE_REGION;
+    while off + 32 <= block.len() {
+        let r = &block[off..off + 32];
+        if is_real_row(r) {
+            let e = decode_row4(r);
+            let mut best = i32::MAX;
+            let mut best_delta = [[0i8; 3]; 16];
+            for b in &bases {
+                let mut sum = 0i32;
+                let mut d = [[0i8; 3]; 16];
+                for i in 1..16 {                     // colour 0 is transparent — skip
+                    for c in 0..3 {
+                        let diff = e[i][c] as i32 - b[i][c] as i32;
+                        sum += diff.abs();
+                        d[i][c] = diff as i8;
+                    }
+                }
+                if sum < best { best = sum; best_delta = d; }
+            }
+            if best > PAL_EFFECT_DISTINCT { n_distinct += 1; }        // genuinely differs from every base
+            if best <= PAL_DERIVE_THRESHOLD { deltas.push((off, best_delta)); }  // close to a base → DERIVED
+        }
+        off += 0x20;
+    }
+    if n_distinct < 3 { return None; }   // no real effect structure → uniform/painted, not a stock reference
+    Some(PalRecipe { deltas })
+}
+fn get_or_learn_recipe(cid: u8, block: &[u8]) -> Option<std::sync::Arc<PalRecipe>> {
+    if let Some(r) = pal_recipes().lock().unwrap().get(&cid) { return Some(r.clone()); }
+    let r = std::sync::Arc::new(classify_stock(block)?);   // None (don't cache) unless the block is genuinely stock
+    pal_recipes().lock().unwrap().insert(cid, r.clone());
+    Some(r)
+}
+// The skin row with a per-colour delta applied (for regenerating a DERIVED effect row from the skin).
+fn skin_row_delta(colors: &[u32], delta: &[[i8; 3]; 16]) -> [u8; 32] {
+    let mut row = [0u8; 32];
+    let cl = |x: i32| x.clamp(0, 15) as u16;
+    for i in 1..16 {
+        let c = colors.get(i).copied().unwrap_or(0);
+        let (r, g, b) = (((c >> 16) & 0xff) as i32 >> 4, ((c >> 8) & 0xff) as i32 >> 4, (c & 0xff) as i32 >> 4);
+        let (dr, dg, db) = (delta[i][0] as i32, delta[i][1] as i32, delta[i][2] as i32);
+        let v: u16 = 0xf000 | (cl(r + dr) << 8) | (cl(g + dg) << 4) | cl(b + db);
+        row[i * 2] = (v & 0xff) as u8; row[i * 2 + 1] = (v >> 8) as u8;
+    }
+    row
+}
+
 #[derive(serde::Deserialize)]
 pub struct PaintTarget { pub datpal: String, pub colors: Vec<u32> }
 
@@ -3159,8 +3992,8 @@ pub fn clear_row_cache() { row_cache().lock().unwrap().clear(); }
 pub fn paint_palettes(targets: Vec<PaintTarget>) -> Result<String, String> {
     if targets.is_empty() { return Ok("0".into()); }
     let pid = find_game_pid().ok_or("game not found")?;
-    let h = unsafe { OpenProcess(PROCESS_VM_READ | PROCESS_VM_WRITE | PROCESS_VM_OPERATION | PROCESS_QUERY_INFORMATION, FALSE, pid) }
-        .map_err(|e| e.to_string())?;
+    let proc = mem::Proc::open_rw(pid).ok_or("could not open game process")?;
+    let h = &proc;
     let mut rows = 0usize;
     let (mut n_applied, mut n_stale, mut n_norows, mut n_notwb) = (0usize, 0usize, 0usize, 0usize);
     for t in &targets {
@@ -3194,12 +4027,9 @@ pub fn paint_palettes(targets: Vec<PaintTarget>) -> Result<String, String> {
             _ => { row_cache().lock().unwrap().remove(&dp); n_stale += 1; continue; }            // stale/invalid → do NOT write
         }
         for off in offsets {
-            let mut w = 0usize;
-            unsafe { let _ = WriteProcessMemory(h, (dp + off) as *const c_void, row.as_ptr() as *const c_void, 32, Some(&mut w)); }
-            if w == 32 { rows += 1; }
+            if h.write(dp + off, &row) { rows += 1; }
         }
     }
-    unsafe { let _ = CloseHandle(h); }
     trace(&format!("[paintpal] tgt={} rows={} applied_skip={} stale_skip={} norows_skip={} notwb_skip={} dps=[{}]",
         targets.len(), rows, n_applied, n_stale, n_norows, n_notwb,
         targets.iter().map(|t| t.datpal.clone()).collect::<Vec<_>>().join(",")));
@@ -3220,14 +4050,14 @@ pub struct LiveTarget { pub cid: u8, pub player: u8, pub colors: Vec<u32> }
 pub fn paint_live(targets: Vec<LiveTarget>) -> Result<String, String> {
     if targets.is_empty() { return Ok("0".into()); }
     let pid = find_game_pid().ok_or("game not found")?;
-    let h = unsafe { OpenProcess(PROCESS_VM_READ | PROCESS_VM_WRITE | PROCESS_VM_OPERATION | PROCESS_QUERY_INFORMATION, FALSE, pid) }
-        .map_err(|e| e.to_string())?;
+    let proc = mem::Proc::open_rw(pid).ok_or("could not open game process")?;
+    let h = &proc;
     // Use the reader's LOCATED array (it tracks the real location via anchor OR find_array — the array is NOT
     // always at the anchor; it relocates per match). Validate it; fall back to the anchor if none published yet.
     let base = {
         let rb = snapshot().lock().unwrap().ram_base;
         if rb != 0 && unsafe { array_valid(h, rb) } { rb }
-        else { match unsafe { anchor_array(h) } { Some(a) => a, None => { unsafe { let _ = CloseHandle(h); } return Ok("0".into()); } } }
+        else { match unsafe { anchor_array(h) } { Some(a) => a, None => { return Ok("0".into()); } } }
     };
     let mut rows = 0usize;
     for i in 0..6 {
@@ -3241,21 +4071,34 @@ pub fn paint_live(targets: Vec<LiveTarget>) -> Result<String, String> {
         let dp = unsafe { rpm_u32(h, cl + OFF_DATPAL) }.unwrap_or(0) as usize;
         if dp == 0 || !is_wb(dp as u32) { continue; }
         let row = skin_row(&tgt.colors);
-        // one 8 KB read of the DatPal block, then write every REAL palette row in-place (no cache — it relocates)
+        // PHASE 2 (2026-08-18): read the FULL block; skin the base costume palettes [0, 0x600); REGENERATE the
+        // DERIVED effect rows (skin + their stock delta, so the body stays skinned through attacks); and LEAVE
+        // the INDEPENDENT effect rows (grenade / lightning / status tints) untouched. The recipe is learned once
+        // per character from the STOCK block (see classify_stock); until we've seen a stock block we fall back to
+        // base-only (still effect-safe — just stock-coloured derived rows).
         if let Some(block) = unsafe { read_at(h, dp, 0x2000) } {
+            let recipe = get_or_learn_recipe(cid, &block);
+            // 1) BASE region → the skin.
             let mut off = 0usize;
-            while off + 32 <= block.len() {
+            while off < PAL_BASE_REGION && off + 32 <= block.len() {
                 let cur = &block[off..off + 32];
                 if is_real_row(cur) && cur != &row[..] {
-                    let mut w = 0usize;
-                    unsafe { let _ = WriteProcessMemory(h, (dp + off) as *const c_void, row.as_ptr() as *const c_void, 32, Some(&mut w)); }
-                    if w == 32 { rows += 1; }
+                    if h.write(dp + off, &row) { rows += 1; }
                 }
                 off += 0x20;
             }
+            // 2) DERIVED effect rows → skin + stock delta. 3) INDEPENDENT rows → not in the recipe → preserved.
+            if let Some(rec) = recipe {
+                for (eoff, delta) in &rec.deltas {
+                    if *eoff + 32 > block.len() { continue; }
+                    let drow = skin_row_delta(&tgt.colors, delta);
+                    if &block[*eoff..*eoff + 32] != &drow[..] {
+                        if h.write(dp + *eoff, &drow) { rows += 1; }
+                    }
+                }
+            }
         }
     }
-    unsafe { let _ = CloseHandle(h); }
     Ok(rows.to_string())
 }
 
@@ -3266,7 +4109,11 @@ pub fn paint_live(targets: Vec<LiveTarget>) -> Result<String, String> {
 // (already hooked)"), so this is safe to call again; the frontend fires it once per session on game-detect.
 // The render-layer palette hook, EMBEDDED in the app binary (the original ship design) so the injector never
 // depends on a loose file on disk. Staged to a stable temp path on inject.
+// Windows-only: the D3D11 render hook is a Windows injection technique. On Linux/Proton the skin path paints
+// palettes directly via process_vm_writev (the APP-SIDE SIGNATURE PAINT below), so no DLL is embedded there.
+#[cfg(windows)]
 const HOOK_DLL: &[u8] = include_bytes!("../../hook/d3dhook.dll");
+#[cfg(windows)]
 fn stage_hook_dll() -> Option<String> {
     let dir = std::env::temp_dir().join("mvc-live-skins");
     let _ = std::fs::create_dir_all(&dir);
@@ -3289,9 +4136,17 @@ fn stage_hook_dll() -> Option<String> {
 
 /// Inject the render-layer palette hook into the running game (once per session). Returns "injected"/"already"
 /// or an error. Reuses the proven CreateRemoteThread+LoadLibraryW loader.
+#[cfg(windows)]
 #[tauri::command]
 pub fn inject_hook() -> Result<String, String> { do_inject_hook() }
 
+// Linux: no D3D hook — skins paint directly via process_vm_writev. The command still exists so the frontend's
+// invoke('inject_hook') resolves; it's a graceful no-op.
+#[cfg(not(windows))]
+#[tauri::command]
+pub fn inject_hook() -> Result<String, String> { Ok("hook not used on Linux — skins paint directly".into()) }
+
+#[cfg(windows)]
 fn do_inject_hook() -> Result<String, String> {
     trace("[inject] do_inject_hook");
     let dll = match stage_hook_dll() { Some(d) => d, None => { trace("[inject] could not stage embedded d3dhook.dll"); return Err("could not stage embedded d3dhook.dll".into()); } };
@@ -3380,7 +4235,7 @@ fn row_from_hex(hex: &str) -> Option<[u8; 32]> {
 /// row found in the fixed working-buffer window. No fighter-array find, no injection. Returns rows painted.
 #[tauri::command]
 pub fn paint_signatures() -> Result<String, String> {
-    let dat = std::fs::read_to_string("C:\\g\\skins.dat").unwrap_or_default();
+    let dat = std::fs::read_to_string(crate::runtime_dir().join("skins.dat")).unwrap_or_default();
     // target: (nibble-key of the sig to match, 32-byte ARGB4444 skin row to write)
     let mut targets: Vec<([u8; 45], [u8; 32])> = Vec::new();
     for line in dat.lines() {
@@ -3392,23 +4247,17 @@ pub fn paint_signatures() -> Result<String, String> {
     }
     if targets.is_empty() { return Ok("0".into()); }
     let pid = find_game_pid().ok_or("game not found")?;
-    let h = unsafe { OpenProcess(PROCESS_VM_READ | PROCESS_VM_WRITE | PROCESS_VM_OPERATION | PROCESS_QUERY_INFORMATION, FALSE, pid) }
-        .map_err(|e| e.to_string())?;
+    let proc = mem::Proc::open_rw(pid).ok_or("could not open game process")?;
+    let h = &proc;
     let mut painted = 0usize;
     let mut pals: Vec<String> = Vec::new();                        // every distinct on-screen palette this scan sees
     let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
     let (lo, hi) = (WB_LO as usize, WB_HI as usize);
-    // Walk only COMMITTED readable regions (VirtualQueryEx) — skip uncommitted gaps instantly instead of
-    // blindly ReadProcessMemory-ing dead address space. Same region-walk rpm_occurrences uses.
-    let mut addr = lo;
-    while addr < hi {
-        let mut mbi = MEMORY_BASIC_INFORMATION::default();
-        if unsafe { VirtualQueryEx(h, Some(addr as *const c_void), &mut mbi, std::mem::size_of::<MEMORY_BASIC_INFORMATION>()) } == 0 { break; }
-        let rbase = mbi.BaseAddress as usize; let rsize = mbi.RegionSize;
-        if rsize == 0 { break; }
-        let prot = mbi.Protect.0;
-        let readable = mbi.State == MEM_COMMIT && (prot & PAGE_GUARD.0) == 0 && (prot & PAGE_NOACCESS.0) == 0 && (prot & 0xEE) != 0;
-        if readable && rbase < hi && rbase + rsize > lo {
+    // Walk only COMMITTED readable regions — skip uncommitted gaps instantly instead of blindly reading dead
+    // address space. Same region walk rpm_occurrences uses.
+    for r in h.regions() {
+        let rbase = r.base; let rsize = r.size;
+        if r.readable && rbase < hi && rbase + rsize > lo {
             let a = rbase.max(lo); let b = (rbase + rsize).min(hi);
             let mut cbase = a;
             while cbase < b {
@@ -3424,9 +4273,7 @@ pub fn paint_signatures() -> Result<String, String> {
                             for (tk, trow) in &targets {
                                 if &key == tk {
                                     if &r != trow {                 // skip if the skin is already applied
-                                        let waddr = cbase + i; let mut w = 0usize;
-                                        unsafe { let _ = WriteProcessMemory(h, waddr as *const c_void, trow.as_ptr() as *const c_void, 32, Some(&mut w)); }
-                                        if w == 32 { painted += 1; }
+                                        if h.write(cbase + i, trow) { painted += 1; }
                                     }
                                     break;
                                 }
@@ -3438,10 +4285,7 @@ pub fn paint_signatures() -> Result<String, String> {
                 cbase += n;
             }
         }
-        addr = rbase + rsize;
-        if addr <= rbase { break; }
     }
-    unsafe { let _ = CloseHandle(h); }
     if !pals.is_empty() { *last_wb_pals().lock().unwrap() = pals; }  // hand these to capture_live (array-free live sigs)
     Ok(painted.to_string())
 }
