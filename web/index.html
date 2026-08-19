@@ -5850,15 +5850,29 @@ async function openProfile(sid,nm){
       const cbtn=rcContestCell(mk,winId,loseId);
       const tag=mcTag(m.confirmed);                                     // ✓ / ? unconfirmed (blank when absent)
       const e=(typeof m.elo==='number')?m.elo:0;
+      // gs-217 GAME MODES: type the row — 🏆 tournament / 🪙 money (server `mode`; ranked = no chip). Typed
+      // games don't move ELO (policy v1), so a 0 delta on them renders as '·' instead of a misleading +0.
+      const modeChip=m.mode==='tourney'?'<span title="Tournament match — on the record, not ranked (no ELO)">🏆</span> '
+                    :(m.mode==='money'?'<span title="Money match — on the record, not ranked (no ELO)">🪙</span> ':'');
+      const eTxt=(modeChip&&!e)?'·':((e>0?'+':'')+e);
       return `<div class="pfx-fight ${m.won?'w':'l'}">
         <b class="fw">${m.won?'W':'L'}</b>
         <div class="fmid"><b class="fo lb-click" data-sid="${esc(m.opp_id||'')}" data-nm="${esc(m.opp||'')}">${esc(m.opp||'?')}</b>
           <span class="ft">${esc(teamStr(m.my_team))} <i>vs</i> ${esc(teamStr(m.opp_team))}</span></div>
-        <span class="ffl">${tag?tag+' ':''}${m.combo?('<svg class="pfx-mic" style="color:var(--gold)"><use href="#ic-target"/></svg>'+m.combo):''}${m.ocv?' <svg class="pfx-mic" style="color:#ff7ae0"><use href="#ic-burst"/></svg>':''}${m.perfect?' <svg class="pfx-mic" style="color:#9fd4ef"><use href="#ic-gem"/></svg>':''}${m.comeback?' <svg class="pfx-mic" style="color:#4ade80"><use href="#ic-loop"/></svg>':''}${cbtn?(' '+cbtn):''}${(m.session||m.session_id)?` <a class="ses-open" data-ses="${esc(String(m.session||m.session_id))}" title="View this set's full breakdown">SET #${esc(String(m.session||m.session_id).slice(-4))}</a>`:''}</span>
-        <b class="fe" style="color:${e>=0?'#4ade80':'#f87171'}">${e>0?'+':''}${e}</b>
+        <span class="ffl">${modeChip}${tag?tag+' ':''}${m.combo?('<svg class="pfx-mic" style="color:var(--gold)"><use href="#ic-target"/></svg>'+m.combo):''}${m.ocv?' <svg class="pfx-mic" style="color:#ff7ae0"><use href="#ic-burst"/></svg>':''}${m.perfect?' <svg class="pfx-mic" style="color:#9fd4ef"><use href="#ic-gem"/></svg>':''}${m.comeback?' <svg class="pfx-mic" style="color:#4ade80"><use href="#ic-loop"/></svg>':''}${cbtn?(' '+cbtn):''}${(m.session||m.session_id)?` <a class="ses-open" data-ses="${esc(String(m.session||m.session_id))}" title="View this set's full breakdown">SET #${esc(String(m.session||m.session_id).slice(-4))}</a>`:''}</span>
+        <b class="fe" style="color:${e>=0?'#4ade80':'#f87171'}">${eTxt}</b>
       </div>`;
     }).join('');
     const isMe = mySteam && String(mySteam.steamid)===String(sid);
+    // gs-217 GAME MODES: per-mode records under the micro-stats. Tournament + money are public (typed,
+    // not ranked — their ranking rules come later); the casual-lobby tally is privacy-gated: the server
+    // only includes `lobby` for the owner or when the owner opted it public. Owner gets the 🔒/🔓 toggle.
+    const _tr=p.tourney||{}, _mr=p.money||{}, _lr=p.lobby;
+    const modeRecs=[
+      (_tr.wins||_tr.losses)?`<span title="Tournament games — on the record, ranking rules coming">🏆 <b>${_tr.wins||0}–${_tr.losses||0}</b> tournament</span>`:'',
+      (_mr.wins||_mr.losses)?`<span title="Money matches — on the record, ranking rules coming">🪙 <b>${_mr.wins||0}–${_mr.losses||0}</b> money</span>`:'',
+      _lr?`<span title="Casual lobby games — never ranked${isMe?'; only you can see this unless you make it public':''}">🎮 <b>${_lr.wins||0}–${_lr.losses||0}</b> lobby${isMe?` <span id="pfLobbyVis" class="pfx-edit" title="Lobby games never rank either way — this only controls whether OTHERS see the tally on your profile.">${_lr.public?'🔓 public':'🔒 private'}</span>`:''}</span>`:''
+    ].filter(Boolean).join('');
     // gs-109: FIGHTER CARD — plate hero (tier-accented), big rating, stat tiles, rail-labeled tables
     const r=rankOf(p.rating||1000,gp), acc=RK_PLATE[r.s]||RK_PLATE.civilian;
     const loc=[p.city,p.region].filter(Boolean).join(', ')||p.country||'';
@@ -5891,6 +5905,7 @@ async function openProfile(sid,nm){
         <span><svg class="pfx-mic" style="color:#9fd4ef"><use href="#ic-gem"/></svg> <b>${p.perfects||0}</b> perfects</span>
         <span><svg class="pfx-mic" style="color:#4ade80"><use href="#ic-loop"/></svg> <b>${p.comebacks||0}</b> comebacks</span>
       </div>
+      ${modeRecs?`<div class="pfx-micro" style="margin-top:4px">${modeRecs}</div>`:''}
       ${badges?`<div style="margin:10px 0 0;display:flex;gap:8px;flex-wrap:wrap">${badges}</div>`:''}
       <span class="rail-lbl" style="display:block;margin:16px 2px 7px">Head-to-head <i style="font-style:normal;letter-spacing:0;text-transform:none;font-weight:400">· tap a card for their profile</i></span>
       ${vs?`<div class="pfx-h2h">${vs}</div>`:'<div class="lb-empty" style="padding:12px">— no games yet</div>'}
@@ -5898,7 +5913,14 @@ async function openProfile(sid,nm){
       ${teams?`<div class="pfx-teamlist">${teams}</div>`:'<div class="lb-empty" style="padding:12px">—</div>'}
       <span class="rail-lbl" style="display:block;margin:16px 2px 7px">Recent fights</span>
       ${recent?`<div class="pfx-fights">${recent}</div>`:'<div class="lb-empty" style="padding:12px">—</div>'}`;
-    if(isMe){ const rb=$('#pfRep'); if(rb) rb.onclick=(e)=>{ e.stopPropagation(); showLocationEditor(sid,p); }; }
+    if(isMe){ const rb=$('#pfRep'); if(rb) rb.onclick=(e)=>{ e.stopPropagation(); showLocationEditor(sid,p); };
+      // gs-217: the lobby-record privacy toggle (owner only). Flips server-side, then updates in place.
+      const lb=$('#pfLobbyVis'); if(lb) lb.onclick=async(ev)=>{ ev.stopPropagation();
+        const want=!(p.lobby&&p.lobby.public);
+        try{ await invoke('lobby_visibility',{public:want}); if(p.lobby) p.lobby.public=want;
+          lb.textContent=want?'🔓 public':'🔒 private';
+          toast(want?'Lobby record is now visible on your public profile':'Lobby record is now private — only you see it');
+        }catch(err){ toast('⚠ could not update: '+err); } }; }
     pfLiveSid=String(sid);                                    // push deltas patch #pfLiveSlot while this card is open
   }catch(e){ body.innerHTML='<div class="lb-empty" id="pfRetry" style="cursor:pointer">PROFILE UNAVAILABLE — tap to retry</div>'; const rb=$('#pfRetry'); if(rb) rb.onclick=()=>openProfile(sid,nm); }
 }

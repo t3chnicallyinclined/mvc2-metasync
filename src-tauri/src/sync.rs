@@ -2494,10 +2494,19 @@ pub fn leaderboard(tab: String, period: Option<String>, limit: Option<u32>, coun
 /// Backend fetch → no CORS/CSP. Returns { found, name, wins, losses, best_combo, teams:[{team,games,wins}], recent:[…] }.
 #[tauri::command]
 pub fn profile(steamid: String) -> Result<serde_json::Value, String> {
-    ureq::get(&format!("{}/profile?steamid={}", SKINSYNC, steamid))
-        .timeout(std::time::Duration::from_secs(6))
+    // auth_get (not bare get): the Bearer token lets the server recognize the OWNER viewing their own
+    // profile and include the privacy-gated `lobby` record block. For anyone else's profile the token
+    // is ignored server-side — same public response as before.
+    auth_get(&format!("{}/profile?steamid={}", SKINSYNC, steamid))
         .call().map_err(|e| e.to_string())?
         .into_json::<serde_json::Value>().map_err(|e| e.to_string())
+}
+
+/// GAME MODES: set whether MY casual-lobby record is publicly visible on my profile (owner always sees
+/// their own; lobby games never rank either way). POST /skinsync/lobby_visibility {public}.
+#[tauri::command]
+pub fn lobby_visibility(public: bool) -> Result<serde_json::Value, String> {
+    json_or_err(auth_post(&format!("{}/lobby_visibility", SKINSYNC)).send_json(serde_json::json!({ "public": public })))
 }
 
 /// One ranked set's breakdown (games + each player's W-L) from the server. Backend fetch (no CORS/CSP).
