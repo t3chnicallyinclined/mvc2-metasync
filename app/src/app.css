@@ -1,0 +1,225 @@
+/* ============================================================================
+   THE ARENA — MetaSync design system tokens (ported from web/index.html).
+   Theme-aware: dark-first on bare :root; light via prefers-color-scheme AND an
+   explicit [data-theme] override wins in both directions (DESIGN-SYSTEM.md).
+   ============================================================================ */
+:root {
+	--bg: #0a0c12;
+	--panel: #12151f;
+	--panel-2: #191d2b;
+	--card: #161a28;
+	--line: #272d3e;
+	--line-soft: #1d2231;
+	--ink: #eef1f8;
+	--dim: #8a91a8;
+	--faint: #5a6178;
+	--gold: #ffb020;
+	--gold-ink: #241700;
+	--gold-soft: rgba(255, 176, 32, 0.13);
+	--p1: #ff6a3d;
+	--p1-soft: rgba(255, 106, 61, 0.13);
+	--p1-line: rgba(255, 106, 61, 0.42);
+	--p2: #3fb1ff;
+	--p2-soft: rgba(63, 177, 255, 0.12);
+	--p2-line: rgba(63, 177, 255, 0.42);
+	--good: #35d07f;
+	--live: #ff3d68;
+	--stream: #8b6dff;
+	--r: 14px;
+	--shadow: 0 18px 50px -22px rgba(0, 0, 0, 0.8);
+	--board: #0d1017;
+	color-scheme: dark;
+}
+@media (prefers-color-scheme: light) {
+	:root:not([data-theme='dark']) {
+		--bg: #e8eaf1;
+		--panel: #fff;
+		--panel-2: #f2f4fa;
+		--card: #fff;
+		--line: #d8dce7;
+		--line-soft: #e6e9f1;
+		--ink: #141826;
+		--dim: #5b6278;
+		--faint: #a2a8bc;
+		--gold: #c98400;
+		--gold-ink: #fff6e6;
+		--gold-soft: rgba(201, 132, 0, 0.12);
+		--p1: #e0491f;
+		--p1-soft: rgba(224, 73, 31, 0.1);
+		--p1-line: rgba(224, 73, 31, 0.4);
+		--p2: #1183d6;
+		--p2-soft: rgba(17, 131, 214, 0.1);
+		--p2-line: rgba(17, 131, 214, 0.4);
+		--good: #12a05a;
+		--live: #e11d54;
+		--board: #dfe2ec;
+		--shadow: 0 18px 44px -24px rgba(30, 40, 70, 0.4);
+		color-scheme: light;
+	}
+}
+:root[data-theme='light'] {
+	--bg: #e8eaf1;
+	--panel: #fff;
+	--panel-2: #f2f4fa;
+	--card: #fff;
+	--line: #d8dce7;
+	--line-soft: #e6e9f1;
+	--ink: #141826;
+	--dim: #5b6278;
+	--faint: #a2a8bc;
+	--gold: #c98400;
+	--gold-ink: #fff6e6;
+	--gold-soft: rgba(201, 132, 0, 0.12);
+	--p1: #e0491f;
+	--p1-soft: rgba(224, 73, 31, 0.1);
+	--p1-line: rgba(224, 73, 31, 0.4);
+	--p2: #1183d6;
+	--p2-soft: rgba(17, 131, 214, 0.1);
+	--p2-line: rgba(17, 131, 214, 0.4);
+	--good: #12a05a;
+	--live: #e11d54;
+	--board: #dfe2ec;
+	--shadow: 0 18px 44px -24px rgba(30, 40, 70, 0.4);
+	color-scheme: light;
+}
+:root[data-theme='dark'] {
+	--bg: #0a0c12;
+	--panel: #12151f;
+	--panel-2: #191d2b;
+	--card: #161a28;
+	--line: #272d3e;
+	--line-soft: #1d2231;
+	--ink: #eef1f8;
+	--dim: #8a91a8;
+	--faint: #5a6178;
+	--gold: #ffb020;
+	--gold-ink: #241700;
+	--gold-soft: rgba(255, 176, 32, 0.13);
+	--good: #35d07f;
+	--live: #ff3d68;
+	--board: #0d1017;
+	--shadow: 0 18px 50px -22px rgba(0, 0, 0, 0.8);
+	color-scheme: dark;
+}
+
+* {
+	box-sizing: border-box;
+}
+html,
+body {
+	margin: 0;
+	overflow-x: hidden;
+}
+body {
+	background: radial-gradient(120% 90% at 50% -10%, color-mix(in srgb, var(--gold) 8%, transparent), transparent 55%),
+		var(--bg);
+	color: var(--ink);
+	font: 14px/1.45 'Segoe UI Variable Text', 'Segoe UI', system-ui, -apple-system, sans-serif;
+	-webkit-font-smoothing: antialiased;
+	min-height: 100vh;
+	font-variant-numeric: tabular-nums;
+}
+h1,
+h2,
+h3 {
+	margin: 0;
+}
+a {
+	color: inherit;
+}
+.mono {
+	font-family: ui-monospace, 'Cascadia Mono', Consolas, monospace;
+	font-variant-numeric: tabular-nums;
+}
+button {
+	font: inherit;
+	color: var(--ink);
+}
+
+/* ── Tier text colors (the .rk-* classes) — used by badges everywhere ── */
+.rk-iron {
+	color: #a7adb8;
+}
+.rk-bronze {
+	color: #d59a5f;
+}
+.rk-silver {
+	color: #cdd7e4;
+}
+.rk-gold {
+	color: #f2c74a;
+}
+.rk-vibranium {
+	color: #b98cff;
+}
+.rk-adamantium {
+	color: #9fd4ef;
+}
+.rk-herald {
+	color: #ffb35c;
+}
+.rk-infinity {
+	color: #ffe9b0;
+}
+.rk-galactus {
+	color: #ff7ae0;
+}
+.rk-civilian {
+	color: var(--dim);
+}
+
+/* ── Shared vocabulary utilities ── */
+.rail {
+	font-size: 10px;
+	font-weight: 700;
+	letter-spacing: 0.16em;
+	text-transform: uppercase;
+	color: var(--faint);
+}
+.pill {
+	display: inline-flex;
+	align-items: center;
+	gap: 5px;
+	font-size: 10px;
+	font-weight: 800;
+	letter-spacing: 0.06em;
+	text-transform: uppercase;
+	padding: 3px 8px;
+	border-radius: 6px;
+	border: 1px solid var(--line);
+}
+.pill.gold {
+	color: var(--gold);
+	background: var(--gold-soft);
+	border-color: color-mix(in srgb, var(--gold) 34%, var(--line));
+}
+.pill.good {
+	color: var(--good);
+	background: color-mix(in srgb, var(--good) 12%, transparent);
+	border-color: color-mix(in srgb, var(--good) 34%, var(--line));
+}
+.pill.live {
+	color: var(--live);
+	background: color-mix(in srgb, var(--live) 12%, transparent);
+	border-color: color-mix(in srgb, var(--live) 34%, var(--line));
+}
+.empty {
+	border: 1px dashed var(--line);
+	border-radius: 12px;
+	padding: 26px 18px;
+	text-align: center;
+	color: var(--dim);
+	font-size: 13px;
+}
+
+/* App layout scaffold */
+.wrap {
+	max-width: 1140px;
+	margin: 0 auto;
+	padding: 8px 18px 40px;
+}
+@media (max-width: 720px) {
+	.wrap {
+		padding: 6px 12px calc(84px + env(safe-area-inset-bottom));
+	}
+}

@@ -1,0 +1,12 @@
+node_modules
+/build
+/.svelte-kit
+/dist
+# .env holds only PUBLIC_API_BASE (non-secret, build-time default) → keep it tracked.
+.env.local
+.env.*.local
+install*.log
+.DS_Store
+Thumbs.db
+*.local
+dev-dist

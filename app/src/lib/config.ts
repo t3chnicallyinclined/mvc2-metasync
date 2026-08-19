@@ -1,0 +1,10 @@
+import { PUBLIC_API_BASE } from '$env/static/public';
+
+// Origin for the live server bus. '' = same-origin (prod at nobd.net/app; dev via Vite proxy).
+// Overridable at build time with PUBLIC_API_BASE (e.g. https://nobd.net) — see vite.config.ts.
+export const API_BASE: string = PUBLIC_API_BASE || '';
+
+/** Build a URL against the skinsync API base. */
+export function api(path: string): string {
+	return `${API_BASE}${path.startsWith('/') ? path : `/${path}`}`;
+}
