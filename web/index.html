@@ -766,6 +766,22 @@ try{document.documentElement.setAttribute('data-theme', localStorage.getItem('me
     color:var(--good); border:1px solid color-mix(in srgb,var(--good) 40%,transparent); background:color-mix(in srgb,var(--good) 10%,transparent)}
   .tp-pill.stake{color:var(--gold); border-color:color-mix(in srgb,var(--gold) 45%,transparent); background:var(--gold-soft)}
   .tny-stakechip{color:var(--gold); font-weight:800; font-variant-numeric:tabular-nums}
+  /* gs-209 create form — section rails, preset cuts, locked stake, accent swatches */
+  .tf-rail{font-size:10px; font-weight:700; letter-spacing:.16em; text-transform:uppercase; color:var(--faint);
+    margin:16px 0 10px; padding-bottom:5px; border-bottom:1px solid var(--line)}
+  .tny-form .tf-rail:first-child{margin-top:0}
+  .tf-presets{display:flex; gap:6px; flex-wrap:wrap; margin-bottom:12px}
+  .tf-preset{transform:skewX(-12deg); border:1px solid var(--line); background:var(--panel-2,var(--card)); color:var(--dim);
+    border-radius:6px; padding:6px 13px; font-size:11.5px; font-weight:800; cursor:pointer}
+  .tf-preset>span{display:inline-block; transform:skewX(12deg); text-align:left}
+  .tf-preset small{display:block; font-weight:600; font-size:9px; letter-spacing:.08em; opacity:.75; text-transform:uppercase}
+  .tf-preset.on{background:linear-gradient(180deg,#ffe084,#c98f0e); color:var(--gold-ink,#241700); border-color:transparent; font-style:italic}
+  .tf-locked input{border-style:dashed; color:var(--dim); background:var(--card)}
+  .tf-micro{font-size:10.5px; color:var(--faint); line-height:1.5; margin-top:3px}
+  .tf-micro b{color:var(--dim)}
+  .tf-swatches{display:flex; gap:8px; align-items:center; margin-top:4px}
+  .tf-sw{width:24px; height:24px; border-radius:8px; border:2px solid transparent; cursor:pointer; display:inline-block}
+  .tf-sw.on{border-color:var(--ink); box-shadow:0 0 0 2px var(--card), 0 0 12px -2px currentColor}
   .tny-ent-nm{flex:1}
   .tny-ent-x{margin-left:auto; background:transparent; border:0; color:var(--faint); cursor:pointer; font-size:13px; padding:2px 6px; border-radius:6px; line-height:1}
   .tny-ent-x:hover{color:#e0574f; background:color-mix(in srgb,#e0574f 14%,transparent)}
@@ -3556,37 +3572,68 @@ function renderCreate(){
   tId('tnyName').textContent='Create tournament'; tId('tnyStatus').style.display='none'; tId('tnyRole').textContent='';
   tId('tnyControls').innerHTML='<button class="tny-btn ghost" data-act="back">← Back</button>';
   tnyShow('create');
+  // gs-209: start.gg-grade create — section rails, ruleset preset cuts, locked stake field (the tab's ONLY
+  // coming-soon copy), accent swatches (slivers-only rule), discord. Every original tf- id kept (submit keys on them).
+  const sw=(k,c)=>'<span class="tf-sw'+((TNY._accent||'gold')===k?' on':'')+'" data-acc="'+k+'" style="background:'+c+';color:'+c+'" title="'+k+'"></span>';
   tId('tnyCreate').innerHTML=
    '<div class="tny-form">'+
+     '<div class="tf-rail">The basics</div>'+
      '<div class="fld"><label>Tournament name</label><input id="tfName" maxlength="80" placeholder="NOBD Weekly #12"></div>'+
      '<div class="frow">'+
        '<div class="fld"><label>Format</label><select id="tfFormat"><option value="double">Double elimination</option><option value="single">Single elimination</option></select></div>'+
        '<div class="fld chk"><input type="checkbox" id="tfOnline" checked><label for="tfOnline" style="text-transform:none;letter-spacing:0">Online</label></div>'+
-     '</div>'+
-     '<div class="frow">'+
        '<div class="fld"><label>Country (ISO-2)</label><input id="tfCc" maxlength="2" placeholder="US" style="text-transform:uppercase"></div>'+
        '<div class="fld"><label>City (optional)</label><input id="tfCity" maxlength="56" placeholder="Los Angeles"></div>'+
        '<div class="fld"><label>Starts</label><input type="datetime-local" id="tfStarts"></div>'+
      '</div>'+
+     '<div class="tf-rail">Format &amp; rules</div>'+
+     '<div class="tf-presets" id="tfPresets"></div>'+
      '<div class="frow">'+
        '<div class="fld"><label>FT winners</label><input type="number" id="tfFtW" value="2" min="1" max="9"></div>'+
        '<div class="fld"><label>FT losers</label><input type="number" id="tfFtL" value="2" min="1" max="9"></div>'+
        '<div class="fld"><label>FT grands</label><input type="number" id="tfFtG" value="3" min="1" max="9"></div>'+
-       '<div class="fld"><label>Entrant cap (0 = none)</label><input type="number" id="tfCap" value="0" min="0" max="256"></div>'+
      '</div>'+
+     '<div class="fld"><label>Rules <button type="button" class="tny-btn ghost" data-act="rules-template" style="padding:3px 9px;font-size:11px;margin-left:8px">Reset to MvC2 standard</button></label><textarea id="tfRules" maxlength="8000"></textarea></div>'+
+     '<div class="tf-rail">Entry</div>'+
+     '<div class="frow">'+
+       '<div class="fld"><label>Entrant cap (0 = none)</label><input type="number" id="tfCap" value="0" min="0" max="256">'+
+         '<div class="tf-micro">beyond the cap, players <b>waitlist automatically</b></div></div>'+
+       '<div class="fld tf-locked"><label>Entry stake</label><input id="tfStake" value="◈ FREE — $0  🔒" disabled>'+
+         '<div class="tf-micro">Staked entry is coming: <b>PayPal entry, pot = stake × entrants, the champion takes it.</b> Events are free until then.</div></div>'+
+     '</div>'+
+     '<div class="tf-rail">Presentation</div>'+
      '<div class="fld"><label>Banner image <span style="color:var(--faint);text-transform:none;letter-spacing:0">— any image, auto-fit to 3:1 (≈1200×400 looks best)</span></label>'+
        '<div class="tny-banner-pick"><div class="tny-banner-prev" id="tfBannerPrev"></div>'+
        '<div><button type="button" class="tny-btn" data-act="pick-banner">Browse image…</button> <span id="tfBannerLbl" class="tny-note" style="display:inline;margin-left:6px"></span></div>'+
        '<input type="file" id="tfBannerFile" accept="image/png,image/jpeg,image/webp,image/gif" style="display:none"></div></div>'+
+     '<div class="frow">'+
+       '<div class="fld"><label>Accent <span style="color:var(--faint);text-transform:none;letter-spacing:0">— card edge · seam · underline</span></label>'+
+         '<div class="tf-swatches" id="tfAccent">'+sw('gold','var(--gold)')+sw('crimson','#ff5a6e')+sw('cobalt','#4aa8ff')+sw('vibranium','#b98cff')+sw('adamantium','#9fd4ef')+sw('emerald','#3ddc84')+'</div>'+
+         '<div class="tf-micro">slivers only — player plates stay tier-colored</div></div>'+
+       '<div class="fld"><label>Stream URL (optional)</label><input id="tfStream" maxlength="300" placeholder="https://twitch.tv/…"></div>'+
+       '<div class="fld"><label>Discord (optional)</label><input id="tfDiscord" maxlength="300" placeholder="https://discord.gg/…"></div>'+
+     '</div>'+
      '<div class="fld"><label>How matches are hosted</label><select id="tfHostMode"><option value="player">Players host their own matches — casual / online (recommended)</option><option value="stationed">I run designated host stations — matches auto-assign to open lobbies</option></select></div>'+
-     '<div class="fld"><label>Stream URL (optional)</label><input id="tfStream" maxlength="300" placeholder="https://twitch.tv/…"></div>'+
-     '<div class="fld"><label>Rules <button type="button" class="tny-btn ghost" data-act="rules-template" style="padding:3px 9px;font-size:11px;margin-left:8px">Reset to MvC2 standard</button></label><textarea id="tfRules" maxlength="8000"></textarea></div>'+
      '<div class="frow" style="justify-content:flex-end"><button class="tny-btn ghost" data-act="back">Cancel</button><button class="tny-btn gold" data-act="create-submit">Create tournament</button></div>'+
      '<div class="tny-note" id="tfErr" style="display:none;color:var(--live)"></div>'+
    '</div>';
-  TNY.bannerData=null;
+  TNY.bannerData=null; TNY._preset='std'; TNY._accent=TNY._accent||'gold';
   const rt=tId('tfRules'); if(rt && !rt.value) rt.value=MVC2_RULES;                 // pre-fill the editable MvC2 template
   const fi=tId('tfBannerFile'); if(fi) fi.onchange=e=>tnyBannerChosen(e.target.files&&e.target.files[0]);
+  tfPaintPresets();
+  // manual FT/rules edits flip the preset to CUSTOM (renderCreate is one-shot — direct binding is safe here)
+  ['tfFtW','tfFtL','tfFtG','tfRules'].forEach(idn=>{ const el=tId(idn); if(el) el.addEventListener('input',()=>{ if(TNY._preset!=='custom'){ TNY._preset='custom'; tfPaintPresets(); } }); });
+  const ac=tId('tfAccent'); if(ac) ac.addEventListener('click',e=>{ const s=e.target.closest('.tf-sw'); if(!s) return; TNY._accent=s.dataset.acc; [...ac.querySelectorAll('.tf-sw')].forEach(x=>x.classList.toggle('on',x===s)); });
+}
+// gs-209: ruleset presets — one active cut; picking one fills the FT fields + resets rules to the MvC2 template
+const TF_PRESETS={ std:{n:'MVC2 STANDARD',d:'FT2 · FT2 · FT3 GF',v:[2,2,3]}, quick:{n:'QUICK WEEKLY',d:'FT1 · FT1 · FT2 GF',v:[1,1,2]}, marathon:{n:'MARATHON',d:'FT3 · FT3 · FT5 GF',v:[3,3,5]}, custom:{n:'CUSTOM',d:'edit anything ↓',v:null} };
+function tfPaintPresets(){
+  const el=tId('tfPresets'); if(!el) return;
+  el.innerHTML=Object.keys(TF_PRESETS).map(k=>{ const p=TF_PRESETS[k];
+    return '<button type="button" class="tf-preset'+(TNY._preset===k?' on':'')+'" data-preset="'+k+'"><span>'+p.n+'<small>'+p.d+'</small></span></button>'; }).join('');
+  el.onclick=e=>{ const b=e.target.closest('.tf-preset'); if(!b) return; const k=b.dataset.preset, p=TF_PRESETS[k]; TNY._preset=k;
+    if(p.v){ const set=(idn,val)=>{ const f=tId(idn); if(f) f.value=val; }; set('tfFtW',p.v[0]); set('tfFtL',p.v[1]); set('tfFtG',p.v[2]); const rt=tId('tfRules'); if(rt) rt.value=MVC2_RULES; }
+    tfPaintPresets(); };
 }
 async function tnyCreateSubmit(){
   if(TNY.busy) return; TNY.busy=true;
@@ -3595,12 +3642,16 @@ async function tnyCreateSubmit(){
   const body={ name:v('tfName').trim(), format:v('tfFormat'), online:tId('tfOnline').checked,
     cc:v('tfCc').trim().toUpperCase(), city:v('tfCity').trim(), starts_ms,
     ft_winners:+v('tfFtW')||2, ft_losers:+v('tfFtL')||2, ft_grands:+v('tfFtG')||3, cap:+v('tfCap')||0,
-    banner_url:(TNY.bannerData||''), stream_url:v('tfStream').trim(), rules_md:v('tfRules'), host_mode:v('tfHostMode')||'player' };
+    banner_url:(TNY.bannerData||''), stream_url:v('tfStream').trim(), discord_url:v('tfDiscord').trim(),
+    accent:(TNY._accent||'gold'), rules_md:v('tfRules'), host_mode:v('tfHostMode')||'player' };
   const err=tId('tfErr'); if(err) err.style.display='none';
   if(!body.name){ if(err){ err.style.display=''; err.textContent='Name is required.'; } TNY.busy=false; return; }
   try{
     const r=await invoke('tourney_create',{body});
-    if(r&&r.ok&&r.id){ toast('🏟️ Tournament created'); tnyOpen(r.id); }
+    if(r&&r.ok&&r.id){
+      // gs-209: an older server may drop unknown create keys — the update path (admin-links proven) guarantees discord persists
+      if(body.discord_url){ try{ await invoke('tourney_update',{body:{id:r.id, stream_url:body.stream_url, discord_url:body.discord_url}}); }catch(_){} }
+      toast('🏟️ Tournament created'); tnyOpen(r.id); }
     else { if(err){ err.style.display=''; err.textContent=(r&&r.error)||'Could not create (are you signed in?).'; } }
   }catch(e){ if(err){ err.style.display=''; err.textContent='Could not create — '+e; } }
   TNY.busy=false;
