@@ -794,26 +794,29 @@ try{document.documentElement.setAttribute('data-theme', localStorage.getItem('me
   #lbSearch::placeholder{color:var(--faint);}
   #lbSearch:focus{outline:none; border-color:var(--gold-soft);}
 
-  /* ── gs-200: THE MARVEL LADDER MASTHEAD — arena surface, your plate left, channel rail fused below ── */
+  /* ── gs-202: COMPACT masthead — one slim strip; the PODIUM is the page's single big display ── */
   .masthead{position:relative; background:#0f1219; border:1px solid var(--line); border-radius:14px; overflow:hidden; margin-bottom:12px;}
   .masthead::before{content:""; position:absolute; inset:0; background:linear-gradient(90deg,rgba(214,31,60,.09),transparent 42%),linear-gradient(270deg,rgba(74,168,255,.09),transparent 42%); pointer-events:none;}
-  .mast-ghost{position:absolute; right:34px; top:12px; transform:skewX(-8deg); font-size:100px; line-height:1; font-weight:900; font-style:italic; letter-spacing:-.04em; color:var(--ink); opacity:.04; pointer-events:none; user-select:none; white-space:nowrap;}
-  .mast-body{position:relative; display:flex; align-items:center; gap:24px; padding:14px 16px 12px;}
-  .mast-plate{transform:skewX(-6deg); background:linear-gradient(120deg,color-mix(in srgb,var(--pa,var(--line)) 14%,transparent),transparent 70%),var(--panel-2); border:1px solid color-mix(in srgb,var(--gold) 35%,var(--line)); border-left:4px solid var(--pa,var(--line)); border-radius:13px; padding:10px 18px; min-width:300px; box-shadow:0 6px 22px rgba(0,0,0,.4); cursor:pointer; flex:none;}
+  .mast-ghost{position:absolute; right:26px; top:50%; transform:translateY(-58%) skewX(-8deg); font-size:54px; line-height:1; font-weight:900; font-style:italic; letter-spacing:-.04em; color:var(--ink); opacity:.04; pointer-events:none; user-select:none; white-space:nowrap;}
+  .mast-body{position:relative; display:flex; align-items:center; gap:18px; padding:8px 14px;}
+  .mast-plate{transform:skewX(-6deg); background:linear-gradient(120deg,color-mix(in srgb,var(--pa,var(--line)) 14%,transparent),transparent 70%),var(--panel-2); border:1px solid color-mix(in srgb,var(--gold) 35%,var(--line)); border-left:3px solid var(--pa,var(--line)); border-radius:11px; padding:6px 14px; box-shadow:0 4px 16px rgba(0,0,0,.35); cursor:pointer; flex:none;}
   .mast-plate:hover{border-color:var(--gold);}
-  .mp-in{transform:skewX(6deg); display:flex; align-items:center; gap:12px;}
-  .mp-col{display:flex; flex-direction:column; gap:2px; min-width:0;}
-  .mp-top{display:flex; align-items:baseline; gap:8px;}
-  .mp-top>b:first-child{font-size:13.5px; font-weight:900;}
-  .mp-elo{font-size:24px; font-weight:900; font-style:italic;}
-  .mp-line{font-size:11px; color:var(--dim);}
-  .mast-plate .pf-rankbar{margin:2px 0 0; max-width:220px; font-size:11px;}
-  .mast-plate .pf-rankbar .bar{margin-top:3px; height:5px;}
-  .mast-id{display:flex; flex-direction:column; gap:3px; position:relative; min-width:0;}
-  .mast-title{font-size:27px; font-weight:900; font-style:italic; letter-spacing:-.01em; line-height:1.05; white-space:nowrap;}
-  .mast-line{display:block; width:110px; height:3px; border-radius:2px; background:var(--lb-acc,var(--gold));}
-  .mast-desc{font-size:11.5px; color:var(--faint); max-width:430px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
-  .masthead .lb-period{margin:0 0 0 auto; position:relative; align-self:flex-start;}
+  .mp-in{transform:skewX(6deg); display:flex; align-items:center; gap:10px;}
+  .mp-in .rkb{width:26px; height:26px;}
+  .mp-col{display:flex; flex-direction:column; gap:1px; min-width:0;}
+  .mp-top{display:flex; align-items:baseline; gap:7px;}
+  .mp-top>b:first-child{font-size:11.5px; font-weight:900;}
+  .mp-elo{font-size:17px; font-weight:900; font-style:italic;}
+  .mp-line{display:none;}                                    /* record/peak live in your profile — one click away */
+  .mast-plate .pf-rankbar{margin:1px 0 0; max-width:170px; font-size:10px;}
+  .mast-plate .pf-rankbar .bar{margin-top:2px; height:4px;}
+  .mast-plate .pf-rankbar span{white-space:nowrap;}
+  .mast-id{display:flex; align-items:baseline; gap:10px; position:relative; min-width:0;}
+  .mast-title{font-size:18px; font-weight:900; font-style:italic; letter-spacing:-.01em; line-height:1; white-space:nowrap; border-bottom:3px solid var(--lb-acc,var(--gold)); padding-bottom:2px;}
+  .mast-line{display:none;}
+  .mast-desc{display:none;}
+  .masthead .rail-lbl{white-space:nowrap;}
+  .masthead .lb-period{margin:0 0 0 auto; position:relative; align-self:center;}
   .mast-rail{position:relative; display:flex; align-items:center; padding:6px 10px; border-top:1px solid #1c2130; background:rgba(13,16,23,.6);}
   .mast-rail #lbTabs{display:flex !important; flex-wrap:nowrap; gap:3px; flex:1; min-width:0; border-left:0; padding-left:0; overflow:hidden;}
   /* gs-201: ONE row, always — inactive channels collapse to their icon (name on hover), like the page tabs */
@@ -844,6 +847,8 @@ try{document.documentElement.setAttribute('data-theme', localStorage.getItem('me
   #p-regions .bd-sub{font-style:normal; color:var(--dim); font-weight:500; font-size:11.5px; margin-left:4px;}
   #p-regions .bd-num{font-variant-numeric:tabular-nums; text-align:right; font-size:13px; font-weight:700;}
   #p-regions .bd-num.dim{color:var(--dim); font-size:12px; font-weight:500;}
+  #p-regions .board.pl .bd-head,#p-regions .board.pl .bd-row{grid-template-columns:40px minmax(0,1fr) 128px 80px 92px;}
+  #p-regions .bd-tier{display:flex; align-items:center; gap:6px; font-weight:800; font-size:12.5px;}
   .reg-hero{display:flex; align-items:center; gap:14px; transform:skewX(-6deg); background:linear-gradient(120deg,var(--gold-soft),transparent 65%),var(--panel-2); border:1px solid var(--line); border-left:4px solid var(--gold); border-radius:13px; padding:12px 18px; margin:2px 2px 4px;}
   .reg-hero>*{transform:skewX(6deg);}
   .reg-flag{font-size:34px; line-height:1;}
@@ -1454,23 +1459,37 @@ try{document.documentElement.setAttribute('data-theme', localStorage.getItem('me
   #p-regions .lb-list{display:flex; flex-direction:column; gap:7px;}
   </style>
   <section class="panel" id="p-regions">
-    <div class="lb-tabs" id="regSort">
-      <button id="regBackRanks" title="Back to the player rankings" style="border-style:dashed">← 🏆 Rankings</button>
-      <button data-rs="wins" class="on">🏅 Wins</button>
-      <button data-rs="players">👥 Players</button>
-      <button data-rs="winrate">📈 Win %</button>
+    <!-- gs-202: Regions wears the same arena chrome — compact masthead strip, cuts in the rail -->
+    <div class="masthead">
+      <b class="mast-ghost">WORLD</b>
+      <div class="mast-body">
+        <div class="mast-id"><span class="rail-lbl">Season Zero · Open Beta</span><b class="mast-title" style="border-bottom-color:#4aa8ff">REGIONS</b></div>
+        <div class="lb-period" id="regTabs" style="margin:0 0 0 14px">
+          <button data-rl="city" class="on">🏙️ Cities</button>
+          <button data-rl="country">🌎 Countries</button>
+        </div>
+        <div class="lb-period" id="regSort" style="margin-left:auto">
+          <button data-rs="wins" class="on">🏅 Wins</button>
+          <button data-rs="players">👥 Players</button>
+          <button data-rs="winrate">📈 Win %</button>
+          <button id="regBackRanks" title="Back to the player rankings">← 🏆</button>
+        </div>
+      </div>
     </div>
-    <div class="lb-period" id="regTabs">
-      <button data-rl="city" class="on">🏙️ Cities</button>
-      <button data-rl="country">🌎 Countries</button>
-    </div>
-    <div id="regExplain" class="lb-explain"></div>
+    <div id="regExplain" class="lb-explain" style="display:none"></div>
     <div id="regBody"><div class="lb-empty">LOADING…</div></div>
   </section>
 
   <section class="panel" id="p-library">
-    <div style="display:flex; justify-content:flex-end; margin:0 0 10px">
-      <button class="target" id="romChip" title="Your Steam install / game_50.arc — required for Bake"><span class="tdot" id="romDot"></span>ROM: <b id="romChipTxt">not set</b></button>
+    <!-- gs-202: Library wears the arena strip too -->
+    <div class="masthead">
+      <b class="mast-ghost">LOCKER</b>
+      <div class="mast-body">
+        <div class="mast-id"><span class="rail-lbl">Your skins · loadouts · vault</span><b class="mast-title" style="border-bottom-color:#b98cff">LIBRARY</b></div>
+        <div style="margin-left:auto; position:relative">
+          <button class="target" id="romChip" title="Your Steam install / game_50.arc — required for Bake"><span class="tdot" id="romDot"></span>ROM: <b id="romChipTxt">not set</b></button>
+        </div>
+      </div>
     </div>
     <div class="libbar">
       <div class="search"><span>🔍</span><input placeholder="Search 56 characters…" id="libSearch"></div>
@@ -5207,7 +5226,11 @@ async function renderLeaderboard(tab){
     // pinned YOU row: you're below the top 50 (or unplaced) — show your own line under the board
     const meBox=$('#lbMeRow');
     if(meBox){ try{ const p=await invoke('profile',{steamid:mine});
-      if(p&&p.found){ p.steamid=mine; p.stat=(lbTab==='rating')?(p.rating||1000):0; meBox.innerHTML=rowH(p,null); } else meBox.remove();
+      if(p&&p.found){ p.steamid=mine;
+        // gs-202: your pinned row shows YOUR real stat for the active board (was hardcoded 0 off-rating)
+        const PF_STAT={rating:x=>x.rating||1000,wins:x=>x.wins||0,streak:x=>x.best_streak||0,ocv:x=>x.ocvs||0,perfect:x=>x.perfects||0,comeback:x=>x.comebacks||0,combo:x=>x.best_combo||0,deficit:x=>x.best_comeback||0};
+        p.stat=(PF_STAT[lbTab]||PF_STAT.rating)(p);
+        meBox.innerHTML=rowH(p,null); } else meBox.remove();
     }catch(e){ try{ meBox.remove(); }catch(_){} } }
   }catch(e){ /* keep last-good: a transient fetch blip (e.g. a server restart, or a live-refresh coinciding with one) must NOT wipe a board that's already showing — only surface UNAVAILABLE on a cold load with nothing on screen. */
     if(!list.querySelector('.board')&&!list.querySelector('.podium')) list.innerHTML='<div class="lb-empty">LEADERBOARD UNAVAILABLE</div>'; }
@@ -5444,10 +5467,15 @@ async function openRegion(cc, city, nm){
     // gs-109: plated region hero — aggregates computed from the player list; roster keeps the proven row markup
     const agW=players.reduce((a,p)=>a+(p.wins||0),0), agL=players.reduce((a,p)=>a+(p.losses||0),0);
     const agG=agW+agL, agPct=agG?Math.round(100*agW/agG):0;
-    const plHtml = players.length ? '<div class="lb-list">'+players.map((p,i)=>`<div class="lb-row ${i===0?'r1':''}">
-      <div class="lb-rank">${i===0?'👑':(i+1)}</div>
-      <div class="lb-name lb-click" data-sid="${esc(p.steamid)}" data-nm="${esc(p.name||'Player')}">${rkBadge(p.rating,(p.wins||0)+(p.losses||0),15)}${p.cc?flagEmoji(p.cc)+' ':''}${esc(p.name||'Player')}</div>
-      <div class="lb-wl">${p.wins||0}W · ${p.losses||0}L</div><div class="lb-stat">${p.rating||1000} ELO</div></div>`).join('')+'</div>' : '<div class="lb-empty">no players here yet</div>';
+    // gs-202: the drill roster is a real board too — same columnar language as everything else
+    const plHtml = players.length ? '<div class="board pl"><div class="bd-head"><span style="text-align:center">#</span><span>Player</span><span>Tier</span><span style="text-align:right">Rating</span><span style="text-align:right">W – L</span></div>'+players.map((p,i)=>{
+      const gm=(p.wins||0)+(p.losses||0), r=rankOf(p.rating,gm);
+      return `<div class="bd-row${i===0?' r1':''}">
+      <div class="bd-rank">${i===0?'👑':(i+1)}</div>
+      <div class="bd-name lb-click" data-sid="${esc(p.steamid)}" data-nm="${esc(p.name||'Player')}">${avatarImg(p.avatar,20)}${p.cc?flagEmoji(p.cc)+' ':''}<span>${esc(p.name||'Player')}</span></div>
+      <div class="bd-tier">${rkBadgeR(r,p.rating,16)}<span class="rk-${r.s}">${r.n}</span></div>
+      <div class="bd-num">${p.rating||1000}</div>
+      <div class="bd-num dim">${p.wins||0} – ${p.losses||0}</div></div>`;}).join('')+'</div>' : '<div class="lb-empty">no players here yet</div>';
     const tlHtml = teams.length ? `<table class="pf-tbl"><tr><th>Team</th><th>GP</th><th>W</th><th>WR</th></tr>`+teams.map(t=>{const cids=String(t.team).split(',').map(Number);return `<tr><td>${esc(teamStr(cids))}</td><td>${t.games}</td><td>${t.wins}</td><td>${t.winrate}%</td></tr>`}).join('')+'</table>' : '<div class="lb-empty" style="padding:8px">not enough games yet</div>';
     body.innerHTML=`<button id="regBack" style="margin-bottom:10px;padding:6px 12px;border-radius:8px;border:1px solid var(--line);background:transparent;color:var(--dim);cursor:pointer">← Back</button>
       <div class="reg-hero">
