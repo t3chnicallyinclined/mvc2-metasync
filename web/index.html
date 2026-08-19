@@ -5358,6 +5358,15 @@ $('#suggestSend')?.addEventListener('click',async()=>{
 // ── Click-a-name PROFILE: record + team-comp win-rates + recent matchup history (from server /profile) ──
 function charName(id){ return nameById[id] || ('#'+id); }
 function teamStr(t){ return (Array.isArray(t)&&t.length) ? t.map(charName).join(' / ') : '—'; }
+// gs-205: transient-failure armor — the profile/session fetches can 429 (per-IP rate bucket shared by every
+// instance on the connection) or hit a 1-2s deploy-restart window. Retry with backoff before giving up.
+async function invokeRetry(cmd, args, tries, delay){
+  tries=tries||3; delay=delay||450;
+  for(let i=0;;i++){
+    try{ return await invoke(cmd, args); }
+    catch(e){ if(i>=tries-1) throw e; await new Promise(r=>setTimeout(r, delay*(i+1))); }
+  }
+}
 async function openProfile(sid,nm){
   const modal=$('#pfModal'), body=$('#pfBody'); if(!modal||!invoke) return;
   pfLiveSid=null;                                             // no live patches while (re)loading a card
@@ -5365,8 +5374,8 @@ async function openProfile(sid,nm){
   try{
     // profile = base record (Surreal), playerstats = rich derived stats from the full log (nemesis/form/per-char/vs)
     const [p, ps] = await Promise.all([
-      invoke('profile',{steamid:String(sid)}),
-      invoke('playerstats',{steamid:String(sid)}).catch(()=>({}))
+      invokeRetry('profile',{steamid:String(sid)}),
+      invokeRetry('playerstats',{steamid:String(sid)}).catch(()=>({}))
     ]);
     if(!p||!p.found){ body.innerHTML=`<h3>${esc(nm||'Player')}</h3><div class="lb-empty">No games logged yet.</div>`; return; }
     const gp=(p.wins||0)+(p.losses||0), wr=gp?Math.round(100*(p.wins||0)/gp):0;
@@ -5442,7 +5451,7 @@ async function openProfile(sid,nm){
       ${recent?`<div class="pfx-fights">${recent}</div>`:'<div class="lb-empty" style="padding:12px">—</div>'}`;
     if(isMe){ const rb=$('#pfRep'); if(rb) rb.onclick=(e)=>{ e.stopPropagation(); showLocationEditor(sid,p); }; }
     pfLiveSid=String(sid);                                    // push deltas patch #pfLiveSlot while this card is open
-  }catch(e){ body.innerHTML='<div class="lb-empty">PROFILE UNAVAILABLE</div>'; }
+  }catch(e){ body.innerHTML='<div class="lb-empty" id="pfRetry" style="cursor:pointer">PROFILE UNAVAILABLE — tap to retry</div>'; const rb=$('#pfRetry'); if(rb) rb.onclick=()=>openProfile(sid,nm); }
 }
 // Per-session (ranked set) breakdown — reuses the profile modal. Opened by the session chip next to the set score.
 async function openSession(sid){
@@ -5450,7 +5459,7 @@ async function openSession(sid){
   pfLiveSid=null;                                             // the set-result card takes over the modal
   modal.classList.add('show'); body.innerHTML='<div class="lb-empty">LOADING…</div>';
   try{
-    const s=await invoke('session_stats',{id:String(sid)});
+    const s=await invokeRetry('session_stats',{id:String(sid)});
     if(!s||!s.ok||!(s.games||[]).length){ body.innerHTML='<h3>Ranked set</h3><div class="lb-empty">No games recorded for this set yet.</div>'; return; }
     // gs-114: SET RESULT broadcast card — the flex screen (winner plate crowned, big score, game pips + fight rows)
     const flair=m=>{ const mk=m.match_key||m.key||''; const cbtn=rcContestCell(mk,m.winner,m.loser); const tag=mcTag(m.confirmed);
@@ -5500,7 +5509,7 @@ async function openSession(sid){
         <span class="rail-lbl" style="display:block;margin:14px 2px 6px">Games</span>
         <table class="pf-tbl"><tr><th>#</th><th>Winner</th><th>Loser</th><th>Winning team</th><th></th></tr>${games}</table>`;
     }
-  }catch(e){ body.innerHTML='<div class="lb-empty">SESSION UNAVAILABLE</div>'; }
+  }catch(e){ body.innerHTML='<div class="lb-empty" id="sesRetry" style="cursor:pointer">SET UNAVAILABLE — tap to retry</div>'; const rb=$('#sesRetry'); if(rb) rb.onclick=()=>openSession(sid); }
 }
 $('#lbList')?.addEventListener('click',e=>{ const n=e.target.closest('.lb-click'); if(n) openProfile(n.dataset.sid,n.dataset.nm); });
 $('#lrList')?.addEventListener('click',e=>{ const n=e.target.closest('.lb-click'); if(n&&n.dataset.sid&&String(n.dataset.sid).length===17) openProfile(n.dataset.sid,n.dataset.nm); });   // Live Results feed → click a name for their profile
