@@ -17,6 +17,9 @@
 	const oppHref = $derived(
 		match.opp_id && String(match.opp_id).length === 17 ? `${base}/u/${match.opp_id}` : null
 	);
+	// Game-mode tag — only for non-ranked rows (ranked is the default, no chip needed to avoid clutter).
+	const MODE_LABEL: Record<string, string> = { lobby: 'LOBBY', tourney: 'EVENT', money: 'MONEY' };
+	const mode = $derived(match.mode && match.mode !== 'ranked' ? match.mode : '');
 </script>
 
 <div class="mr" class:won class:lost={!won}>
@@ -30,6 +33,7 @@
 				<span class="opp">{match.opp || 'Opponent'}</span>
 			{/if}
 			{#if seal}<span class="seal" title={match.verified ? 'Verified (both agree + replay)' : 'Confirmed'}>{seal}</span>{/if}
+			{#if mode}<span class="mode m-{mode}" title="Game mode">{MODE_LABEL[mode] ?? mode}</span>{/if}
 		</div>
 		{#if myTeam || oppTeam}
 			<div class="teams" title="{myTeam || '—'} vs {oppTeam || '—'}">
@@ -109,6 +113,26 @@
 		font-size: 10px;
 		font-weight: 800;
 		color: var(--good);
+	}
+	.mode {
+		flex: none;
+		font-size: 9px;
+		font-weight: 800;
+		letter-spacing: 0.05em;
+		padding: 1px 5px;
+		border-radius: 5px;
+		border: 1px solid var(--line);
+		color: var(--dim);
+	}
+	.mode.m-tourney {
+		color: var(--stream);
+		border-color: color-mix(in srgb, var(--stream) 40%, var(--line));
+		background: color-mix(in srgb, var(--stream) 12%, transparent);
+	}
+	.mode.m-money {
+		color: var(--good);
+		border-color: color-mix(in srgb, var(--good) 40%, var(--line));
+		background: color-mix(in srgb, var(--good) 12%, transparent);
 	}
 	.teams {
 		display: flex;

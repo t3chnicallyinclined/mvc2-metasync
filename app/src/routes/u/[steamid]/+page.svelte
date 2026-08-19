@@ -53,6 +53,16 @@
 	const recent = $derived(p?.recent ?? []);
 	const cold = $derived(store.loading && !p);
 	const title = $derived(p?.name || 'Player');
+
+	// Per-mode records (game-modes policy). Shown only when the player has games in that mode; lobby is
+	// owner-or-public (null when hidden). Ranked lives in the main tiles above.
+	const tRec = $derived(p?.tourney ?? null);
+	const mRec = $derived(p?.money ?? null);
+	const lRec = $derived(p?.lobby ?? null);
+	const tGames = $derived((tRec?.wins ?? 0) + (tRec?.losses ?? 0));
+	const mGames = $derived((mRec?.wins ?? 0) + (mRec?.losses ?? 0));
+	const lGames = $derived(lRec ? (lRec.wins ?? 0) + (lRec.losses ?? 0) : 0);
+	const hasModeRecs = $derived(tGames > 0 || mGames > 0 || lGames > 0);
 </script>
 
 <svelte:head><title>{title} · MetaSync</title></svelte:head>
@@ -103,6 +113,15 @@
 		<StatTile label="Meters" value={p.meters ?? 0} />
 		<StatTile label="Verified Wins" value={p.verified_wins ?? 0} accent="var(--good)" hint="Wins confirmed by both players / replay" />
 	</div>
+
+	<!-- Per-mode records (only what the player has played; ranked is the tiles above) -->
+	{#if hasModeRecs}
+		<div class="moderecs">
+			{#if tGames}<span class="mrec ev">🏆 Tournament <b>{tRec?.wins ?? 0}–{tRec?.losses ?? 0}</b></span>{/if}
+			{#if mGames}<span class="mrec mon">🪙 Money <b>{mRec?.wins ?? 0}–{mRec?.losses ?? 0}</b></span>{/if}
+			{#if lGames}<span class="mrec lob">🎮 Lobby <b>{lRec?.wins ?? 0}–{lRec?.losses ?? 0}</b></span>{/if}
+		</div>
+	{/if}
 
 	<!-- Recent matches -->
 	<div class="rail sec-hd">Recent matches</div>
@@ -251,6 +270,35 @@
 		.tiles {
 			grid-template-columns: repeat(3, minmax(0, 1fr));
 		}
+	}
+
+	.moderecs {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 8px;
+		margin: 12px 0 2px;
+	}
+	.mrec {
+		display: inline-flex;
+		align-items: center;
+		gap: 6px;
+		font-size: 12px;
+		font-weight: 700;
+		color: var(--dim);
+		padding: 6px 11px;
+		border: 1px solid var(--line);
+		border-radius: 999px;
+		background: var(--panel);
+	}
+	.mrec b {
+		font-variant-numeric: tabular-nums;
+		color: var(--ink);
+	}
+	.mrec.ev {
+		border-color: color-mix(in srgb, var(--stream) 35%, var(--line));
+	}
+	.mrec.mon {
+		border-color: color-mix(in srgb, var(--good) 35%, var(--line));
 	}
 
 	.sec-hd {

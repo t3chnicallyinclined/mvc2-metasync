@@ -29,6 +29,13 @@ export interface RecentMatch {
 	ts?: number;
 	mid?: string;
 	match_key?: string;
+	mode?: string; // "ranked" | "lobby" | "tourney" | "money" (server-derived from ingest stamps)
+}
+
+export interface ModeRecord {
+	wins: number;
+	losses: number;
+	public?: boolean;
 }
 
 export interface CurrentMatch {
@@ -66,6 +73,12 @@ export interface Profile {
 	best_damage?: number;
 	current_match?: CurrentMatch | null;
 	recent?: RecentMatch[];
+	// Game-mode records (ranked/lobby/tournament/money policy). tourney+money are public; lobby is
+	// owner-or-public (null when hidden). Rebuild-derived server-side.
+	season_registered?: boolean;
+	tourney?: ModeRecord;
+	money?: ModeRecord;
+	lobby?: ModeRecord | null;
 }
 
 type MatchFrame = SseFrame & {
