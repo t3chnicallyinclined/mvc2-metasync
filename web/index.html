@@ -756,6 +756,16 @@ try{document.documentElement.setAttribute('data-theme', localStorage.getItem('me
   .teg-cta{display:flex; flex-direction:column; align-items:flex-end; gap:4px; flex:none}
   .teg-sub{font-size:10.5px; color:var(--faint)}
   @media (max-width:860px){ .tny-entergate{flex-wrap:wrap} .teg-cta{align-items:flex-start} }
+  /* gs-208 CHAMPION'S PURSE — variant B: one slim line above the story line; C-echo chip on browse cards */
+  .tny-purse{display:flex; align-items:center; gap:12px; padding:7px 20px; font-size:12px; color:var(--dim);
+    border-top:1px solid var(--line); background:linear-gradient(90deg,var(--gold-soft),transparent 40%)}
+  .tp-rail{font-size:10px; font-weight:700; letter-spacing:.14em; text-transform:uppercase; color:var(--gold); white-space:nowrap}
+  .tp-mid{flex:1; min-width:0} .tp-mid b{color:var(--ink); font-weight:800}
+  .tp-mid .num{font-variant-numeric:tabular-nums; font-size:15px}
+  .tp-pill{font-size:10px; font-weight:800; letter-spacing:.06em; text-transform:uppercase; padding:2.5px 9px; border-radius:999px; white-space:nowrap;
+    color:var(--good); border:1px solid color-mix(in srgb,var(--good) 40%,transparent); background:color-mix(in srgb,var(--good) 10%,transparent)}
+  .tp-pill.stake{color:var(--gold); border-color:color-mix(in srgb,var(--gold) 45%,transparent); background:var(--gold-soft)}
+  .tny-stakechip{color:var(--gold); font-weight:800; font-variant-numeric:tabular-nums}
   .tny-ent-nm{flex:1}
   .tny-ent-x{margin-left:auto; background:transparent; border:0; color:var(--faint); cursor:pointer; font-size:13px; padding:2px 6px; border-radius:6px; line-height:1}
   .tny-ent-x:hover{color:#e0574f; background:color-mix(in srgb,#e0574f 14%,transparent)}
@@ -3434,6 +3444,10 @@ function switchTab(t){
 // skinsync /tourney/* endpoints via the src-tauri proxy commands. Player identity + names/avatars/ELO/
 // head-to-head all resolve through the SAME shared source (invoke('names'|'profile'|'matchup') + openProfile).
 const TNY = { view:'browse', id:null, data:null, names:{}, busy:false };
+// gs-208: staked-purse states ship DARK until PayPal entry lands — flipping this lights the $ pot math in the
+// hero purse line + browse chips (fee source: entry_fee_cents, already serialized in the list payload).
+const POT_ENABLED=false;
+const potFmt=c=>'$'+((c/100).toFixed(c%100?2:0));
 const tId = id=>document.getElementById(id);
 function tnyMe(){ return (typeof mySteam!=='undefined'&&mySteam&&mySteam.steamid)?String(mySteam.steamid):''; }
 function tnyAv(p,size,cls){
@@ -3534,7 +3548,7 @@ function tnyCard(t){
   return '<div class="tny-card" data-open="'+esc(t.id)+'">'+banner+
     '<div class="tny-card-b"><div class="tny-card-top"><span class="tny-card-nm">'+esc(t.name)+'</span>'+tnyStatusChip(t.status)+'</div>'+
     '<div class="tny-card-meta">'+(t.cc?flagEmoji(t.cc)+' ':'📡 ')+esc(region)+' · '+esc(tnyFmtName(t.format))+'</div>'+
-    '<div class="tny-card-meta2"><span>🗓 '+esc(tnyFmt(t.starts_ms))+'</span><span>👥 '+(t.entrants||0)+(t.cap?('/'+t.cap):'')+'</span>'+(t.entry_fee_cents?'':'<span class="tny-free">FREE</span>')+'</div></div></div>';
+    '<div class="tny-card-meta2"><span>🗓 '+esc(tnyFmt(t.starts_ms))+'</span><span>👥 '+(t.entrants||0)+(t.cap?('/'+t.cap):'')+'</span>'+((POT_ENABLED&&t.entry_fee_cents)?'<span class="tny-stakechip">◈ '+potFmt(t.entry_fee_cents)+' · POT '+potFmt(t.entry_fee_cents*(t.entrants||0))+'</span>':'<span class="tny-free">FREE</span>')+'</div></div></div>';
 }
 
 // ── CREATE ──
@@ -3684,6 +3698,16 @@ async function renderDetail(fromCache){
           '<div class="tny-cta">'+cta+'</div>'+
         '</div>'+
       '</div>'+
+      // gs-208: CHAMPION'S PURSE — what winning is worth, one slim gold-seamed line fused to the hero.
+      // Free today (the purse is real: permanence + season etch); staked math lights up when POT_ENABLED.
+      (function(){
+        const fee=t.entry_fee_cents||0, staked=POT_ENABLED&&fee>0;
+        const mid=staked
+          ? '<b class="num">'+potFmt(fee*nEnt)+'</b> — '+potFmt(fee)+' entry × '+nEnt+' · winner takes the pot'
+          : '<b>Permanent record</b> · <b>Season etching</b> · the #1 seed next time';
+        return '<div class="tny-purse"><span class="tp-rail">Champion’s Purse</span><span class="tp-mid">'+mid+'</span>'+
+          '<span class="tp-pill'+(staked?' stake':'')+'">'+(staked?'◈ '+potFmt(fee)+' ENTRY':'FREE ENTRY')+'</span></div>';
+      })()+
       // gs-203: the STORY LINE — one live sentence + fill bar; creeps forward on every SSE delta
       (function(){
         const ms=((t.bracket&&t.bracket.matches)||[]).filter(m=>m.state!=='void');
