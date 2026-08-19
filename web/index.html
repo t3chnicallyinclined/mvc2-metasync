@@ -890,6 +890,18 @@ try{document.documentElement.setAttribute('data-theme', localStorage.getItem('me
   .mast-desc{display:none;}
   .masthead .rail-lbl{white-space:nowrap;}
   .masthead .lb-period{margin:0 0 0 auto; position:relative; align-self:center;}
+  /* gs-217 GAME MODES: the board-scope switch (Ranked/Lobby/Tournament) lives in the ARENA BAR's middle
+     gap, next to the Live Sync chip. Segmented pill; shown only on the Rankings tab (it only drives the
+     leaderboard). margin-left:auto pushes it to the right of the gap so it sits beside the right cluster. */
+  .arena-scope{display:none; margin-left:auto; align-items:center; gap:3px; padding:3px; border:1px solid var(--line);
+    border-radius:999px; background:var(--panel-2); position:relative;}
+  body.tab-ranks .arena-scope{display:flex;}
+  .arena-scope button{border:0; background:transparent; border-radius:999px; padding:5px 12px; font-size:12px;
+    font-weight:700; color:var(--dim); white-space:nowrap; cursor:pointer; transition:.15s;}
+  .arena-scope button>.clbl{margin-left:3px;}
+  .arena-scope button:hover{color:var(--ink);}
+  .arena-scope button.on{background:var(--gold); color:var(--gold-ink,#241700);}
+  @media(max-width:900px){ .arena-scope button>.clbl{display:none;} }
   .mast-rail{position:relative; display:flex; align-items:center; padding:6px 10px; border-top:1px solid #1c2130; background:rgba(13,16,23,.6);}
   .mast-rail #lbTabs{display:flex !important; flex-wrap:nowrap; gap:3px; flex:1; min-width:0; border-left:0; padding-left:0; overflow:hidden;}
   /* gs-201: ONE row, always — inactive channels collapse to their icon (name on hover), like the page tabs */
@@ -1301,6 +1313,13 @@ try{document.documentElement.setAttribute('data-theme', localStorage.getItem('me
       <button data-t="library" id="libChip" title="Your skin library &amp; vault"><span class="ico">🗂</span><span class="lbl">Library</span></button>
     </div>
     <i class="nav-seam"></i>
+    <!-- gs-217 GAME MODES: board-scope switch — Ranked (ratings + titles) vs Lobby vs Tournament (pure
+         records). Sits in the arena bar's middle gap by Live Sync; visible only on the Rankings tab. -->
+    <div class="arena-scope" id="lbScope" title="Which games feed the boards — Ranked carries the ratings &amp; titles; Lobby and Tournament are pure records">
+      <button data-ls="ranked" class="on">⚔️<span class="clbl">Ranked</span></button>
+      <button data-ls="lobby">🎮<span class="clbl">Lobby</span></button>
+      <button data-ls="tourney">🏆<span class="clbl">Tournament</span></button>
+    </div>
     <!-- gs-200: the Rankings channel rail moved into the MASTHEAD (see #lbMastRail) — the bar stays pure nav -->
     <div class="right">
       <span class="chip" id="cSync" role="button" tabindex="0" title="Live Sync — leaderboards, ranked stats, matchup intel &amp; skin sync. Click to toggle."><span class="knob"></span><b id="cSyncTxt">Offline</b></span>
@@ -1454,13 +1473,6 @@ try{document.documentElement.setAttribute('data-theme', localStorage.getItem('me
             <b class="mast-title" id="lbMastTitle">MARVEL LADDER</b>
             <i class="mast-line" id="lbMastLine"></i>
             <span class="mast-desc" id="lbMastDesc"></span>
-          </div>
-          <!-- gs-217 GAME MODES: board scope — which games feed the boards. Rating & tier titles are
-               RANKED artifacts, so the Lobby/Tournament scopes show pure records (no badges, no ELO). -->
-          <div class="lb-period" id="lbScope" title="Which games feed these boards — rating &amp; titles come from Ranked play only">
-            <button data-ls="ranked" class="on">⚔️ Ranked</button>
-            <button data-ls="lobby">🎮 Lobby</button>
-            <button data-ls="tourney">🏆 Tournament</button>
           </div>
           <div class="lb-period" id="lbPeriod">
             <button data-lp="all" class="on">All-time</button>
