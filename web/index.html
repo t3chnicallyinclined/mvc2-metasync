@@ -731,8 +731,16 @@ try{document.documentElement.setAttribute('data-theme', localStorage.getItem('me
   .tny-btn.warn{color:#e0574f; border-color:color-mix(in srgb,#e0574f 45%,var(--line))}
   .tny-match.onstream{position:relative; border-color:color-mix(in srgb,var(--gold) 55%,var(--line))}
   .tny-stream-badge{position:absolute; top:0; right:0; background:var(--gold); color:var(--gold-ink); font-size:10px; padding:1px 5px; border-bottom-left-radius:8px; z-index:2; line-height:1.5}
-  .tny-addent{display:flex; gap:8px; margin-bottom:10px}
+  .tny-addent{display:flex; gap:8px; margin-bottom:10px; position:relative}
   .tny-addent input{flex:1; font-size:12.5px; padding:7px 10px; border-radius:9px; border:1px solid var(--line); background:var(--panel-2,var(--card)); color:var(--ink); font-variant-numeric:tabular-nums}
+  /* gs-206: entrant typeahead dropdown */
+  .tny-addd{position:absolute; top:calc(100% + 4px); left:0; right:0; z-index:40; display:none; background:var(--panel-2,var(--card)); border:1px solid var(--line); border-radius:9px; box-shadow:0 14px 30px rgba(0,0,0,.55); max-height:296px; overflow-y:auto}
+  .tny-addrow{display:flex; align-items:center; gap:8px; padding:7px 10px; cursor:pointer; border-bottom:1px solid rgba(42,49,64,.45)}
+  .tny-addrow:last-child{border-bottom:0}
+  .tny-addrow:hover,.tny-addrow.sel{background:rgba(232,185,60,.08); box-shadow:inset 3px 0 0 var(--gold)}
+  .tny-addnm{flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-weight:600; font-size:13px; color:var(--ink)}
+  .tny-addwl{font-size:11px; color:var(--dim); font-variant-numeric:tabular-nums}
+  .tny-addnone{padding:10px 12px; font-size:12px; color:var(--faint)}
   .tny-ent-nm{flex:1}
   .tny-ent-x{margin-left:auto; background:transparent; border:0; color:var(--faint); cursor:pointer; font-size:13px; padding:2px 6px; border-radius:6px; line-height:1}
   .tny-ent-x:hover{color:#e0574f; background:color-mix(in srgb,#e0574f 14%,transparent)}
@@ -3703,9 +3711,11 @@ async function renderDetail(fromCache){
   // render EVERY tab section (each isolated — one failing section must not blank the rest), then reveal the active one
   tnyTry('overview',()=>tnyRenderOverview(t, isTO)); tnyTry('standings',()=>tnyRenderStandings(t)); tnyTry('admin',()=>tnyRenderAdmin(t, isTO, pre));
   tnyTry('entrants',()=>{ const regs=[...(t.registrations||[])].sort((a,b)=>(a.seed||999)-(b.seed||999)||(a.registered_ms||0)-(b.registered_ms||0));
-    const addRow=(isTO&&pre)?'<div class="tny-addent"><input id="tnyAddSid" placeholder="Add by SteamID64 (17 digits)" maxlength="17" inputmode="numeric" autocomplete="off"><button class="tny-btn gold" data-act="add-entrant">Add</button></div>':'';
+    const addRow=(isTO&&pre)?'<div class="tny-addent"><input id="tnyAddQ" placeholder="Add a player — type a name, or paste a SteamID64" value="'+esc(TNY._addq||'')+'" autocomplete="off" spellcheck="false"><button class="tny-btn gold" data-act="add-entrant">Add</button><div class="tny-addd" id="tnyAddD"></div></div>':'';
     const hostSet=new Set((t.hosts||[]).map(h=>h.steamid));
-    tId('tnyEntrants').innerHTML = addRow + tnyEntrantsHtml(regs, isTO, pre, hostSet); });
+    tId('tnyEntrants').innerHTML = addRow + tnyEntrantsHtml(regs, isTO, pre, hostSet);
+    // gs-206: this section is SSE/tick-rebuilt — restore the search box's text/focus/dropdown after every re-render
+    const aq=tId('tnyAddQ'); if(aq && TNY._addFocus){ aq.focus(); try{ aq.setSelectionRange(aq.value.length, aq.value.length); }catch(_){} if((TNY._addq||'').trim().length>=2) tnyAddDrop(); } });
   tnyTry('bracket',()=>{ if(t.bracket) tnyRenderBracket(t.bracket); else tId('tnyBracket').innerHTML='<div class="lb-empty" style="padding:22px">The bracket appears once the organizer seeds the entrants and hits <b>Start</b>.</div>'; });
   // gs-204: 'players' reveals standings (once a bracket exists) STACKED above the entrants list
   const secOf={bracket:['tnyBracket'],players:(t.bracket?['tnyStandings','tnyEntrants']:['tnyEntrants']),stations:['tnyHosts'],admin:['tnyAdmin']};
@@ -3713,6 +3723,49 @@ async function renderDetail(fromCache){
   (secOf[TNY.sub]||[]).forEach(idd=>{ const se=tId(idd); if(se) se.style.display=''; });
   tnyFlushErrs();
 }
+// ── gs-206: entrant TYPEAHEAD — the TO adds players by NAME, searching everyone the network knows
+// (union of the wins + rating boards ≈ every player with a recorded match); SteamID64 paste stays the
+// fallback for brand-new players. Rows carry data-act="add-entrant" so the existing dispatcher adds them.
+// Query/focus live on TNY (_addq/_addFocus) because this whole section is SSE/tick-rebuilt.
+async function tnyPoolFetch(){
+  if(TNY._pool && (Date.now()-(TNY._poolTs||0))<60000) return TNY._pool;
+  const seen={};
+  const take=res=>((res&&res.players)||[]).forEach(p=>{ if(p&&p.steamid&&!seen[p.steamid]) seen[p.steamid]=p; });
+  try{
+    const [w,r]=await Promise.all([
+      invoke('leaderboard',{tab:'wins',period:'all',limit:50}).catch(()=>null),
+      invoke('leaderboard',{tab:'rating',period:'all',limit:50}).catch(()=>null)
+    ]);
+    take(w); take(r);
+  }catch(e){}
+  TNY._pool=Object.values(seen); TNY._poolTs=Date.now(); return TNY._pool;
+}
+async function tnyAddDrop(){
+  const dd=tId('tnyAddD'); if(!dd) return;
+  const q=(TNY._addq||'').trim(), ql=q.toLowerCase();
+  if(ql.length<2){ dd.innerHTML=''; dd.style.display='none'; return; }
+  const pool=await tnyPoolFetch();
+  const cur=tId('tnyAddQ'); if(!cur || (cur.value||'').trim().toLowerCase()!==ql) return;  // a newer keystroke owns the box
+  const inSet=new Set(((TNY.data&&TNY.data.registrations)||[]).filter(x=>x.status!=='dropped'&&x.status!=='dq').map(x=>String(x.steamid)));
+  let hits=pool.filter(p=>!inSet.has(String(p.steamid)) && String(p.name||'').toLowerCase().includes(ql));
+  hits.sort((a,b)=>{ const as=String(a.name||'').toLowerCase().startsWith(ql)?0:1, bs=String(b.name||'').toLowerCase().startsWith(ql)?0:1; return (as-bs)||((b.rating||0)-(a.rating||0)); });
+  hits=hits.slice(0,8);
+  const idOk=/^\d{17}$/.test(q)&&!inSet.has(q);
+  let h=hits.map((p,i)=>'<div class="tny-addrow'+(i===0?' sel':'')+'" data-act="add-entrant" data-sid="'+esc(String(p.steamid))+'">'+avatarImg(p.avatar,22)+'<span class="tny-addnm">'+(p.cc?flagEmoji(p.cc)+' ':'')+esc(p.name||'Player')+'</span>'+rkB(p,14)+'<span class="tny-addwl">'+(p.wins||0)+'W · '+(p.losses||0)+'L</span></div>').join('');
+  if(idOk) h+='<div class="tny-addrow'+(hits.length?'':' sel')+'" data-act="add-entrant" data-sid="'+esc(q)+'"><span class="tny-addnm">➕ Add SteamID '+esc(q)+'</span></div>';
+  if(!h) h='<div class="tny-addnone">No one matches “'+esc(q)+'” — paste a 17-digit SteamID64 to add someone new.</div>';
+  dd.innerHTML=h; dd.style.display='block';
+}
+document.addEventListener('input', e=>{ if(e.target&&e.target.id==='tnyAddQ'){ TNY._addq=e.target.value; TNY._addFocus=true; tnyAddDrop(); } });
+document.addEventListener('focusout', e=>{ if(e.target&&e.target.id==='tnyAddQ'){ const to=e.relatedTarget; if(!(to&&to.closest&&to.closest('.tny-addent'))) TNY._addFocus=false; } });
+document.addEventListener('keydown', e=>{
+  if(!e.target||e.target.id!=='tnyAddQ') return;
+  const dd=tId('tnyAddD'); const rows=dd?[...dd.querySelectorAll('.tny-addrow')]:[];
+  if(e.key==='ArrowDown'||e.key==='ArrowUp'){ if(!rows.length) return; e.preventDefault(); let i=rows.findIndex(r=>r.classList.contains('sel')); rows.forEach(r=>r.classList.remove('sel')); i=(e.key==='ArrowDown')?((i+1)%rows.length):((i-1+rows.length)%rows.length); rows[i].classList.add('sel'); rows[i].scrollIntoView({block:'nearest'}); }
+  else if(e.key==='Enter'){ const sel=rows.find(r=>r.classList.contains('sel'))||rows[0]; if(sel){ e.preventDefault(); sel.click(); } }
+  else if(e.key==='Escape'){ if(dd){ dd.innerHTML=''; dd.style.display='none'; } }
+});
+document.addEventListener('click', e=>{ const dd=tId('tnyAddD'); if(dd&&dd.style.display==='block'&&!(e.target.closest&&e.target.closest('.tny-addent'))){ dd.innerHTML=''; dd.style.display='none'; } });
 // ── Overview tab: at-a-glance stats + links + rules + how-it-works ──
 function tnyRenderOverview(t, isTO){
   const el=tId('tnyOverview'); if(!el) return;
@@ -4337,7 +4390,7 @@ async function tnyAction(act, node){
     else if(act==='checkin-open'){ r=await invoke('tourney_checkin_ctl',{id,action:'open'}); if(r&&r.ok) toast('Check-in open'); }
     else if(act==='checkin-close'){ r=await invoke('tourney_checkin_ctl',{id,action:'close'}); if(r&&r.ok) toast('Check-in closed'); }
     else if(act==='checkin-finalize'){ r=await invoke('tourney_checkin_ctl',{id,action:'finalize'}); if(r&&r.ok){ const n=r.removed||0; toast(n?('Dropped '+n+' no-show'+(n===1?'':'s')):'Everyone was checked in'); } }
-    else if(act==='add-entrant'){ const el=tId('tnyAddSid'); const sid=((el&&el.value)||'').trim(); if(!/^\d{17}$/.test(sid)){ toast('⚠ Enter a 17-digit SteamID64'); TNY.busy=false; return; } r=await invoke('tourney_add_entrant',{id,steamid:sid}); if(r&&r.ok){ toast(r.status==='already in'?'Already entered':'Entrant added'); if(el) el.value=''; } }
+    else if(act==='add-entrant'){ const picked=node&&node.dataset&&node.dataset.sid; const el=tId('tnyAddQ'); const q=((el&&el.value)||'').trim(); const sid=picked||(/^\d{17}$/.test(q)?q:''); if(!sid){ toast('⚠ Pick a player from the search, or paste a 17-digit SteamID64'); TNY.busy=false; return; } r=await invoke('tourney_add_entrant',{id,steamid:sid}); if(r&&r.ok){ toast(r.status==='already in'?'Already entered':'Entrant added'); TNY._addq=''; if(el) el.value=''; const dd=tId('tnyAddD'); if(dd){ dd.innerHTML=''; dd.style.display='none'; } } }
     else if(act==='entrant-dq'){ const sid=node&&node.dataset&&node.dataset.sid; if(!sid){ TNY.busy=false; return; } r=await invoke('tourney_entrant_dq',{id,steamid:sid}); if(r&&r.ok) toast('Entrant removed'); }
     else if(act==='entrant-checkin'){ const sid=node&&node.dataset&&node.dataset.sid; if(!sid){ TNY.busy=false; return; } r=await invoke('tourney_entrant_update',{id,steamid:sid,checkedIn:node.dataset.ci==='1'}); }
     else if(act==='entrant-promote'){ const sid=node&&node.dataset&&node.dataset.sid; if(!sid){ TNY.busy=false; return; } r=await invoke('tourney_entrant_update',{id,steamid:sid,status:'registered'}); if(r&&r.ok) toast('Promoted off waitlist'); }

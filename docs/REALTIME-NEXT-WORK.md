@@ -30,3 +30,13 @@ User decision: the feeds should live on the **Match tab** (`#p-match`), not the 
 
 ## Already-shipped fix (0.1.100), for reference
 The leaderboard "LEADERBOARD UNAVAILABLE" flicker: `renderLeaderboard`'s catch used to wipe the whole board on ANY fetch failure. Fixed to keep-last-good — only shows UNAVAILABLE on a cold load with nothing on screen (`if(!list.querySelector('.board')&&!list.querySelector('.podium'))`). Root trigger was the ~2s skinsync restart windows during the increment deploys.
+
+
+## Deferred #3 — rate-limiter read/write split (found 2026-08-19, "PROFILE UNAVAILABLE" bug)
+EVERY route (except /update/) pays 1 token from ONE per-IP bucket (RATE_CAP=60, RATE_REFILL=6/s, app.rs
+allow()). Multiple instances on one IP + heartbeats/board polls drain it → a profile click lands on an
+empty bucket → 429 → the client's ureq hard-errors on any non-2xx → modal showed UNAVAILABLE. CLIENT is
+now armored (gs-205 invokeRetry x3 + tap-to-retry) but the server should split buckets: keep the tight
+bucket for WRITES (anti-flood is about writes), give read-only GETs (profile/playerstats/leaderboard/
+session/regions/tierlist/matchup/names) a 4x-generous bucket or exempt them. One conditional in
+routes.rs handle() before allow(). ⚠ coordinate: skinsync/src was moved off the main tree on 2026-08-19.
