@@ -1129,6 +1129,14 @@ try{document.documentElement.setAttribute('data-theme', localStorage.getItem('me
     color:var(--gold); border:1px solid color-mix(in srgb,var(--gold) 40%,transparent); background:var(--gold-soft);
     border-radius:999px; padding:4px 12px; font-variant-numeric:tabular-nums; cursor:default; font-weight:800}
   .coin-chip b{font-weight:900}
+  /* gs-215 Stage v1 polish: TO inline run-controls on bracket cards (hover-revealed) + sticky you're-up band */
+  .tny-mrun{position:absolute; right:4px; bottom:4px; display:none; gap:4px; z-index:3}
+  .tny-match:hover .tny-mrun{display:flex}
+  .tny-mrun button{width:24px; height:22px; border-radius:6px; border:1px solid var(--line); background:var(--panel-2,var(--card));
+    color:var(--dim); font-size:12px; line-height:1; cursor:pointer; padding:0}
+  .tny-mrun button:hover{border-color:var(--gold); color:var(--ink)}
+  .tny-mrun button.on{color:var(--stream,#8b6dff); border-color:var(--stream,#8b6dff)}
+  #tnyAlert{position:sticky; top:8px; z-index:30}
   /* banner picker */
   .tny-banner-pick{display:flex; flex-direction:column; gap:8px}
   .tny-banner-prev{width:100%; max-width:360px; aspect-ratio:3/1; border-radius:10px; border:1px dashed var(--line); background:var(--panel-2) center/cover no-repeat; display:grid; place-items:center; color:var(--faint); font-size:12px}
@@ -4478,6 +4486,16 @@ function tnyMatchEl(m){
     else if(st==='wait-host') d.innerHTML+='<span class="tny-mjoin wait">⏳ WAIT</span>';
     else d.innerHTML+='<button class="tny-mjoin host" data-claimhost="'+m.id+'" title="Host your match">HOST</button>';
   }
+  // gs-215 (Stage v1): TO inline run-controls — 📣 call-to-station + 📺 stream toggle right on the card
+  // (hover-revealed, no modal round-trip). Only while the event runs and both seats are filled.
+  const t0=TNY.data;
+  const amTO = meId && t0 && (t0.to_steamid===meId || (t0.co_tos||[]).indexOf(meId)>=0);
+  if(amTO && t0.status==='running' && m.p1 && m.p2 && (m.state==='ready'||m.state==='live')){
+    d.innerHTML+='<span class="tny-mrun">'+
+      (m.state==='ready'?'<button data-mrun="'+m.id+'" data-kind="live" data-v="1" title="Call players to the station">📣</button>':'')+
+      '<button data-mrun="'+m.id+'" data-kind="stream" data-v="'+(m.on_stream?0:1)+'"'+(m.on_stream?' class="on"':'')+' title="'+(m.on_stream?'Remove from stream':'Queue on stream')+'">📺</button>'+
+      '</span>';
+  }
   return d;
 }
 
@@ -4658,7 +4676,7 @@ async function tnyReport(mid, winner){
 // TO run-controls fired from the match modal: undo a result, call players to a station (live), or queue the
 // match onto the broadcast (on-stream). Re-render the detail, then reopen the modal so its buttons reflect the
 // new state — except an undo, which drops back to the bracket.
-async function tnyRun(mid, kind, v){
+async function tnyRun(mid, kind, v, silent){   // gs-215: silent=true → fired inline from a card, don't pop the modal
   if(TNY.busy) return; TNY.busy=true;
   const on=(v==='1'||v===1);
   try{
@@ -4671,7 +4689,7 @@ async function tnyRun(mid, kind, v){
   TNY.busy=false;
   await renderDetail();
   if(kind==='undo'){ const mo=tId('tnyModal'); if(mo) mo.classList.remove('on'); }
-  else tnyOpenMatch(mid);
+  else if(!silent) tnyOpenMatch(mid);
 }
 
 // ── click delegation ──
@@ -4682,6 +4700,7 @@ tId('p-tourney')?.addEventListener('click',e=>{
   const jn=e.target.closest&&e.target.closest('[data-join]'); if(jn){ tnyJoin(jn.dataset.join,false); return; }
   const ch=e.target.closest&&e.target.closest('[data-claimhost]'); if(ch){ tnyClaimHost(ch.dataset.claimhost); return; }
   const mop=e.target.closest&&e.target.closest('[data-mopen]'); if(mop){ tnyOpenMatch(mop.dataset.mopen); return; }
+  const mr=e.target.closest&&e.target.closest('[data-mrun]'); if(mr){ tnyRun(mr.dataset.mrun, mr.dataset.kind, mr.dataset.v, true); return; }   // gs-215: inline run-controls beat the card-open
   const match=e.target.closest('.tny-match.clk'); if(match&&match.dataset.mid){ tnyOpenMatch(match.dataset.mid); return; }
   const card=e.target.closest('.tny-card[data-open]'); if(card){ tnyOpen(card.dataset.open); return; }
 });
