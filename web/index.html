@@ -980,7 +980,7 @@ try{document.documentElement.setAttribute('data-theme', localStorage.getItem('me
   /* ── EVENT HERO ── */
   .tny-btn.sm{padding:6px 11px; font-size:12px; border-radius:8px}
   .tny-hero{border:1px solid var(--line); border-radius:16px; overflow:hidden; box-shadow:var(--shadow); margin:14px 0 6px; background:var(--panel)}
-  .tny-hero-banner{position:relative; height:132px; background:linear-gradient(105deg,#241640,#3a1d3f 32%,#4a1e2e 64%,#5a3410); background-size:cover; background-position:center}
+  .tny-hero-banner{position:relative; height:132px; background:linear-gradient(105deg,#241640,#3a1d3f 32%,#4a1e2e 64%,#5a3410); background-size:cover; background-position:center; border-bottom:3px solid var(--tacc,transparent)}   /* gs-212: accent seam sliver */
   .tny-hero-banner::after{content:""; position:absolute; inset:0; background:repeating-linear-gradient(115deg,rgba(255,255,255,.03) 0 2px,transparent 2px 22px); pointer-events:none}
   .tny-hero-wm{position:absolute; right:16px; bottom:4px; font-weight:900; font-style:italic; font-size:54px; letter-spacing:-.04em; color:rgba(255,255,255,.06); transform:skewX(-8deg); max-width:78%; overflow:hidden; white-space:nowrap; pointer-events:none}
   .tny-life{display:inline-flex; align-items:center; gap:6px; margin-left:10px; flex-wrap:wrap}
@@ -1118,6 +1118,8 @@ try{document.documentElement.setAttribute('data-theme', localStorage.getItem('me
   .pod-stone{display:inline-flex; align-items:center; gap:7px; font-size:10px; font-weight:700; letter-spacing:.12em; text-transform:uppercase; color:var(--dim)}
   .pod-stone b{color:var(--ink)}
   .pod-chain{display:inline-flex; align-items:center; gap:5px; font-size:10px; color:var(--faint); border:1px dashed var(--line); border-radius:99px; padding:2px 9px}
+  /* gs-212: per-event accent sliver on browse cards (transparent when the event has no accent) */
+  .tny-card{border-left:3px solid var(--tacc,transparent)}
   /* banner picker */
   .tny-banner-pick{display:flex; flex-direction:column; gap:8px}
   .tny-banner-prev{width:100%; max-width:360px; aspect-ratio:3/1; border-radius:10px; border:1px dashed var(--line); background:var(--panel-2) center/cover no-repeat; display:grid; place-items:center; color:var(--faint); font-size:12px}
@@ -3499,6 +3501,9 @@ const TNY = { view:'browse', id:null, data:null, names:{}, busy:false };
 // hero purse line + browse chips (fee source: entry_fee_cents, already serialized in the list payload).
 const POT_ENABLED=false;
 const potFmt=c=>'$'+((c/100).toFixed(c%100?2:0));
+// gs-212: per-event accent — ≤3px slivers ONLY (browse-card edge + hero seam); plates stay tier/skin-colored.
+// The accent field is additive server-side; events without one render exactly as before (transparent slivers).
+const TNY_ACC={gold:'#e8b93c',crimson:'#ff5a6e',cobalt:'#4aa8ff',vibranium:'#b98cff',adamantium:'#9fd4ef',emerald:'#3ddc84'};
 const tId = id=>document.getElementById(id);
 function tnyMe(){ return (typeof mySteam!=='undefined'&&mySteam&&mySteam.steamid)?String(mySteam.steamid):''; }
 function tnyAv(p,size,cls){
@@ -3596,7 +3601,8 @@ function tnyRenderList(){
 function tnyCard(t){
   const region = t.online? 'Online' : ([t.city,t.cc].filter(Boolean).join(', ')||'Offline');
   const banner = t.banner_url ? '<div class="tny-card-banner"><img src="'+esc(t.banner_url)+'" loading="lazy" referrerpolicy="no-referrer" alt=""></div>' : '<div class="tny-card-banner"></div>';
-  return '<div class="tny-card" data-open="'+esc(t.id)+'">'+banner+
+  const accSt=TNY_ACC[t.accent]?' style="--tacc:'+TNY_ACC[t.accent]+'"':'';
+  return '<div class="tny-card" data-open="'+esc(t.id)+'"'+accSt+'>'+banner+
     '<div class="tny-card-b"><div class="tny-card-top"><span class="tny-card-nm">'+esc(t.name)+'</span>'+tnyStatusChip(t.status)+'</div>'+
     '<div class="tny-card-meta">'+(t.cc?flagEmoji(t.cc)+' ':'📡 ')+esc(region)+' · '+esc(tnyFmtName(t.format))+'</div>'+
     '<div class="tny-card-meta2"><span>🗓 '+esc(tnyFmt(t.starts_ms))+'</span><span>👥 '+(t.entrants||0)+(t.cap?('/'+t.cap):'')+'</span>'+((POT_ENABLED&&t.entry_fee_cents)?'<span class="tny-stakechip">◈ '+potFmt(t.entry_fee_cents)+' · POT '+potFmt(t.entry_fee_cents*(t.entrants||0))+'</span>':'<span class="tny-free">FREE</span>')+'</div></div></div>';
@@ -3754,7 +3760,10 @@ async function renderDetail(fromCache){
   if(isTO && pre) cta+='<button class="tny-btn gold" data-act="start">Start bracket ▶</button>';
   // (Delete intentionally lives ONLY in Admin → Danger zone with a type-the-name confirm — a small hero 🗑 with
   // a 4s two-click was an accidental-delete trap that wiped a live event.)
-  const bannerStyle = t.banner_url ? ' style="background-image:linear-gradient(180deg,rgba(10,12,18,.12),rgba(10,12,18,.78)),url(\''+esc(t.banner_url).replace(/'/g,'%27')+'\')"' : '';
+  // gs-212: fold the optional per-event accent (--tacc) into the banner's style attr alongside the image
+  const stP=[]; if(t.banner_url) stP.push('background-image:linear-gradient(180deg,rgba(10,12,18,.12),rgba(10,12,18,.78)),url(\''+esc(t.banner_url).replace(/'/g,'%27')+'\')');
+  if(TNY_ACC[t.accent]) stP.push('--tacc:'+TNY_ACC[t.accent]);
+  const bannerStyle = stP.length ? ' style="'+stP.join(';')+'"' : '';
   head.innerHTML =
     '<div class="tny-hero">'+
       '<div class="tny-hero-banner'+(t.banner_url?' img':'')+'"'+bannerStyle+'><div class="tny-hero-wm">'+esc(String(t.name||'MvC2').toUpperCase())+'</div></div>'+
@@ -3842,7 +3851,7 @@ async function renderDetail(fromCache){
   tnyTry('entrants',()=>{ const regs=[...(t.registrations||[])].sort((a,b)=>(a.seed||999)-(b.seed||999)||(a.registered_ms||0)-(b.registered_ms||0));
     // gs-210: the seeding toolbar lives WITH the seed inputs now (one home) — Admin's seeding row died in the same edit
     const seedBar=(isTO&&pre&&regs.length>1)?'<div class="tny-seedbar"><span class="tsb-rail">Seeding</span><button class="tny-btn sm" data-act="seed">⚡ Seed by ELO</button><button class="tny-btn sm" data-act="seed-random">🎲 Shuffle</button><span class="tny-note" style="display:inline">edit numbers inline — seeds lock at Start</span></div>':'';
-    const addRow=(isTO&&pre)?'<div class="tny-addent"><input id="tnyAddQ" placeholder="Add a player — type a name, or paste a SteamID64" value="'+esc(TNY._addq||'')+'" autocomplete="off" spellcheck="false"><button class="tny-btn gold" data-act="add-entrant">Add</button><div class="tny-addd" id="tnyAddD"></div></div>':'';
+    const addRow=(isTO&&pre)?'<div class="tny-addent"><input id="tnyAddQ" placeholder="Add a player — type a name, or paste a SteamID64" value="'+esc(TNY._addq||'')+'" autocomplete="off" spellcheck="false"><button class="tny-btn" data-act="add-entrant">Add</button><div class="tny-addd" id="tnyAddD"></div></div>':'';   // gs-212 gold audit: Add demoted — the gate owns this page\'s gold
     const hostSet=new Set((t.hosts||[]).map(h=>h.steamid));
     tId('tnyEntrants').innerHTML = seedBar + addRow + tnyEntrantsHtml(regs, isTO, pre, hostSet);
     // gs-206: this section is SSE/tick-rebuilt — restore the search box's text/focus/dropdown after every re-render
