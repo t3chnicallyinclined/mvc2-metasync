@@ -641,3 +641,26 @@ UI: season badge shelf gets a small ⛓ "etched on-chain" mark linking to the tx
 ("season results are carved in stone"), never as NFTs/crypto. Player-claimable badge NFTs = OPT-IN maybe
 later, never default. Build: ~3-4h on top of the season snapshot job (wallet setup + anchor script + verify
 endpoint + UI mark).
+
+---
+
+# BETA SEASON (owner directives 2026-08-19, post-0.2.0 ship)
+
+- **The current stats ARE the Beta Season** (Season 0/"BETA"). Ends in ~2-3 weeks — PROPOSED END:
+  **Sunday 2026-09-06 23:59 ET** (ends after a weekend = max final-push play). Then S1 SNAPBACK begins.
+- **BETA VANGUARD badge**: every player with >=1 ranked match during the beta season gets a permanent
+  exclusive beta tag at season end (never earnable again — the OG flex).
+- **BADGES SYSTEM + BADGES PAGE**: a page showing ALL badges, earned bright / locked dimmed with
+  how-to-earn text. Brainstormed set (server-computable from existing data):
+  BETA VANGUARD (beta participant) · season placement (champion/top3/top10 + tier-at-end per season) ·
+  GALACTUS SLAYER (beat a Galactus-tier player) · GIANT KILLER (beat someone +300 ELO) · FIRST BLOOD
+  (first ranked win) · STREAKER (10-win streak) · UNTOUCHABLE (perfect) · EXECUTIONER (OCV) · HOUDINI
+  (comeback) · CENTURION (100 wins) · MARATHON (100 games) · HOMETOWN HERO (#1 in your city).
+  Perks tie-in: badges unlock Card-Editor plate gradients/titles later.
+- **LANDING PAGE + BIG ANNOUNCEMENT** on nobd.net leading with the beta season + live standings + HOW THE
+  RATING WORKS, pitched vs the Collection's own ranking. THE PITCH (owner's words, use this):
+  the Collection gives points for any game win/loss -> the top ranks are just whoever plays the most.
+  MetaSync ELO = you FIGHT for your spot: play as much as you like, but you climb by beating people —
+  beat higher-ranked players and you climb FAST. Ratings mean skill, not grind hours.
+- Build order next session: badges (server award engine + badges page) -> season config (beta end date +
+  snapshot + on-chain anchor) -> landing page (design panel + canvas mock first).

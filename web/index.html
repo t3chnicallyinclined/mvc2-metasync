@@ -815,8 +815,15 @@ try{document.documentElement.setAttribute('data-theme', localStorage.getItem('me
   .mast-desc{font-size:11.5px; color:var(--faint); max-width:430px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
   .masthead .lb-period{margin:0 0 0 auto; position:relative; align-self:flex-start;}
   .mast-rail{position:relative; display:flex; align-items:center; padding:6px 10px; border-top:1px solid #1c2130; background:rgba(13,16,23,.6);}
-  .mast-rail #lbTabs{display:flex !important; flex-wrap:wrap; gap:3px; flex:1; min-width:0; border-left:0; padding-left:0;}
-  .lb-chev{padding:4px 9px; opacity:.7;}
+  .mast-rail #lbTabs{display:flex !important; flex-wrap:nowrap; gap:3px; flex:1; min-width:0; border-left:0; padding-left:0; overflow:hidden;}
+  /* gs-201: ONE row, always — inactive channels collapse to their icon (name on hover), like the page tabs */
+  .mast-rail #lbTabs button:not(.on) .clbl{display:none;}
+  .mast-rail #lbTabs button{padding:5px 9px; font-size:11.5px;}
+  .mast-rail #lbTabs button.on{padding:5px 13px;}
+  .mast-rail #lbSearch{margin-left:auto; flex:0 1 160px; min-width:80px; padding:5px 10px;}
+  .lb-chev{padding:4px 8px; opacity:.7; flex:none;}
+  #navGhost{display:none;}                                   /* one ghost per screen — the masthead owns it (gs-201) */
+  .brand-mini .ver{font-size:9px; max-width:120px; overflow:hidden; white-space:nowrap;}
   .bd-cut{display:flex; align-items:center; gap:10px; padding:3px 12px; font-size:10px; font-weight:700; letter-spacing:.14em; text-transform:uppercase; white-space:nowrap;}
   .bd-cut i{flex:1; height:1px; background:currentColor; opacity:.3;}
   /* gs-200: profile live-match banner (push-patched via #pfLiveSlot) */
@@ -883,9 +890,13 @@ try{document.documentElement.setAttribute('data-theme', localStorage.getItem('me
   .tny-host-empty{color:var(--faint); font-size:12.5px; padding:8px 2px}
   .tny-host-ctl{display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin-bottom:6px}
   /* event-hub sub-nav */
-  .tny-subnav{display:flex; gap:4px; margin:4px 0 14px; border-bottom:1px solid var(--line)}
-  .tny-subtab{padding:9px 15px; font-size:13px; font-weight:800; color:var(--dim); background:none; border:0; border-bottom:2px solid transparent; cursor:pointer; display:flex; align-items:center; gap:7px}
-  .tny-subtab.on{color:var(--ink); border-bottom-color:var(--gold)}
+  /* gs-201: event sub-tabs speak the arena CUT language (full Stage rebuild lands next) */
+  .tny-subnav{display:flex; gap:4px; margin:4px 0 14px; padding-bottom:6px; border-bottom:1px solid var(--line)}
+  .tny-subtab{transform:skewX(-12deg); padding:7px 14px; font-size:12.5px; font-weight:700; color:var(--dim); background:none; border:0; border-radius:6px; cursor:pointer; display:flex; align-items:center; gap:7px; opacity:.7}
+  .tny-subtab>*{transform:skewX(12deg)}
+  .tny-subtab:hover{opacity:1; color:var(--ink)}
+  .tny-subtab.on{opacity:1; background:linear-gradient(180deg,#ffe084,#c98f0e); color:#241700; font-weight:900; box-shadow:0 4px 14px rgba(232,185,60,.2)}
+  .tny-subtab.on .tny-subn{background:rgba(0,0,0,.18); color:#241700}
   .tny-subn{font-size:11px; color:var(--faint); background:var(--panel-2,var(--card)); padding:0 7px; border-radius:999px; font-weight:800}
   .tny-subtab.on .tny-subn{color:var(--gold)}
   /* ── EVENT HERO ── */
@@ -1293,16 +1304,16 @@ try{document.documentElement.setAttribute('data-theme', localStorage.getItem('me
         <div class="mast-rail" id="lbMastRail">
           <div class="lb-tabs" id="lbTabs">
             <button class="lb-chev" id="lbPrev" title="Previous board (←)">‹</button>
-            <button data-lt="rating" class="on">⚔️ Ranked</button>
-            <button data-lt="wins">🏅 Wins</button>
-            <button data-lt="streak">🔥 Streak</button>
-            <button data-lt="ocv">💥 OCV</button>
-            <button data-lt="perfect">✨ Perfect</button>
-            <button data-lt="comeback">🔄 Comeback</button>
-            <button data-lt="combo">🎯 Combo</button>
-            <button data-lt="deficit">🛡️ Clutch</button>
-            <button data-lt="tierlist">📊 Tiers</button>
-            <button id="lbRegions" title="City &amp; country leaderboards">🌍 Regions</button>
+            <button data-lt="rating" class="on" title="Ranked">⚔️<span class="clbl"> Ranked</span></button>
+            <button data-lt="wins" title="Wins">🏅<span class="clbl"> Wins</span></button>
+            <button data-lt="streak" title="Streak">🔥<span class="clbl"> Streak</span></button>
+            <button data-lt="ocv" title="OCV">💥<span class="clbl"> OCV</span></button>
+            <button data-lt="perfect" title="Perfect">✨<span class="clbl"> Perfect</span></button>
+            <button data-lt="comeback" title="Comeback">🔄<span class="clbl"> Comeback</span></button>
+            <button data-lt="combo" title="Combo">🎯<span class="clbl"> Combo</span></button>
+            <button data-lt="deficit" title="Clutch">🛡️<span class="clbl"> Clutch</span></button>
+            <button data-lt="tierlist" title="Team tiers">📊<span class="clbl"> Tiers</span></button>
+            <button id="lbRegions" title="City &amp; country leaderboards">🌍<span class="clbl"> Regions</span></button>
             <button class="lb-chev" id="lbNext" title="Next board (→)">›</button>
             <input id="lbSearch" type="text" placeholder="Search player…" autocomplete="off" spellcheck="false">
             <button class="lb-ico" id="lbRankInfo" title="The rank tiers — what they mean and how the rating works">🛡️</button>
@@ -3603,7 +3614,7 @@ async function renderDetail(fromCache){
   const tabs=[['overview','Overview'],['bracket','Bracket'],['entrants','Entrants',nActive],['stations','🎮 Stations & Stream',nH],['standings','Standings']];
   if(isTO) tabs.push(['admin','⚙ Admin']);
   if(!tabs.map(x=>x[0]).includes(TNY.sub)) TNY.sub = t.bracket?'bracket':'entrants';
-  tId('tnySub').innerHTML = tabs.map(x=>'<button class="tny-subtab'+(TNY.sub===x[0]?' on':'')+'" data-sub="'+x[0]+'">'+x[1]+(x[2]!=null?' <span class="tny-subn">'+x[2]+'</span>':'')+'</button>').join('');
+  tId('tnySub').innerHTML = tabs.map(x=>'<button class="tny-subtab'+(TNY.sub===x[0]?' on':'')+'" data-sub="'+x[0]+'"><span>'+x[1]+'</span>'+(x[2]!=null?' <span class="tny-subn">'+x[2]+'</span>':'')+'</button>').join('');   // gs-201: label wrapped so the cut skew counter-rotates it
   // render EVERY tab section (each isolated — one failing section must not blank the rest), then reveal the active one
   tnyTry('overview',()=>tnyRenderOverview(t, isTO)); tnyTry('standings',()=>tnyRenderStandings(t)); tnyTry('admin',()=>tnyRenderAdmin(t, isTO, pre));
   tnyTry('entrants',()=>{ const regs=[...(t.registrations||[])].sort((a,b)=>(a.seed||999)-(b.seed||999)||(a.registered_ms||0)-(b.registered_ms||0));
