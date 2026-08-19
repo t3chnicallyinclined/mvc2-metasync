@@ -691,7 +691,12 @@ fn read_my_lobby_inner() -> Option<serde_json::Value> {
         let mut counts: HashMap<u64, u32> = HashMap::new();          // lobby id → owner-adjacency hits
         let mut lobby_at: HashMap<u64, Vec<usize>> = HashMap::new(); // lobby id → addresses it occupies
         for r in h.regions() {
-            if r.private && r.readable && r.size <= 0x800_0000 {
+            // ⚠ region cap raised 0x800_0000 (128MB) → 0x4000_0000 (1GB) for PROTON/WINE hosts: on Linux the
+            // game's heap — where the lobby-owner structure lives — consolidates into ONE large region that the
+            // old 128MB cap skipped, so read_my_lobby returned NOT-IN-LOBBY on Bazzite (live-confirmed 2026-08-19:
+            // owner-adjacency only appeared once regions >128MB were scanned). Windows heaps stay small; the
+            // higher cap is harmless there and correct on Proton.
+            if r.private && r.readable && r.size <= 0x4000_0000 {
                 let (base, size) = (r.base, r.size);
                 let mut off = 0usize;
                 while off < size {
