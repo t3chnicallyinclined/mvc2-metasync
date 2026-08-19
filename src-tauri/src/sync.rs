@@ -2077,10 +2077,22 @@ struct PendingGame { winner: u8, opp: (String, String), ocv: bool, perfect: bool
 
 // Rich per-game payload for logging (both teams + combat stats). Winner/loser & my/opp are resolved downstream.
 #[derive(Clone, Default)]
-struct GameRich { p1_team: Vec<u8>, p2_team: Vec<u8>, p1_combo: u16, p2_combo: u16, p1_met: u32, p2_met: u32 }
+struct GameRich { p1_team: Vec<u8>, p2_team: Vec<u8>, p1_combo: u16, p2_combo: u16, p1_met: u32, p2_met: u32,
+    origin: String }
 fn rich_of(st: &ScoreState) -> GameRich {
     let (p1_team, p2_team) = st.teams.clone().unwrap_or_default();
-    GameRich { p1_team, p2_team, p1_combo: st.g1_maxcombo, p2_combo: st.g2_maxcombo, p1_met: st.g1_met, p2_met: st.g2_met }
+    GameRich { p1_team, p2_team, p1_combo: st.g1_maxcombo, p2_combo: st.g2_maxcombo, p1_met: st.g1_met, p2_met: st.g2_met,
+        origin: detect_origin() }
+}
+
+// GAME MODE origin, captured at the KO moment (rich_of runs only in the game-end judgment, so this is one
+// lobby read per finished game — and a buffered pending game keeps the origin from when it was PLAYED, not
+// when the side-confirm flush finally reports it). "lobby" = the live session says we're in a Steam lobby
+// (host or member — read_my_lobby covers both); everything else is ranked matchmaking. The server treats
+// this as a CLAIM: tournament/money stamping and the ranked-eligibility decision stay server-side.
+fn detect_origin() -> String {
+    let l = read_my_lobby();
+    if l.get("in_lobby").and_then(|v| v.as_bool()).unwrap_or(false) { "lobby".into() } else { "ranked".into() }
 }
 
 // ── PERSISTENT HEAD-TO-HEAD RECORD (C:\g\records.json, keyed by opponent SteamID) ──────────────────
@@ -2161,7 +2173,8 @@ fn on_game_win(winner: u8, opp: &Option<(String, String)>, my_side: u8, ocv: boo
     let set_end = if gs.is_some() { read_set_end(set_start) } else { None };
     report_result_server(reporter, winner_id, winner_name, loser_id, loser_name, ocv, perfect, comeback,
         winner_team, loser_team, winner_combo, winner_met,
-        my_side, rich.p1_team.clone(), rich.p2_team.clone(), gs, session_id.to_string(), match_index, set_end);
+        my_side, rich.p1_team.clone(), rich.p2_team.clone(), gs, session_id.to_string(), match_index, set_end,
+        rich.origin.clone());
 }
 
 // Tier-3: read the set-score at win-report time with a SHORT retry. The HUD "WINS" tally can update a frame
@@ -2198,7 +2211,7 @@ fn report_result_server(reporter: String, winner: String, winner_name: String, l
                         winner_team: Vec<u8>, loser_team: Vec<u8>, biggest_combo: u16, meters_used: u32,
                         // game-state recording context (uploaded only if share_gameplay_data + a recording exists)
                         side: u8, p1_team: Vec<u8>, p2_team: Vec<u8>, gs: Option<GsSnapshot>,
-                        session_id: String, match_index: u32, set_end: Option<(u8, u8)>) {
+                        session_id: String, match_index: u32, set_end: Option<(u8, u8)>, origin: String) {
     std::thread::spawn(move || {
         use std::sync::atomic::Ordering::SeqCst;
         // gs-105 frame-derived per-match stats from the recording (BOTH teams — hp/red_hp state is global, and hp
@@ -2237,6 +2250,8 @@ fn report_result_server(reporter: String, winner: String, winner_name: String, l
             "side": side,   // gs-92: which side the reporter was (1=P1,2=P2) — makes every game auditable server-side
             "session_id": session_id, "match_index": match_index,   // gs-96: tie each game to its ranked set (≤10 games)
             "ver": env!("CARGO_PKG_VERSION"),   // gs-98: which app build recorded this — so we can tell fixed vs pre-fix
+            "origin": origin, // GAME MODE claim ("ranked"|"lobby", read at the KO): the server stamps tournament/
+                              // money server-side and decides ranked-eligibility (lobby needs both season-registered)
         });
         // capture the server-derived match_key from the /result response (single source of truth → both
         // players consense on ONE key, and each tags its own recording with it).
