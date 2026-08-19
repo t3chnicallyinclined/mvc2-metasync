@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { base } from '$app/paths';
 	import RankBadge from './RankBadge.svelte';
 	import Avatar from './Avatar.svelte';
 	import { rankOf, gamesOf, winrateOf, winrateColor } from '$lib/ranks';
@@ -31,9 +32,18 @@
 <div class="bd-row" class:me class:flash>
 	<div class="bd-rank">{pos == null ? '—' : pos}</div>
 	<div class="bd-name">
-		<Avatar url={player.avatar} size={20} alt={player.name} />
-		{#if player.cc}<span class="flag">{flagEmoji(player.cc)}</span>{/if}
-		<span class="nm">{player.name || 'Player'}{#if me}<span class="me-tag">YOU</span>{/if}</span>
+		{#if player.steamid}
+			<a class="lnk" href="{base}/u/{player.steamid}">
+				<Avatar url={player.avatar} size={20} alt={player.name} />
+				{#if player.cc}<span class="flag">{flagEmoji(player.cc)}</span>{/if}
+				<span class="nm">{player.name || 'Player'}</span>
+			</a>
+		{:else}
+			<Avatar url={player.avatar} size={20} alt={player.name} />
+			{#if player.cc}<span class="flag">{flagEmoji(player.cc)}</span>{/if}
+			<span class="nm">{player.name || 'Player'}</span>
+		{/if}
+		{#if me}<span class="me-tag">YOU</span>{/if}
 	</div>
 	<div class="bd-tier">
 		<RankBadge rating={player.rating} games={gamesOf(player)} size={16} />
@@ -78,6 +88,18 @@
 		min-width: 0;
 		white-space: nowrap;
 		overflow: hidden;
+	}
+	.bd-name .lnk {
+		display: flex;
+		align-items: center;
+		gap: 7px;
+		min-width: 0;
+		overflow: hidden;
+		color: inherit;
+		text-decoration: none;
+	}
+	.bd-name .lnk:hover .nm {
+		color: var(--gold);
 	}
 	.bd-name .nm {
 		overflow: hidden;

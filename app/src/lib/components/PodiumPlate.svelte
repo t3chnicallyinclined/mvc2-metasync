@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { base } from '$app/paths';
 	import RankBadge from './RankBadge.svelte';
 	import Avatar from './Avatar.svelte';
 	import { rankOf, gamesOf, winrateOf, RK_PLATE } from '$lib/ranks';
@@ -23,8 +24,15 @@
 	style="--pa:{acc[0]}; --pb:{acc[1]}; --lb-acc:{MAST[tab][2]}"
 >
 	<span class="mark mono">{crown ? '👑' : '#' + place}</span>
-	<Avatar url={player.avatar} size={crown ? 58 : 46} alt={player.name} />
-	<b class="pnm">{#if player.cc}{flagEmoji(player.cc)} {/if}{player.name || 'Player'}</b>
+	{#if player.steamid}
+		<a class="av-link" href="{base}/u/{player.steamid}" aria-label={player.name || 'Player'}>
+			<Avatar url={player.avatar} size={crown ? 58 : 46} alt={player.name} />
+		</a>
+		<a class="pnm plink" href="{base}/u/{player.steamid}">{#if player.cc}{flagEmoji(player.cc)} {/if}{player.name || 'Player'}</a>
+	{:else}
+		<Avatar url={player.avatar} size={crown ? 58 : 46} alt={player.name} />
+		<b class="pnm">{#if player.cc}{flagEmoji(player.cc)} {/if}{player.name || 'Player'}</b>
+	{/if}
 	<span class="ptier bd-tier">
 		<RankBadge rating={player.rating} games={gamesOf(player)} size={crown ? 20 : 16} />
 		<span class="rk-{r.s}">{r.n}</span>
@@ -78,6 +86,18 @@
 		overflow: hidden;
 		text-overflow: ellipsis;
 		white-space: nowrap;
+	}
+	.av-link {
+		display: inline-flex;
+		line-height: 0;
+		text-decoration: none;
+	}
+	a.pnm {
+		text-decoration: none;
+		color: inherit;
+	}
+	a.pnm:hover {
+		color: var(--gold);
 	}
 	.ptier {
 		display: flex;
