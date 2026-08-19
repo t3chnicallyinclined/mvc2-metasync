@@ -3,9 +3,10 @@
 	import { page } from '$app/state';
 	import { base } from '$app/paths';
 	import { TourneyStore } from '$lib/stores/tourney.svelte';
+	import { auth } from '$lib/stores/auth.svelte';
 	import Avatar from '$lib/components/Avatar.svelte';
 	import { flagEmoji, whenLabel } from '$lib/format';
-	import { teamAbbr } from '$lib/chars';
+	import { teamAbbr, CHAR_NAME } from '$lib/chars';
 	import {
 		statusMeta,
 		formatLabel,
@@ -112,6 +113,98 @@
 
 	const rulesHtml = $derived(mdToSafeHtml(doc?.rules_md));
 	const title = $derived(doc?.name || 'Tournament');
+
+	// ── signed-in actions (register / check-in / unregister) ────────────────────────────────────────
+	// The acting steamid comes from the bearer TOKEN server-side; we only mirror the user's state here to
+	// pick the right control. Windows: a 0 bound means "no bound" (mirrors tourney.rs register/checkin).
+	const status = $derived((doc?.status ?? '').toLowerCase());
+	function withinWindow(open?: number, close?: number): boolean {
+		const now = Date.now();
+		if (open && open > 0 && now < open) return false;
+		if (close && close > 0 && now > close) return false;
+		return true;
+	}
+	// registration is accepted while status is open|checkin AND inside the (optional) reg window.
+	const regOpen = $derived(
+		(status === 'open' || status === 'checkin') &&
+			withinWindow(doc?.reg_open_ms, doc?.reg_close_ms)
+	);
+	// check-in is its own phase (status "checkin") within the (optional) check-in window.
+	const checkinOpen = $derived(
+		status === 'checkin' && withinWindow(doc?.checkin_open_ms, doc?.checkin_close_ms)
+	);
+	// the roster locks once the bracket is drawn (or the event is done/cancelled) — no self-drop after.
+	const locked = $derived(status === 'running' || status === 'done' || status === 'cancelled');
+
+	// the signed-in user's own registration row (active only — a dropped/DQ'd row counts as not-registered).
+	const myReg = $derived(
+		auth.authed && auth.steamid
+			? (doc?.registrations ?? []).find((r) => r.steamid === auth.steamid)
+			: undefined
+	);
+	const myDropped = $derived(myReg?.status === 'dropped' || myReg?.status === 'dq');
+	const registered = $derived(!!myReg && !myDropped);
+	const checkedIn = $derived(registered && (!!myReg?.checked_in || myReg?.status === 'checked_in'));
+
+	// show the actions panel only when there's something to do/see for this viewer.
+	const showActions = $derived(
+		auth.authed ? registered || regOpen : regOpen || checkinOpen
+	);
+
+	// optional team picker — three char <select>s, '' = "any". Sorted by name for scannability.
+	const charOptions = Object.entries(CHAR_NAME)
+		.map(([id, name]) => ({ id: Number(id), name }))
+		.sort((a, b) => a.name.localeCompare(b.name));
+	let team = $state<[string, string, string]>(['', '', '']);
+
+	let busy = $state(false);
+	let notice = $state<{ kind: 'ok' | 'err'; text: string } | null>(null);
+
+	async function doRegister() {
+		if (busy) return;
+		busy = true;
+		notice = null;
+		const picked = team.filter((v) => v !== '').map((v) => Number(v));
+		const body: { id: string; team?: number[] } = { id };
+		if (picked.length) body.team = picked;
+		const res = await auth.post('/skinsync/tourney/register', body);
+		busy = false;
+		if (res.ok) {
+			notice = { kind: 'ok', text: 'You’re registered!' };
+			void store.load(id);
+		} else {
+			notice = { kind: 'err', text: res.error ?? 'Could not register.' };
+		}
+	}
+
+	async function doCheckin() {
+		if (busy) return;
+		busy = true;
+		notice = null;
+		const res = await auth.post('/skinsync/tourney/checkin', { id });
+		busy = false;
+		if (res.ok) {
+			notice = { kind: 'ok', text: 'Checked in — good luck!' };
+			void store.load(id);
+		} else {
+			notice = { kind: 'err', text: res.error ?? 'Could not check in.' };
+		}
+	}
+
+	async function doUnregister() {
+		if (busy) return;
+		busy = true;
+		notice = null;
+		const res = await auth.post('/skinsync/tourney/unregister', { id });
+		busy = false;
+		if (res.ok) {
+			notice = { kind: 'ok', text: 'You’ve dropped from this event.' };
+			team = ['', '', ''];
+			void store.load(id);
+		} else {
+			notice = { kind: 'err', text: res.error ?? 'Could not unregister.' };
+		}
+	}
 </script>
 
 <svelte:head><title>{title} · MetaSync</title></svelte:head>
@@ -219,6 +312,74 @@
 		<div class="champ">
 			<span class="crown" aria-hidden="true">🏆</span>
 			<span>Champion — <b>{pname(champion)}</b></span>
+		</div>
+	{/if}
+
+	<!-- Sign-in / register / check-in actions -->
+	{#if showActions}
+		<div class="actions">
+			{#if !auth.authed}
+				<div class="signrow">
+					<span class="prompt">Sign in with Steam to register for this event.</span>
+					<button type="button" class="steam" onclick={() => auth.login()}>
+						<svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true">
+							<circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="2" />
+							<circle cx="15" cy="9" r="2.4" fill="currentColor" />
+							<path d="M6 15l4.5 1.8" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" />
+						</svg>
+						<span>Sign in with Steam</span>
+					</button>
+				</div>
+			{:else if registered}
+				<div class="status-line">
+					{#if checkedIn}
+						<span class="you good">✓ You’re checked in</span>
+					{:else}
+						<span class="you">You’re registered{regOpen ? '' : ' — check-in opens soon'}</span>
+					{/if}
+					{#if myReg?.team && myReg.team.length}
+						<span class="you-team">{teamAbbr(myReg.team)}</span>
+					{/if}
+				</div>
+				<div class="btnrow">
+					{#if checkinOpen && !checkedIn}
+						<button type="button" class="btn primary" disabled={busy} onclick={doCheckin}>
+							{busy ? 'Checking in…' : 'Check in'}
+						</button>
+					{/if}
+					{#if !locked}
+						<button type="button" class="btn subtle" disabled={busy} onclick={doUnregister}>
+							Unregister
+						</button>
+					{/if}
+				</div>
+			{:else if regOpen}
+				<div class="reg">
+					<div class="reg-hd">
+						<span class="reg-title">Enter this tournament</span>
+						<span class="reg-sub">Team is optional — leave as “Any” to decide later.</span>
+					</div>
+					<div class="picker">
+						{#each [0, 1, 2] as slot (slot)}
+							<label class="pk">
+								<span class="pk-l">Char {slot + 1}</span>
+								<select bind:value={team[slot]} disabled={busy} aria-label="Character {slot + 1}">
+									<option value="">Any</option>
+									{#each charOptions as c (c.id)}
+										<option value={String(c.id)}>{c.name}</option>
+									{/each}
+								</select>
+							</label>
+						{/each}
+					</div>
+					<button type="button" class="btn primary wide" disabled={busy} onclick={doRegister}>
+						{busy ? 'Registering…' : 'Register'}
+					</button>
+				</div>
+			{/if}
+			{#if notice}
+				<div class="notice {notice.kind}" role="status">{notice.text}</div>
+			{/if}
 		</div>
 	{/if}
 
@@ -456,6 +617,192 @@
 	}
 	.champ .crown {
 		font-size: 16px;
+	}
+
+	/* ── actions (sign-in / register / check-in) ── */
+	.actions {
+		margin: 0 0 4px;
+		padding: 14px;
+		border: 1px solid color-mix(in srgb, var(--gold) 26%, var(--line));
+		border-radius: 14px;
+		background:
+			linear-gradient(120deg, var(--gold-soft), transparent 70%),
+			var(--panel);
+	}
+	.signrow {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: 12px;
+		flex-wrap: wrap;
+	}
+	.prompt {
+		font-size: 13px;
+		font-weight: 700;
+		color: var(--ink);
+		min-width: 0;
+	}
+	.steam {
+		display: inline-flex;
+		align-items: center;
+		gap: 7px;
+		font: inherit;
+		font-size: 13.5px;
+		font-weight: 800;
+		color: #dfe9f5;
+		background: linear-gradient(180deg, #2a475e, #1b2838);
+		border: 1px solid color-mix(in srgb, #66c0f4 35%, transparent);
+		border-radius: 10px;
+		padding: 0 16px;
+		min-height: 42px;
+		cursor: pointer;
+		white-space: nowrap;
+		flex: none;
+	}
+	.steam:hover {
+		border-color: #66c0f4;
+		color: #fff;
+	}
+
+	.status-line {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+		flex-wrap: wrap;
+		margin-bottom: 10px;
+	}
+	.you {
+		font-size: 13.5px;
+		font-weight: 800;
+		color: var(--ink);
+	}
+	.you.good {
+		color: var(--good);
+	}
+	.you-team {
+		font-size: 10px;
+		font-weight: 800;
+		letter-spacing: 0.04em;
+		color: var(--dim);
+		font-family: ui-monospace, 'Cascadia Mono', Consolas, monospace;
+		padding: 3px 7px;
+		border: 1px solid var(--line);
+		border-radius: 6px;
+	}
+	.btnrow {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+		flex-wrap: wrap;
+	}
+	.reg-hd {
+		display: flex;
+		flex-direction: column;
+		gap: 2px;
+		margin-bottom: 10px;
+	}
+	.reg-title {
+		font-size: 14px;
+		font-weight: 800;
+		color: var(--ink);
+	}
+	.reg-sub {
+		font-size: 11.5px;
+		color: var(--dim);
+	}
+	.picker {
+		display: grid;
+		grid-template-columns: repeat(3, minmax(0, 1fr));
+		gap: 8px;
+		margin-bottom: 12px;
+	}
+	.pk {
+		display: flex;
+		flex-direction: column;
+		gap: 4px;
+		min-width: 0;
+	}
+	.pk-l {
+		font-size: 9.5px;
+		font-weight: 800;
+		letter-spacing: 0.1em;
+		text-transform: uppercase;
+		color: var(--faint);
+	}
+	.picker select {
+		width: 100%;
+		min-width: 0;
+		/* ≥16px so iOS never zooms the viewport when the select is focused (HARD CONSTRAINT). */
+		font-size: 16px;
+		font-weight: 600;
+		color: var(--ink);
+		background: var(--panel-2);
+		border: 1px solid var(--line);
+		border-radius: 9px;
+		padding: 9px 10px;
+		min-height: 42px;
+		appearance: none;
+		-webkit-appearance: none;
+		cursor: pointer;
+	}
+	.picker select:focus-visible {
+		outline: 2px solid var(--gold);
+		outline-offset: 1px;
+	}
+
+	.btn {
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		font: inherit;
+		font-size: 13.5px;
+		font-weight: 800;
+		min-height: 42px;
+		padding: 0 18px;
+		border-radius: 10px;
+		border: 1px solid var(--line);
+		background: var(--panel-2);
+		color: var(--ink);
+		cursor: pointer;
+	}
+	.btn.wide {
+		width: 100%;
+	}
+	.btn.primary {
+		color: var(--gold-ink);
+		background: var(--gold);
+		border-color: var(--gold);
+	}
+	.btn.primary:hover:not(:disabled) {
+		filter: brightness(1.05);
+	}
+	.btn.subtle {
+		font-size: 12.5px;
+		font-weight: 700;
+		color: var(--dim);
+		background: transparent;
+		min-height: 40px;
+		padding: 0 14px;
+	}
+	.btn.subtle:hover:not(:disabled) {
+		color: var(--live);
+		border-color: color-mix(in srgb, var(--live) 45%, var(--line));
+	}
+	.btn:disabled {
+		opacity: 0.6;
+		cursor: default;
+	}
+
+	.notice {
+		margin-top: 10px;
+		font-size: 12.5px;
+		font-weight: 700;
+	}
+	.notice.ok {
+		color: var(--good);
+	}
+	.notice.err {
+		color: var(--live);
 	}
 
 	/* ── section headers ── */

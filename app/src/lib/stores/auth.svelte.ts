@@ -103,6 +103,40 @@ class AuthStore {
 		}
 	}
 
+	/**
+	 * Authed JSON POST — the single write path for signed-in actions (register / check-in / lobby toggle …).
+	 * Sends the bearer via headers() ONLY (never logs or echoes the token); parses the JSON envelope and
+	 * treats both a non-2xx status and an `{ok:false}` body as failure. A 401 means the token is dead →
+	 * drop the session so the UI falls back to the signed-out state. Never throws — returns a result.
+	 */
+	async post<T = unknown>(path: string, body: unknown): Promise<{ ok: boolean; error?: string; data?: T }> {
+		if (!this.token) return { ok: false, error: 'Sign in to continue.' };
+		try {
+			const res = await fetch(api(path), {
+				method: 'POST',
+				headers: { 'content-type': 'application/json', ...this.headers() },
+				body: JSON.stringify(body ?? {})
+			});
+			if (res.status === 401) {
+				this.logout(); // token rejected → drop the dead session
+				return { ok: false, error: 'Your session expired — sign in again.' };
+			}
+			let data: unknown = null;
+			try {
+				data = await res.json();
+			} catch {
+				/* non-JSON / empty body — fall through to status check */
+			}
+			const d = (data ?? {}) as { ok?: boolean; error?: string };
+			if (!res.ok || d.ok === false) {
+				return { ok: false, error: d.error || `Request failed (${res.status})`, data: data as T };
+			}
+			return { ok: true, data: data as T };
+		} catch {
+			return { ok: false, error: 'Network error — check your connection and try again.' };
+		}
+	}
+
 	/** Load the signed-in user's own profile (bearer unlocks the owner-only view server-side). */
 	async loadMe(): Promise<void> {
 		if (!this.steamid) return;

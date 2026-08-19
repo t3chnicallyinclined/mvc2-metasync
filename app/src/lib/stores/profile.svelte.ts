@@ -1,5 +1,6 @@
 import { api } from '$lib/config';
 import { getChannel } from '$lib/rt.svelte';
+import { auth } from '$lib/stores/auth.svelte';
 import type { SseFrame } from '$lib/types';
 
 // Public player profile store. rune-$state, modelled on LeaderboardStore: fetch on demand, keep the
@@ -111,8 +112,10 @@ export class ProfileStore {
 		const myReq = ++this.#reqId;
 		this.loading = true;
 		try {
+			// Attach the bearer (empty when signed out): the token only unlocks the OWNER view of the
+			// caller's OWN id server-side (e.g. the private lobby record) — it grants nothing on others'.
 			const res = await fetch(api(`/skinsync/profile?steamid=${encodeURIComponent(sid)}`), {
-				headers: { accept: 'application/json' }
+				headers: { accept: 'application/json', ...auth.headers() }
 			});
 			if (!res.ok) throw new Error(`profile ${res.status}`);
 			const json = (await res.json()) as Profile;
