@@ -1137,6 +1137,24 @@ try{document.documentElement.setAttribute('data-theme', localStorage.getItem('me
   .tny-mrun button:hover{border-color:var(--gold); color:var(--ink)}
   .tny-mrun button.on{color:var(--stream,#8b6dff); border-color:var(--stream,#8b6dff)}
   #tnyAlert{position:sticky; top:8px; z-index:30}
+  /* gs-216 🪙 QUARTER MATCH — the marquee rail + the open marquee feed */
+  #wagerRail{display:flex; align-items:center; gap:12px; padding:8px 14px; margin:10px 0 0; min-height:40px;
+    border:1px solid var(--line); border-radius:14px; background:var(--card); position:relative; overflow:hidden; flex-wrap:wrap}
+  #wagerRail.locked{border-left:3px solid var(--gold)}
+  #wagerRail.win{border-left:3px solid var(--gold); background:linear-gradient(90deg,var(--gold-soft),var(--card) 55%)}
+  .wgr-lab{flex:none; font-size:10px; font-weight:700; letter-spacing:.16em; text-transform:uppercase; color:var(--faint)}
+  .wgr-line{flex:1; font-size:12.5px; color:var(--ink); min-width:180px}
+  .wgr-line.dim{color:var(--dim)}
+  .wgr-big{font-size:15px; font-weight:900; font-style:italic; color:var(--gold)}
+  .wgr-big.loss{color:var(--dim); font-weight:700; font-style:normal}
+  .wgr-echo{font-size:11px; color:var(--faint); font-style:italic; flex:none}
+  .wgr-acts{display:flex; align-items:center; gap:6px; flex:none; flex-wrap:wrap}
+  .wgr-stake{font-variant-numeric:tabular-nums}
+  .wgr-stake.on{border-color:color-mix(in srgb,var(--gold) 50%,var(--line)); color:var(--gold); background:var(--gold-soft)}
+  .mq-row{display:flex; align-items:center; gap:10px; padding:6px 10px; border-bottom:1px solid var(--line-soft,#1d2231); font-size:12.5px}
+  .mq-row:last-child{border-bottom:0}
+  .mq-nm{font-weight:800; cursor:pointer; flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
+  .mq-stake{color:var(--gold); font-variant-numeric:tabular-nums; font-weight:700; font-size:11.5px; white-space:nowrap}
   /* banner picker */
   .tny-banner-pick{display:flex; flex-direction:column; gap:8px}
   .tny-banner-prev{width:100%; max-width:360px; aspect-ratio:3/1; border-radius:10px; border:1px dashed var(--line); background:var(--panel-2) center/cover no-repeat; display:grid; place-items:center; color:var(--faint); font-size:12px}
@@ -1332,7 +1350,8 @@ try{document.documentElement.setAttribute('data-theme', localStorage.getItem('me
     </div>
   </section>
 
-  <!-- Share Lobby card removed — lobby joining is handled by the tournament flow (per-match Join link). -->
+  <!-- gs-216 🪙 QUARTER MATCH: the marquee rail — offer / accept / locked pot / settle, one home (WAGER-MATCH-SPEC) -->
+  <div id="wagerRail" style="display:none"></div>
 
 
   <div id="matchupStrip" class="matchup slim" style="display:none">
@@ -1394,6 +1413,14 @@ try{document.documentElement.setAttribute('data-theme', localStorage.getItem('me
   <!-- gs-200 (REALTIME-NEXT-WORK #2): the live feeds live on the MATCH tab now — they were competing with
        the leaderboard on Rankings. 'matches' channel is app-wide, so rows populate regardless of tab. -->
   <div class="lr-feed" id="lrFeed">
+    <!-- gs-216 🪙 THE MARQUEE — every open quarter in the network; anyone can attempt one -->
+    <div class="mq-feed" id="mqFeed" style="display:none">
+      <div class="lr-head">
+        <span class="lr-live">🪙 The Marquee</span>
+        <span class="lr-status" id="mqStatus">quarters up, waiting for takers</span>
+      </div>
+      <div class="lr-list" id="mqList"></div>
+    </div>
     <div class="np-feed" id="npFeed" style="display:none">
       <div class="lr-head">
         <span class="lr-live"><span class="lr-dot"></span>🟢 Now Playing</span>
@@ -3501,7 +3528,7 @@ function switchTab(t){
   else { stAnimStop(); }                                            // leaving Studio → stop the anim timer
   if(t==='library') renderLibrary();
   if(t==='ranks'){ renderLeaderboard(); rtRanksEnter(); } else rtRanksLeave();   // live-push the board while Ranks is open
-  if(t==='match'){ rtMatchEnter(); } else rtMatchLeave();                        // gs-200: live feeds live on Match now
+  if(t==='match'){ rtMatchEnter(); wgrEnter(); } else { rtMatchLeave(); wgrLeave(); }   // gs-200 feeds + gs-216 🪙 marquee live on Match
   if(t==='regions') renderRegions();
   if(t==='tourney'){ renderTourney(); coinsRefresh(); }   // gs-214: quarters balance rides tab entry
   window.scrollTo({top:0,behavior:'smooth'});
@@ -3531,6 +3558,104 @@ async function coinsRefresh(){
   try{ const r=await invoke('coins',{steamid:String(mySteam.steamid)}); if(r&&r.ok&&typeof r.balance==='number'){ MY_COINS=r.balance; coinsPaint(); } }catch(_){}
 }
 function coinsPaint(){ const c=$('#coinChip'), b=$('#coinBal'); if(c&&b&&MY_COINS!=null){ b.textContent=MY_COINS; c.style.display=''; } }
+// ── gs-216 🪙 QUARTER MATCH — the marquee rail + the open marquee (spec: docs/WAGER-MATCH-SPEC.md).
+// One home for every wager state; all mutations go through the server (offers move nothing; accepting
+// stakes BOTH sides; the memory-read referee settles). State cached on WGR — never one-shot DOM.
+let WGR={ mine:null, open:[], stake:2, expand:false, share:'', t:null };
+function wgrSid(){ return (mySteam&&mySteam.steamid)?String(mySteam.steamid):''; }
+async function wgrPoll(){
+  const sid=wgrSid(); if(!invoke||!sid){ wgrRender(); return; }
+  try{ const r=await invoke('wager_state',{steamid:sid}); if(r&&r.ok) WGR.mine=r.wager||null; }catch(_){}
+  try{ const o=await invoke('wager_open'); if(o&&o.ok) WGR.open=o.wagers||[]; }catch(_){}
+  // the challenger keeps the join link fresh while their quarter waits on the marquee
+  if(WGR.mine && WGR.mine.status==='open' && WGR.mine.challenger===sid){ try{ await invoke('wager_heartbeat',{id:WGR.mine.id}); }catch(_){} }
+  wgrRender(); mqRender(); coinsRefresh();
+}
+function wgrEnter(){ if(WGR.t) clearInterval(WGR.t); WGR.t=setInterval(wgrPoll, 6000); wgrPoll(); }
+function wgrLeave(){ if(WGR.t){ clearInterval(WGR.t); WGR.t=null; } }
+function wgrApply(d){   // SSE deltas on the app-wide `matches` channel (wager_open/locked/settled/refunded)
+  const sid=wgrSid();
+  if(d.status==='open' && !d.opp) { const i=WGR.open.findIndex(x=>x.id===d.id); if(i>=0) WGR.open[i]=d; else WGR.open.unshift(d); }
+  else WGR.open=WGR.open.filter(x=>x.id!==d.id);
+  if(sid && (d.challenger===sid || d.acceptor===sid || d.opp===sid)) WGR.mine=d;
+  wgrRender(); mqRender();
+}
+function wgrJoinLink(w){ return (w&&w.lobby_id&&w.lobby_owner)?('steam://joinlobby/2634890/'+w.lobby_id+'/'+w.lobby_owner):''; }
+function wgrRender(){
+  const el=$('#wagerRail'); if(!el) return;
+  const sid=wgrSid(), w=WGR.mine;
+  const rail='<span class="wgr-lab">🪙 quarter match</span>';
+  const done=w&&(w.status==='settled'||w.status==='refunded'||w.status==='cancelled'||w.status==='expired');
+  const stale=done&&(Date.now()-(w.settled_ms||w.locked_ms||w.created_ms||0)>300000);
+  let h='';
+  if(!sid){ el.style.display='none'; return; }
+  if(w && w.status==='open'){
+    if(w.challenger===sid){
+      h=rail+'<span class="wgr-line">🪙 '+w.stake+' on the marquee — waiting for a taker… </span>'+
+        '<span class="wgr-acts"><button class="tny-btn sm" data-wact="share">⧉ SHARE</button><button class="tny-btn ghost sm" data-wact="cancel">CANCEL</button></span>';
+    } else if(w.opp===sid){
+      h=rail+'<span class="wgr-line"><b>'+esc(w.challenger_name||'A challenger')+'</b> puts up 🪙 '+w.stake+' — match it and the machine holds 🪙 '+(w.stake*2)+'.</span>'+
+        '<span class="wgr-echo">'+(MY_COINS!=null?('you have 🪙 '+MY_COINS):'')+'</span>'+
+        '<span class="wgr-acts"><button class="tny-btn gold sm" data-wact="match" data-id="'+esc(w.id)+'">MATCH 🪙 '+w.stake+'</button><button class="tny-btn ghost sm" data-wact="decline" data-id="'+esc(w.id)+'">DECLINE</button></span>';
+    } else { el.style.display='none'; return; }
+  } else if(w && w.status==='locked'){
+    const jl=wgrJoinLink(w);
+    h=rail+'<span class="wgr-line">🪙 '+(w.stake*2)+' in the machine — <b>'+esc(w.challenger_name||'?')+'</b> vs <b>'+esc(w.acceptor_name||'?')+'</b> · next result decides it.</span>'+
+      '<span class="wgr-acts">'+((jl&&w.acceptor===sid)?'<button class="tny-btn gold sm" data-wact="join" data-link="'+esc(jl)+'">🎮 JOIN THE LOBBY</button>':'')+'</span>';
+  } else if(w && w.status==='settled' && !stale){
+    const won=w.winner===sid;
+    h=rail+(won?'<span class="wgr-line"><b class="wgr-big">🪙 +'+(w.stake*2)+' — purse claimed</b></span>'
+               :'<span class="wgr-line"><span class="wgr-big loss">purse lost — 🪙 '+w.stake+' to '+esc(w.winner===w.challenger?(w.challenger_name||'them'):(w.acceptor_name||'them'))+'</span></span>')+
+      '<span class="wgr-acts"><button class="tny-btn sm" data-wact="runback" data-v="'+w.stake+'">🪙 RUN IT BACK</button></span>';
+  } else if(w && w.status==='refunded' && !stale){
+    h=rail+'<span class="wgr-line dim">🪙 '+w.stake+' returned — no result recorded.</span>';
+  } else {
+    // no active wager → the offer affordance (collapsed ghost cut; stakes expand on tap)
+    if(!WGR.expand){
+      h=rail+'<span class="wgr-line dim">Put quarters on a set — winner takes the pot.</span>'+
+        '<span class="wgr-acts"><button class="tny-btn sm" data-wact="up">🪙 QUARTER UP ▸</button></span>';
+    } else {
+      h=rail+'<span class="wgr-line dim">Pick your stake — anyone on the marquee can attempt it.</span>'+
+        '<span class="wgr-echo">'+(MY_COINS!=null?('you have 🪙 '+MY_COINS):'')+'</span>'+
+        '<span class="wgr-acts">'+[1,2,4,8].map(v=>'<button class="tny-btn sm wgr-stake'+(WGR.stake===v?' on':'')+'" data-wact="stake" data-v="'+v+'">🪙 '+v+'</button>').join('')+
+        '<button class="tny-btn gold sm" data-wact="put">PUT IT UP ▸</button></span>';
+    }
+  }
+  el.innerHTML=h; el.style.display='flex';
+  el.classList.toggle('locked', !!(w&&w.status==='locked'));
+  el.classList.toggle('win', !!(w&&w.status==='settled'&&w.winner===sid&&!stale));
+}
+function mqRender(){
+  const feed=$('#mqFeed'), list=$('#mqList'); if(!feed||!list) return;
+  const sid=wgrSid();
+  const rows=(WGR.open||[]).slice(0,12);
+  if(!rows.length){ feed.style.display='none'; return; }
+  list.innerHTML=rows.map(w=>{
+    const mine=w.challenger===sid;
+    return '<div class="mq-row"><span class="mq-nm lb-click" data-sid="'+esc(w.challenger)+'" data-nm="'+esc(w.challenger_name||'Player')+'">'+esc(w.challenger_name||'Player')+'</span>'+
+      '<span class="mq-stake">🪙 '+w.stake+' up · pot 🪙 '+(w.stake*2)+'</span>'+
+      (mine?'<button class="tny-btn ghost sm" data-wact="cancel">CANCEL</button>'
+           :'<button class="tny-btn sm" data-wact="match" data-id="'+esc(w.id)+'">⚔ ATTEMPT</button>')+'</div>';
+  }).join('');
+  const st=$('#mqStatus'); if(st) st.textContent=rows.length+' quarter'+(rows.length===1?'':'s')+' up, waiting for takers';
+  feed.style.display='';
+}
+async function wgrAct(a){
+  const k=a.dataset.wact;
+  try{
+    if(k==='up'){ WGR.expand=true; wgrRender(); return; }
+    if(k==='stake'){ WGR.stake=+a.dataset.v||2; wgrRender(); return; }
+    if(k==='put'){ const r=await invoke('wager_offer',{stake:WGR.stake}); if(r&&r.ok){ WGR.mine=r.wager; WGR.share=r.share||''; WGR.expand=false; toast('🪙 Your quarter is on the marquee'); } else toast('⚠ '+((r&&r.error)||'could not offer')); }
+    if(k==='cancel'&&WGR.mine){ const r=await invoke('wager_cancel',{id:WGR.mine.id}); if(r&&r.ok){ toast('Quarter pulled back'); } else toast('⚠ '+((r&&r.error)||'could not cancel')); }
+    if(k==='share'){ const link=WGR.share||('https://nobd.net/skinsync/mm?id='+((WGR.mine&&WGR.mine.id)||'')); try{ await navigator.clipboard.writeText(link); toast('⧉ Challenge link copied — post it anywhere'); }catch(_){ toast(link); } return; }
+    if(k==='match'){ const r=await invoke('wager_respond',{id:a.dataset.id}); if(r&&r.ok){ WGR.mine=r.wager; toast('🪙 Quarters locked — the machine holds the pot'); const jl=wgrJoinLink(r.wager); if(jl){ try{ await invoke('open_external',{url:jl}); toast('Launching Steam to join the lobby…'); }catch(_){} } } else toast('⚠ '+((r&&r.error)||'could not match')); }
+    if(k==='decline'){ const r=await invoke('wager_respond',{id:a.dataset.id, accept:false}); if(r&&r.ok) toast('Declined'); }
+    if(k==='join'){ try{ await invoke('open_external',{url:a.dataset.link}); toast('Launching Steam…'); }catch(_){ toast('⚠ could not launch Steam'); } return; }
+    if(k==='runback'){ const r=await invoke('wager_offer',{stake:+a.dataset.v||WGR.stake}); if(r&&r.ok){ WGR.mine=r.wager; WGR.share=r.share||''; toast('🪙 Back on the marquee'); } else toast('⚠ '+((r&&r.error)||'could not re-offer')); }
+  }catch(e){ toast('⚠ '+e); }
+  wgrPoll();
+}
+document.addEventListener('click',e=>{ const a=e.target.closest&&e.target.closest('[data-wact]'); if(a) wgrAct(a); });
 const tId = id=>document.getElementById(id);
 function tnyMe(){ return (typeof mySteam!=='undefined'&&mySteam&&mySteam.steamid)?String(mySteam.steamid):''; }
 function tnyAv(p,size,cls){
@@ -5426,6 +5551,7 @@ function pfLiveMatchDelta(d){
 function rtMatchesApply(d){
   d=d||{};
   pfLiveMatchDelta(d);                                                     // profile live banner reacts to the shared stream FIRST
+  if(String(d.type||'').indexOf('wager_')===0){ wgrApply(d); return; }     // gs-216 🪙: marquee deltas ride the same channel
   // Increment 3 Phase B — Now-Playing deltas share the 'matches' channel with Phase-A results.
   if(d.type==='match_start'){ npStart(d); return; }                        // a live match begins → add/refresh its row
   if(d.type==='match_end'){ npEnd(d.players); return; }                    // it ended (no result recorded) → drop the row

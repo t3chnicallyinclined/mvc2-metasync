@@ -2416,6 +2416,50 @@ pub fn coins(steamid: String) -> Result<serde_json::Value, String> {
         .into_json::<serde_json::Value>().map_err(|e| e.to_string())
 }
 
+// ── 🪙 QUARTER MATCH wagers (server wager.rs): the marquee + per-match pots ──
+/// Put a quarter up (open to anyone, or directed via `opp`). Reads our live lobby so the join link
+/// travels with the challenge — the server reveals it only to whoever matches the quarter.
+#[tauri::command]
+pub fn wager_offer(stake: u64, opp: Option<String>) -> Result<serde_json::Value, String> {
+    let lob = read_my_lobby();
+    let lobby_id = lob.get("lobby_id").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let owner = lob.get("owner_id").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    json_or_err(auth_post(&format!("{}/wager/offer", SKINSYNC)).send_json(serde_json::json!({
+        "stake": stake, "opp": opp.unwrap_or_default(), "lobby_id": lobby_id, "owner": owner })))
+}
+/// Match (accept) or decline a quarter. Accepting stakes BOTH sides and returns the join link.
+#[tauri::command]
+pub fn wager_respond(id: String, accept: Option<bool>) -> Result<serde_json::Value, String> {
+    json_or_err(auth_post(&format!("{}/wager/respond", SKINSYNC)).send_json(serde_json::json!({"id": id, "accept": accept.unwrap_or(true)})))
+}
+/// Pull an unanswered quarter back off the marquee.
+#[tauri::command]
+pub fn wager_cancel(id: String) -> Result<serde_json::Value, String> {
+    json_or_err(auth_post(&format!("{}/wager/cancel", SKINSYNC)).send_json(serde_json::json!({"id": id})))
+}
+/// Keep the challenge's join link current while our quarter is up (fresh lobby read each beat).
+#[tauri::command]
+pub fn wager_heartbeat(id: String) -> Result<serde_json::Value, String> {
+    let lob = read_my_lobby();
+    let lobby_id = lob.get("lobby_id").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let owner = lob.get("owner_id").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    json_or_err(auth_post(&format!("{}/wager/heartbeat", SKINSYNC)).send_json(serde_json::json!({"id": id, "lobby_id": lobby_id, "owner": owner})))
+}
+/// My active/most-recent wager (drives the marquee rail).
+#[tauri::command]
+pub fn wager_state(steamid: String) -> Result<serde_json::Value, String> {
+    ureq::get(&format!("{}/wager/state", SKINSYNC)).query("steamid", &steamid)
+        .timeout(std::time::Duration::from_secs(6)).call().map_err(|e| e.to_string())?
+        .into_json::<serde_json::Value>().map_err(|e| e.to_string())
+}
+/// THE MARQUEE — every open quarter (public read).
+#[tauri::command]
+pub fn wager_open() -> Result<serde_json::Value, String> {
+    ureq::get(&format!("{}/wager/open", SKINSYNC))
+        .timeout(std::time::Duration::from_secs(6)).call().map_err(|e| e.to_string())?
+        .into_json::<serde_json::Value>().map_err(|e| e.to_string())
+}
+
 /// Global leaderboard from the skinsync server for a tab (streak | wins | ocv | perfect | comeback).
 /// Returns { tab, field, players: [{ steamid, name, wins, losses, stat }] } (backend fetch → no CORS/CSP).
 #[tauri::command]
