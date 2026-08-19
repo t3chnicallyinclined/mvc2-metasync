@@ -2405,6 +2405,17 @@ pub fn get_record(steamid: String) -> serde_json::Value {
         .unwrap_or_else(|| serde_json::json!({ "wins": 0, "losses": 0 }))
 }
 
+/// 🪙 QUARTERS — free play-coin balance + recent activity for one SteamID (server ledger; public read).
+/// Returns { ok, balance, genesis, recent: [{ts, kind, amount, delta, memo}] }.
+#[tauri::command]
+pub fn coins(steamid: String) -> Result<serde_json::Value, String> {
+    ureq::get(&format!("{}/coins", SKINSYNC))
+        .query("steamid", &steamid)
+        .timeout(std::time::Duration::from_secs(6))
+        .call().map_err(|e| e.to_string())?
+        .into_json::<serde_json::Value>().map_err(|e| e.to_string())
+}
+
 /// Global leaderboard from the skinsync server for a tab (streak | wins | ocv | perfect | comeback).
 /// Returns { tab, field, players: [{ steamid, name, wins, losses, stat }] } (backend fetch → no CORS/CSP).
 #[tauri::command]

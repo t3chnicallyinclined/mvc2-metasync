@@ -1124,6 +1124,11 @@ try{document.documentElement.setAttribute('data-theme', localStorage.getItem('me
   .ses-open{color:var(--gold); font-variant-numeric:tabular-nums; cursor:pointer; text-decoration:none; font-weight:800; font-size:10px; letter-spacing:.06em}
   .ses-back{display:inline-block; margin:0 0 8px; color:var(--dim); text-decoration:none; font-size:11.5px; font-weight:700}
   .ses-back:hover{color:var(--ink)}
+  /* gs-214 🪙 QUARTERS — balance chip in the tournament top bar */
+  .coin-chip{display:inline-flex; align-items:center; gap:5px; margin-left:auto; align-self:center; font-size:13px;
+    color:var(--gold); border:1px solid color-mix(in srgb,var(--gold) 40%,transparent); background:var(--gold-soft);
+    border-radius:999px; padding:4px 12px; font-variant-numeric:tabular-nums; cursor:default; font-weight:800}
+  .coin-chip b{font-weight:900}
   /* banner picker */
   .tny-banner-pick{display:flex; flex-direction:column; gap:8px}
   .tny-banner-prev{width:100%; max-width:360px; aspect-ratio:3/1; border-radius:10px; border:1px dashed var(--line); background:var(--panel-2) center/cover no-repeat; display:grid; place-items:center; color:var(--faint); font-size:12px}
@@ -1740,6 +1745,7 @@ try{document.documentElement.setAttribute('data-theme', localStorage.getItem('me
           <span class="tny-role mono" id="tnyRole"></span>
         </div>
       </div>
+      <span class="coin-chip" id="coinChip" style="display:none" title="Your quarters — MetaSync play money. Everyone starts with 20; stake them on tournament entries, the champion takes the pot. No purchases, no cash-out — pure arcade.">🪙 <b id="coinBal">—</b></span>
       <div class="tny-controls" id="tnyControls"></div>
     </div>
     <!-- BROWSE: the tournament feed -->
@@ -3489,7 +3495,7 @@ function switchTab(t){
   if(t==='ranks'){ renderLeaderboard(); rtRanksEnter(); } else rtRanksLeave();   // live-push the board while Ranks is open
   if(t==='match'){ rtMatchEnter(); } else rtMatchLeave();                        // gs-200: live feeds live on Match now
   if(t==='regions') renderRegions();
-  if(t==='tourney') renderTourney();
+  if(t==='tourney'){ renderTourney(); coinsRefresh(); }   // gs-214: quarters balance rides tab entry
   window.scrollTo({top:0,behavior:'smooth'});
 }
 // ── Tournament tab (UI first; wires to the tourney service / daemon later) ──
@@ -3508,6 +3514,15 @@ const potFmt=c=>'$'+((c/100).toFixed(c%100?2:0));
 // gs-212: per-event accent — ≤3px slivers ONLY (browse-card edge + hero seam); plates stay tier/skin-colored.
 // The accent field is additive server-side; events without one render exactly as before (transparent slivers).
 const TNY_ACC={gold:'#e8b93c',crimson:'#ff5a6e',cobalt:'#4aa8ff',vibranium:'#b98cff',adamantium:'#9fd4ef',emerald:'#3ddc84'};
+// gs-214 🪙 QUARTERS — my play-coin balance (server ledger; everyone starts with 20). Cached here, painted
+// into #coinChip + the gate sub-line; refreshed on Tournament-tab entry and after every tourney action
+// (register/drop/DQ/report can all move quarters).
+let MY_COINS=null;
+async function coinsRefresh(){
+  if(!invoke || !(mySteam&&mySteam.steamid)) return;
+  try{ const r=await invoke('coins',{steamid:String(mySteam.steamid)}); if(r&&r.ok&&typeof r.balance==='number'){ MY_COINS=r.balance; coinsPaint(); } }catch(_){}
+}
+function coinsPaint(){ const c=$('#coinChip'), b=$('#coinBal'); if(c&&b&&MY_COINS!=null){ b.textContent=MY_COINS; c.style.display=''; } }
 const tId = id=>document.getElementById(id);
 function tnyMe(){ return (typeof mySteam!=='undefined'&&mySteam&&mySteam.steamid)?String(mySteam.steamid):''; }
 function tnyAv(p,size,cls){
@@ -3606,10 +3621,13 @@ function tnyCard(t){
   const region = t.online? 'Online' : ([t.city,t.cc].filter(Boolean).join(', ')||'Offline');
   const banner = t.banner_url ? '<div class="tny-card-banner"><img src="'+esc(t.banner_url)+'" loading="lazy" referrerpolicy="no-referrer" alt=""></div>' : '<div class="tny-card-banner"></div>';
   const accSt=TNY_ACC[t.accent]?' style="--tacc:'+TNY_ACC[t.accent]+'"':'';
+  // gs-214: 🪙 staked events wear the quarter chip on the browse card (C-echo of the purse line)
+  const stakeChip = t.entry_coins ? '<span class="tny-stakechip">🪙 '+t.entry_coins+' · POT 🪙 '+(t.entry_coins*(t.entrants||0))+'</span>'
+    : ((POT_ENABLED&&t.entry_fee_cents)?'<span class="tny-stakechip">◈ '+potFmt(t.entry_fee_cents)+' · POT '+potFmt(t.entry_fee_cents*(t.entrants||0))+'</span>':'<span class="tny-free">FREE</span>');
   return '<div class="tny-card" data-open="'+esc(t.id)+'"'+accSt+'>'+banner+
     '<div class="tny-card-b"><div class="tny-card-top"><span class="tny-card-nm">'+esc(t.name)+'</span>'+tnyStatusChip(t.status)+'</div>'+
     '<div class="tny-card-meta">'+(t.cc?flagEmoji(t.cc)+' ':'📡 ')+esc(region)+' · '+esc(tnyFmtName(t.format))+'</div>'+
-    '<div class="tny-card-meta2"><span>🗓 '+esc(tnyFmt(t.starts_ms))+'</span><span>👥 '+(t.entrants||0)+(t.cap?('/'+t.cap):'')+'</span>'+((POT_ENABLED&&t.entry_fee_cents)?'<span class="tny-stakechip">◈ '+potFmt(t.entry_fee_cents)+' · POT '+potFmt(t.entry_fee_cents*(t.entrants||0))+'</span>':'<span class="tny-free">FREE</span>')+'</div></div></div>';
+    '<div class="tny-card-meta2"><span>🗓 '+esc(tnyFmt(t.starts_ms))+'</span><span>👥 '+(t.entrants||0)+(t.cap?('/'+t.cap):'')+'</span>'+stakeChip+'</div></div></div>';
 }
 
 // ── CREATE ──
@@ -3643,8 +3661,8 @@ function renderCreate(){
      '<div class="frow">'+
        '<div class="fld"><label>Entrant cap (0 = none)</label><input type="number" id="tfCap" value="0" min="0" max="256">'+
          '<div class="tf-micro">beyond the cap, players <b>waitlist automatically</b></div></div>'+
-       '<div class="fld tf-locked"><label>Entry stake</label><input id="tfStake" value="◈ FREE — $0  🔒" disabled>'+
-         '<div class="tf-micro">Staked entry is coming: <b>PayPal entry, pot = stake × entrants, the champion takes it.</b> Events are free until then.</div></div>'+
+       '<div class="fld"><label>Entry stake — 🪙 quarters</label><select id="tfStake"><option value="0">Free — no stake</option><option value="1">🪙 1 quarter</option><option value="2">🪙 2 quarters</option><option value="4">🪙 4 quarters</option><option value="8">🪙 8 quarters</option></select>'+
+         '<div class="tf-micro">🪙 Quarters are MetaSync <b>play money</b> — everyone starts with 20, nothing to buy, nothing to cash out. Entrants put the stake up at registration; <b>the champion takes the whole pot</b>. Drops and no-shows get theirs back. Real-money stakes come later.</div></div>'+
      '</div>'+
      '<div class="tf-rail">Presentation</div>'+
      '<div class="fld"><label>Banner image <span style="color:var(--faint);text-transform:none;letter-spacing:0">— any image, auto-fit to 3:1 (≈1200×400 looks best)</span></label>'+
@@ -3688,7 +3706,7 @@ async function tnyCreateSubmit(){
     cc:v('tfCc').trim().toUpperCase(), city:v('tfCity').trim(), starts_ms,
     ft_winners:+v('tfFtW')||2, ft_losers:+v('tfFtL')||2, ft_grands:+v('tfFtG')||3, cap:+v('tfCap')||0,
     banner_url:(TNY.bannerData||''), stream_url:v('tfStream').trim(), discord_url:v('tfDiscord').trim(),
-    accent:(TNY._accent||'gold'), rules_md:v('tfRules'), host_mode:v('tfHostMode')||'player' };
+    accent:(TNY._accent||'gold'), entry_coins:+v('tfStake')||0, rules_md:v('tfRules'), host_mode:v('tfHostMode')||'player' };
   const err=tId('tfErr'); if(err) err.style.display='none';
   if(!body.name){ if(err){ err.style.display=''; err.textContent='Name is required.'; } TNY.busy=false; return; }
   try{
@@ -3800,6 +3818,13 @@ async function renderDetail(fromCache){
       // gs-208: CHAMPION'S PURSE — what winning is worth, one slim gold-seamed line fused to the hero.
       // Free today (the purse is real: permanence + season etch); staked math lights up when POT_ENABLED.
       (function(){
+        // gs-214: 🪙 quarters pot takes precedence — the live play-money economy. Dollar states stay dark.
+        const q=t.entry_coins||0;
+        if(q>0){
+          return '<div class="tny-purse"><span class="tp-rail">Champion’s Purse</span><span class="tp-mid">'+
+            '<b class="num">🪙 '+(q*nEnt)+'</b> pot — 🪙 '+q+' up × '+nEnt+' · winner takes the pot</span>'+
+            '<span class="tp-pill stake">🪙 QUARTER UP</span></div>';
+        }
         const fee=t.entry_fee_cents||0, staked=POT_ENABLED&&fee>0;
         const mid=staked
           ? '<b class="num">'+potFmt(fee*nEnt)+'</b> — '+potFmt(fee)+' entry × '+nEnt+' · winner takes the pot'
@@ -4066,7 +4091,7 @@ function tnyPodiumHtml(t){
       '<div class="pod-nm lb-click" data-sid="'+esc(sid)+'" data-nm="'+esc(n.name||'Player')+'">'+(n.cc?flagEmoji(n.cc)+' ':'')+esc(n.name||'Player')+'</div>'+
       (r?'<div class="pod-tier rk-'+r.s+'">'+rkBadgeR(r,n.rating||1000,16)+' '+r.n+' · <span class="pod-elo">'+(n.rating||1000)+'</span></div>':'')+
       '<div class="pod-line">'+rc.w+'–'+rc.l+(sd?(' · Seed '+sd):'')+(cls==='champ'&&gfName?(' · def. <b>'+esc(gfName)+'</b> in Grand Finals'):'')+'</div>'+
-      (cls==='champ'?'<div class="pod-purse">Purse claimed — permanent record · season etching</div>':'')+
+      (cls==='champ'?'<div class="pod-purse">Purse claimed'+((t.entry_coins||0)>0?(' — 🪙 '+((t.entry_coins||0)*((t.registrations||[]).filter(x=>x.status==='registered'||x.status==='checked_in').length))):'')+' — permanent record · season etching</div>':'')+
       '</div>'; };
   return '<div class="tny-podium"><div class="pod-ghost">CHAMPION</div><div class="pod-row">'+
     plate(second,'s2','2')+plate(champ,'champ','')+plate(third,'s3','3')+'</div>'+
@@ -4086,11 +4111,15 @@ function tnyRenderTeamBar(t, me, myReg){
   if(!(pre && !myReg)){ el.innerHTML=''; return; }
   const isTO=t.to_steamid===me||(t.co_tos||[]).indexOf(me)>=0;
   const perks=[['⚡','Seeded by your ELO'],['🛡','Your rank on the bracket'],['👁','Sets report themselves'],['🪨','Carved into the record'],['⚔','Head-to-head intel'],['📣','“You’re up” callouts']];
+  // gs-214: staked events say the price on the button — put your quarter(s) up. Free stays free.
+  const q=t.entry_coins||0;
+  const lbl = q>0 ? ('REGISTER — 🪙 '+q+' QUARTER'+(q===1?'':'S')+' UP ▸') : (isTO?'REGISTER — PLAY TOO ▸':'REGISTER — FREE ENTRY ▸');
+  const sub = 'champion takes the purse'+((q>0&&MY_COINS!=null)?(' · you have 🪙 '+MY_COINS):'');
   el.innerHTML='<div class="tny-entergate">'+
     '<span class="teg-rail">Entering<br>unlocks</span>'+
     '<div class="teg-chips">'+perks.map(p=>'<span class="teg-chip"><i>'+p[0]+'</i>'+esc(p[1])+'</span>').join('')+'</div>'+
-    '<div class="teg-cta"><button class="tny-btn gold teg-go" data-act="register">'+(isTO?'REGISTER — PLAY TOO ▸':'REGISTER — FREE ENTRY ▸')+'</button>'+
-    '<span class="teg-sub">champion takes the purse</span></div>'+
+    '<div class="teg-cta"><button class="tny-btn gold teg-go" data-act="register">'+lbl+'</button>'+
+    '<span class="teg-sub">'+sub+'</span></div>'+
     '</div>';
 }
 // Start-gate: ONLY for STATIONED events (the TO runs matches on dedicated host stations) — prompt the TO to
@@ -4616,6 +4645,7 @@ async function tnyAction(act, node){
   }catch(e){ toast('⚠ '+e); }
   TNY.busy=false;
   renderDetail();
+  coinsRefresh();   // gs-214: register/drop/DQ/delete can move quarters — repaint the balance
 }
 async function tnyReport(mid, winner){
   if(TNY.busy) return; TNY.busy=true;
