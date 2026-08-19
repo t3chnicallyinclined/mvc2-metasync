@@ -34,3 +34,23 @@ export function timeAgo(ms: number | null | undefined): string {
 	if (mo < 12) return `${mo}mo`;
 	return `${Math.floor(d / 365)}y`;
 }
+
+/**
+ * Absolute local date/time from an epoch-ms timestamp, e.g. 1787159760000 → "Aug 20, 3:00 PM".
+ * For scheduled times (tournament start) where a relative "ago" would be wrong for a FUTURE date.
+ * Empty/invalid (0 / NaN) → ''.
+ */
+export function whenLabel(ms: number | null | undefined): string {
+	const t = Number(ms);
+	if (!t || !isFinite(t)) return '';
+	try {
+		return new Date(t).toLocaleString(undefined, {
+			month: 'short',
+			day: 'numeric',
+			hour: 'numeric',
+			minute: '2-digit'
+		});
+	} catch {
+		return '';
+	}
+}
