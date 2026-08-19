@@ -782,6 +782,12 @@ try{document.documentElement.setAttribute('data-theme', localStorage.getItem('me
   .tf-swatches{display:flex; gap:8px; align-items:center; margin-top:4px}
   .tf-sw{width:24px; height:24px; border-radius:8px; border:2px solid transparent; cursor:pointer; display:inline-block}
   .tf-sw.on{border-color:var(--ink); box-shadow:0 0 0 2px var(--card), 0 0 12px -2px currentColor}
+  /* gs-210 TO polish — dropdown ELO + hint rows, added-row flash, seeding toolbar in Players */
+  .tny-addelo{font-size:12px; color:var(--dim); font-variant-numeric:tabular-nums; font-weight:700}
+  .tny-addhint{padding:6px 10px; font-size:10px; font-weight:700; letter-spacing:.08em; text-transform:uppercase; color:var(--faint); text-align:center}
+  .tny-etr.added{box-shadow:inset 0 0 0 2px var(--gold); background:var(--gold-soft)}
+  .tny-seedbar{display:flex; align-items:center; gap:10px; margin-bottom:10px; flex-wrap:wrap}
+  .tsb-rail{font-size:10px; font-weight:700; letter-spacing:.16em; text-transform:uppercase; color:var(--faint)}
   .tny-ent-nm{flex:1}
   .tny-ent-x{margin-left:auto; background:transparent; border:0; color:var(--faint); cursor:pointer; font-size:13px; padding:2px 6px; border-radius:6px; line-height:1}
   .tny-ent-x:hover{color:#e0574f; background:color-mix(in srgb,#e0574f 14%,transparent)}
@@ -3801,11 +3807,15 @@ async function renderDetail(fromCache){
   // render EVERY tab section (each isolated — one failing section must not blank the rest), then reveal the active one
   tnyTry('overview',()=>tnyRenderOverview(t, isTO)); tnyTry('standings',()=>tnyRenderStandings(t)); tnyTry('admin',()=>tnyRenderAdmin(t, isTO, pre));
   tnyTry('entrants',()=>{ const regs=[...(t.registrations||[])].sort((a,b)=>(a.seed||999)-(b.seed||999)||(a.registered_ms||0)-(b.registered_ms||0));
+    // gs-210: the seeding toolbar lives WITH the seed inputs now (one home) — Admin's seeding row died in the same edit
+    const seedBar=(isTO&&pre&&regs.length>1)?'<div class="tny-seedbar"><span class="tsb-rail">Seeding</span><button class="tny-btn sm" data-act="seed">⚡ Seed by ELO</button><button class="tny-btn sm" data-act="seed-random">🎲 Shuffle</button><span class="tny-note" style="display:inline">edit numbers inline — seeds lock at Start</span></div>':'';
     const addRow=(isTO&&pre)?'<div class="tny-addent"><input id="tnyAddQ" placeholder="Add a player — type a name, or paste a SteamID64" value="'+esc(TNY._addq||'')+'" autocomplete="off" spellcheck="false"><button class="tny-btn gold" data-act="add-entrant">Add</button><div class="tny-addd" id="tnyAddD"></div></div>':'';
     const hostSet=new Set((t.hosts||[]).map(h=>h.steamid));
-    tId('tnyEntrants').innerHTML = addRow + tnyEntrantsHtml(regs, isTO, pre, hostSet);
+    tId('tnyEntrants').innerHTML = seedBar + addRow + tnyEntrantsHtml(regs, isTO, pre, hostSet);
     // gs-206: this section is SSE/tick-rebuilt — restore the search box's text/focus/dropdown after every re-render
-    const aq=tId('tnyAddQ'); if(aq && TNY._addFocus){ aq.focus(); try{ aq.setSelectionRange(aq.value.length, aq.value.length); }catch(_){} if((TNY._addq||'').trim().length>=2) tnyAddDrop(); } });
+    const aq=tId('tnyAddQ'); if(aq && TNY._addFocus){ aq.focus(); try{ aq.setSelectionRange(aq.value.length, aq.value.length); }catch(_){} if((TNY._addq||'').trim().length>=2) tnyAddDrop(); }
+    // gs-210: the row just added flashes gold once (cleared after the first flash render, not on every repaint)
+    if(TNY._flashSid && !TNY._flashT){ TNY._flashT=setTimeout(()=>{ TNY._flashSid=null; TNY._flashT=null; },950); } });
   tnyTry('bracket',()=>{ if(t.bracket) tnyRenderBracket(t.bracket); else tId('tnyBracket').innerHTML='<div class="lb-empty" style="padding:22px">The bracket appears once the organizer seeds the entrants and hits <b>Start</b>.</div>'; });
   // gs-204: 'players' reveals standings (once a bracket exists) STACKED above the entrants list
   const secOf={bracket:['tnyBracket'],players:(t.bracket?['tnyStandings','tnyEntrants']:['tnyEntrants']),stations:['tnyHosts'],admin:['tnyAdmin']};
@@ -3834,6 +3844,8 @@ async function tnyAddDrop(){
   const dd=tId('tnyAddD'); if(!dd) return;
   const q=(TNY._addq||'').trim(), ql=q.toLowerCase();
   if(ql.length<2){ dd.innerHTML=''; dd.style.display='none'; return; }
+  // gs-210: first open fetches the pool — show a warming row so 2 typed chars never meet a dead beat
+  if(!(TNY._pool && (Date.now()-(TNY._poolTs||0))<60000)){ dd.innerHTML='<div class="tny-addhint">searching the network…</div>'; dd.style.display='block'; }
   const pool=await tnyPoolFetch();
   const cur=tId('tnyAddQ'); if(!cur || (cur.value||'').trim().toLowerCase()!==ql) return;  // a newer keystroke owns the box
   const inSet=new Set(((TNY.data&&TNY.data.registrations)||[]).filter(x=>x.status!=='dropped'&&x.status!=='dq').map(x=>String(x.steamid)));
@@ -3841,8 +3853,9 @@ async function tnyAddDrop(){
   hits.sort((a,b)=>{ const as=String(a.name||'').toLowerCase().startsWith(ql)?0:1, bs=String(b.name||'').toLowerCase().startsWith(ql)?0:1; return (as-bs)||((b.rating||0)-(a.rating||0)); });
   hits=hits.slice(0,8);
   const idOk=/^\d{17}$/.test(q)&&!inSet.has(q);
-  let h=hits.map((p,i)=>'<div class="tny-addrow'+(i===0?' sel':'')+'" data-act="add-entrant" data-sid="'+esc(String(p.steamid))+'">'+avatarImg(p.avatar,22)+'<span class="tny-addnm">'+(p.cc?flagEmoji(p.cc)+' ':'')+esc(p.name||'Player')+'</span>'+rkB(p,14)+'<span class="tny-addwl">'+(p.wins||0)+'W · '+(p.losses||0)+'L</span></div>').join('');
+  let h=hits.map((p,i)=>'<div class="tny-addrow'+(i===0?' sel':'')+'" data-act="add-entrant" data-sid="'+esc(String(p.steamid))+'">'+avatarImg(p.avatar,22)+'<span class="tny-addnm">'+(p.cc?flagEmoji(p.cc)+' ':'')+esc(p.name||'Player')+'</span>'+rkB(p,14)+'<span class="tny-addelo">'+(p.rating||'—')+'</span><span class="tny-addwl">'+(p.wins||0)+'W · '+(p.losses||0)+'L</span></div>').join('');
   if(idOk) h+='<div class="tny-addrow'+(hits.length?'':' sel')+'" data-act="add-entrant" data-sid="'+esc(q)+'"><span class="tny-addnm">➕ Add SteamID '+esc(q)+'</span></div>';
+  if(h) h+='<div class="tny-addhint">↵ add · ↑↓ move · esc close · paste a SteamID64 for someone new</div>';
   if(!h) h='<div class="tny-addnone">No one matches “'+esc(q)+'” — paste a 17-digit SteamID64 to add someone new.</div>';
   dd.innerHTML=h; dd.style.display='block';
 }
@@ -3885,7 +3898,7 @@ function tnyRenderAdmin(t, isTO, pre){
   if(!isTO){ el.innerHTML='<div class="lb-empty" style="padding:22px">Organizer tools live here.</div>'; return; }
   let h='<div class="tny-adm">';
   if(pre){
-    h+='<div class="tny-admsec"><div class="tny-section-lab">Seeding</div><div class="frow" style="gap:8px;flex-wrap:wrap"><button class="tny-btn sm" data-act="seed">Seed by ELO</button><button class="tny-btn sm" data-act="seed-random">Shuffle</button><span class="tny-note" style="display:inline">Edit individual seeds in the Entrants tab.</span></div></div>';
+    // gs-210: the Seeding row moved to the Players view, beside the per-row seed inputs (one job, one home)
     h+='<div class="tny-admsec"><div class="tny-section-lab">Check-in</div><div class="frow" style="gap:8px;flex-wrap:wrap">'+(t.status==='checkin'?'<button class="tny-btn sm" data-act="checkin-close">Close check-in</button><button class="tny-btn sm warn" data-act="checkin-finalize">Finalize · drop no-shows</button>':'<button class="tny-btn sm" data-act="checkin-open">Open check-in</button>')+'</div></div>';
   }
   h+='<div class="tny-admsec"><div class="tny-section-lab">Links</div><div class="tny-admrow"><input id="tfAdmStream" placeholder="Stream URL (https://…)" value="'+esc(t.stream_url||'')+'"><input id="tfAdmDiscord" placeholder="Discord URL" value="'+esc(t.discord_url||'')+'"><button class="tny-btn sm" data-act="admin-links">Save</button></div></div>';
@@ -3910,7 +3923,7 @@ function tnyEntrantsHtml(regs, isTO, pre, hostSet){
   }
   const rankCell = n => { const gm=(n.games||((n.wins||0)+(n.losses||0))); if(!gm) return '<span class="tny-erank dim">—</span>'; const rt=n.rating||1000; const r=rankOf(rt,gm); return '<span class="tny-erank">'+rkBadgeR(r,rt,18)+'<span class="col"><b class="rk-'+r.s+'">'+r.n+'</b><span>'+rt+'</span></span></span>'; };
   const rows = regs.map(r=>{ const n=tnyNm(r.steamid); const ci=r.status==='checked_in'; const wait=r.status==='waitlisted'; const gone=r.status==='dq'||r.status==='dropped';
-    return '<div class="tny-etr'+(gone?' gone':'')+'">'+
+    return '<div class="tny-etr'+(gone?' gone':'')+(r.steamid===TNY._flashSid?' added':'')+'">'+
       '<span class="tny-eseed"><input class="tny-seedin" type="number" min="0" max="256" value="'+(r.seed||0)+'" data-sid="'+esc(r.steamid)+'" title="Seed (0 = unseeded)"></span>'+
       '<span class="tny-ep lb-click" data-sid="'+esc(r.steamid)+'" data-nm="'+esc(n.name)+'">'+tnyAv(n,28)+'<span class="tny-epc"><span class="tny-ep-nm">'+(n.cc?flagEmoji(n.cc)+' ':'')+esc(n.name)+'</span><span class="tny-ep-wl">'+(n.wins||0)+'W · '+(n.losses||0)+'L</span></span></span>'+
       rankCell(n)+
@@ -4492,7 +4505,7 @@ async function tnyAction(act, node){
     else if(act==='checkin-open'){ r=await invoke('tourney_checkin_ctl',{id,action:'open'}); if(r&&r.ok) toast('Check-in open'); }
     else if(act==='checkin-close'){ r=await invoke('tourney_checkin_ctl',{id,action:'close'}); if(r&&r.ok) toast('Check-in closed'); }
     else if(act==='checkin-finalize'){ r=await invoke('tourney_checkin_ctl',{id,action:'finalize'}); if(r&&r.ok){ const n=r.removed||0; toast(n?('Dropped '+n+' no-show'+(n===1?'':'s')):'Everyone was checked in'); } }
-    else if(act==='add-entrant'){ const picked=node&&node.dataset&&node.dataset.sid; const el=tId('tnyAddQ'); const q=((el&&el.value)||'').trim(); const sid=picked||(/^\d{17}$/.test(q)?q:''); if(!sid){ toast('⚠ Pick a player from the search, or paste a 17-digit SteamID64'); TNY.busy=false; return; } r=await invoke('tourney_add_entrant',{id,steamid:sid}); if(r&&r.ok){ toast(r.status==='already in'?'Already entered':'Entrant added'); TNY._addq=''; if(el) el.value=''; const dd=tId('tnyAddD'); if(dd){ dd.innerHTML=''; dd.style.display='none'; } } }
+    else if(act==='add-entrant'){ const picked=node&&node.dataset&&node.dataset.sid; const el=tId('tnyAddQ'); const q=((el&&el.value)||'').trim(); const sid=picked||(/^\d{17}$/.test(q)?q:''); if(!sid){ toast('⚠ Pick a player from the search, or paste a 17-digit SteamID64'); TNY.busy=false; return; } r=await invoke('tourney_add_entrant',{id,steamid:sid}); if(r&&r.ok){ toast(r.status==='already in'?'Already entered':'Entrant added'); TNY._addq=''; TNY._flashSid=sid; if(el) el.value=''; const dd=tId('tnyAddD'); if(dd){ dd.innerHTML=''; dd.style.display='none'; } } }
     else if(act==='entrant-dq'){ const sid=node&&node.dataset&&node.dataset.sid; if(!sid){ TNY.busy=false; return; } r=await invoke('tourney_entrant_dq',{id,steamid:sid}); if(r&&r.ok) toast('Entrant removed'); }
     else if(act==='entrant-checkin'){ const sid=node&&node.dataset&&node.dataset.sid; if(!sid){ TNY.busy=false; return; } r=await invoke('tourney_entrant_update',{id,steamid:sid,checkedIn:node.dataset.ci==='1'}); }
     else if(act==='entrant-promote'){ const sid=node&&node.dataset&&node.dataset.sid; if(!sid){ TNY.busy=false; return; } r=await invoke('tourney_entrant_update',{id,steamid:sid,status:'registered'}); if(r&&r.ok) toast('Promoted off waitlist'); }
