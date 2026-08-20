@@ -1,32 +1,52 @@
-// Persisted user preferences — a tiny JSON file under runtime_dir(): `prefs.json`.
+// Persisted user preferences — a tiny JSON object in `runtime_dir()/prefs.json`.
 //
-// Currently one key: `apply_skins` (bool) — the tray's "Apply my skins" toggle, which gates the painter
-// (painter::SKINS_ENABLED). Persisted so the choice survives restarts. Session-only prefs (e.g. "Pause
-// reporting") are deliberately NOT stored here — they reset every launch by design.
+// Keys:
+//   • `apply_skins` (bool, default true) — the "Apply my skins" toggle (gates painter::SKINS_ENABLED).
+//   • `autostart_initialized` (bool, default false) — set once, the first time the agent runs, when we
+//     register "Start with Windows" by DEFAULT. After that the user's tray toggle owns the Run key; we never
+//     re-enable it behind their back.
+// Session-only prefs (e.g. "Pause reporting") are deliberately NOT stored — they reset every launch by design.
 //
-// Shape: { "apply_skins": true }
-//
-// All reads default safely (absent / blank / malformed file → the default), and the write is best-effort
-// (a failed write just means the choice isn't remembered next run — never fatal).
+// Reads default safely (absent / blank / malformed → the default); writes are best-effort. Every write does a
+// read-modify-write on the whole object so setting one key never clobbers the others.
 
 fn prefs_path() -> std::path::PathBuf {
     crate::runtime_dir().join("prefs.json")
 }
 
-/// Load the persisted "Apply my skins" preference. Defaults to `true` (paint) when the file is missing,
-/// blank, malformed, or the key is absent.
-pub fn load_apply_skins() -> bool {
-    let raw = std::fs::read_to_string(prefs_path()).unwrap_or_default();
-    serde_json::from_str::<serde_json::Value>(&raw)
+fn load_obj() -> serde_json::Map<String, serde_json::Value> {
+    std::fs::read_to_string(prefs_path())
         .ok()
-        .and_then(|v| v.get("apply_skins").and_then(|x| x.as_bool()))
-        .unwrap_or(true)
+        .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+        .and_then(|v| v.as_object().cloned())
+        .unwrap_or_default()
 }
 
-/// Persist the "Apply my skins" preference. Best-effort — a failed write is ignored.
+fn save_obj(m: &serde_json::Map<String, serde_json::Value>) {
+    let _ = std::fs::write(prefs_path(), serde_json::Value::Object(m.clone()).to_string());
+}
+
+/// The "Apply my skins" preference. Defaults to `true` (paint) when missing/blank/malformed.
+pub fn load_apply_skins() -> bool {
+    load_obj().get("apply_skins").and_then(|x| x.as_bool()).unwrap_or(true)
+}
+
+/// Persist "Apply my skins" (preserves the other keys).
 pub fn save_apply_skins(on: bool) {
-    let _ = std::fs::write(
-        prefs_path(),
-        serde_json::json!({ "apply_skins": on }).to_string(),
-    );
+    let mut m = load_obj();
+    m.insert("apply_skins".into(), on.into());
+    save_obj(&m);
+}
+
+/// First-run gate for default-on autostart. Returns `true` exactly ONCE (the first launch), marking it done
+/// and persisting so subsequent launches leave the Run key to the user's choice.
+pub fn take_first_run() -> bool {
+    let mut m = load_obj();
+    if m.get("autostart_initialized").and_then(|x| x.as_bool()).unwrap_or(false) {
+        false
+    } else {
+        m.insert("autostart_initialized".into(), true.into());
+        save_obj(&m);
+        true
+    }
 }

@@ -88,6 +88,12 @@ fn main() {
     // starts, so a user who turned skins off stays off across restarts without a first paint slipping through.
     painter::SKINS_ENABLED.store(prefs::load_apply_skins(), std::sync::atomic::Ordering::Relaxed);
 
+    // "Start with Windows" is ON by default (the set-it-and-forget-it model): the FIRST time the agent runs,
+    // register the Run-key autostart. After that the user's tray toggle owns it — we never re-enable behind them.
+    if prefs::take_first_run() {
+        let _ = autostart::enable();
+    }
+
     // The skin painter (T3), ported verbatim from the app's paint_live / paint_signatures. Spawns one sibling
     // thread that reads the reader's PaintView (paint_slots + ram_base + side + state) each tick and auto-applies
     // the user's LOCAL skins (runtime_dir()/skins.json) via RPM — per-side paint_live + the array-free base layer.
