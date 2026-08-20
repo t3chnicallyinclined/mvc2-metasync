@@ -58,11 +58,32 @@
 		}
 	}
 
+	// Desktop agent — the signed-in user's OWN tray/Tauri agent status (GET /skinsync/agent, token-auth).
+	// Populated once the agent reports on heartbeat (ver empty until then → "not detected").
+	interface AgentStatus {
+		ver?: string;
+		platform?: string;
+		client?: string;
+		last_seen?: number;
+	}
+	let agent = $state<AgentStatus | null>(null);
+	const agentOn = $derived(!!agent?.ver);
+	async function loadAgent(): Promise<void> {
+		if (!auth.steamid) return;
+		try {
+			const res = await fetch(api('/skinsync/agent'), { headers: { accept: 'application/json', ...auth.headers() } });
+			if (res.ok) agent = (await res.json()) as AgentStatus;
+		} catch {
+			/* quiet — the card just shows the not-detected state */
+		}
+	}
+
 	// 🪙 wallet: the balance is loaded app-wide by WalletChip; make sure it's fresh when this page opens.
 	onMount(() => {
 		if (auth.steamid) {
 			void wallet.load(auth.steamid);
 			void loadSeason();
+			void loadAgent();
 		}
 	});
 	const bal = $derived(wallet.balance);
@@ -197,10 +218,15 @@
 <div class="card">
 	<div class="row">
 		<div class="rowlabel">
-			<b>Skin agent <span class="soon">soon</span></b>
-			<span class="sub">A tiny background app for your gaming PC — auto-reports your matches and applies your skins live. Coming in a future update.</span>
+			{#if agentOn}
+				<b>Your agent · v{agent?.ver}</b>
+				<span class="sub">{agent?.client === 'tray' ? 'Tray agent' : agent?.client || 'Agent'}{agent?.platform ? ` · ${agent.platform}` : ''}{agent?.last_seen ? ` · last seen ${timeAgo(agent.last_seen)}` : ''} — auto-reports your matches and applies your skins.</span>
+			{:else}
+				<b>Skin agent <span class="soon">soon</span></b>
+				<span class="sub">A tiny background app for your gaming PC — auto-reports your matches and applies your skins live. {auth.authed ? 'Not detected on this account yet.' : 'Coming in a future update.'}</span>
+			{/if}
 		</div>
-		<span class="dot off" title="Not connected" aria-label="Not connected"></span>
+		<span class="dot" class:on={agentOn} class:off={!agentOn} title={agentOn ? 'Connected' : 'Not connected'} aria-label={agentOn ? 'Connected' : 'Not connected'}></span>
 	</div>
 </div>
 
@@ -454,6 +480,10 @@
 	}
 	.dot.off {
 		background: var(--faint);
+	}
+	.dot.on {
+		background: var(--good);
+		box-shadow: 0 0 0 3px color-mix(in srgb, var(--good) 22%, transparent);
 	}
 	.about {
 		display: flex;
