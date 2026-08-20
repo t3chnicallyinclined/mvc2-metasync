@@ -1,6 +1,6 @@
 [package]
 name = "metasync-agent"
-version = "0.2.6"  # LOCKSTEP with the MetaSync release train (latest.json / GitHub release). Bump with the app, never independently.
+version = "0.2.7"  # LOCKSTEP with the MetaSync release train (latest.json / GitHub release). Bump with the app, never independently.
 description = "MetaSync tray agent — headless Windows tray companion that reads MvC2 memory, applies skins, and reports matches (replaces the Tauri webview)"
 authors = ["tristech"]
 edition = "2021"
