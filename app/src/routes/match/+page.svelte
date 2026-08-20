@@ -52,6 +52,16 @@
 	const nameFor = (sid: string, names: Record<string, string>) =>
 		(names && names[sid]) || (sid ? `…${sid.slice(-5)}` : 'Player');
 	const involvesMe = (a: string, b: string) => !!me && (a === me || b === me);
+
+	// Mode chip label per result origin; ranked additionally shows the rating swing (see the row markup).
+	const MODE_CHIP: Record<string, string> = {
+		ranked: '⚔ Ranked',
+		lobby: '🎮 Lobby',
+		tourney: '🏆 Tournament',
+		money: '🪙 Wager'
+	};
+	const modeChip = (m?: string) => (m ? MODE_CHIP[m] ?? null : null);
+	const isRanked = (m?: string) => m === 'ranked';
 </script>
 
 <svelte:head><title>Match · MetaSync</title></svelte:head>
@@ -114,7 +124,9 @@
 	{:else}
 		<div class="panel">
 			{#each results as r (r.key)}
-				<div class="rr" class:me={involvesMe(r.winner, r.loser)}>
+				{@const ranked = isRanked(r.mode)}
+				{@const chip = modeChip(r.mode)}
+				<div class="rr" class:me={involvesMe(r.winner, r.loser)} class:nonranked={!!r.mode && !ranked}>
 					{#if involvesMe(r.winner, r.loser)}<span class="you-tag">YOU</span>{/if}
 					<div class="rmain">
 						{#if is17(r.winner)}
@@ -122,14 +134,17 @@
 						{:else}
 							<span class="win" title={r.winner_name}>{r.winner_name}</span>
 						{/if}
+						{#if ranked && r.elo}<span class="delta up" title="Rating gained">+{r.elo}</span>{/if}
 						<span class="def">def.</span>
 						{#if is17(r.loser)}
 							<a class="lose" href="{base}/u/{r.loser}" title={r.loser_name}>{r.loser_name}</a>
 						{:else}
 							<span class="lose" title={r.loser_name}>{r.loser_name}</span>
 						{/if}
+						{#if ranked && r.elo}<span class="delta down" title="Rating lost">−{r.elo}</span>{/if}
 					</div>
 					<div class="rmeta">
+						{#if chip}<span class="chip" class:rk={ranked}>{chip}</span>{/if}
 						{#if r.verified}<span class="seal" title="Verified — both players agree + replay">✓✓</span>{/if}
 						{#if timeAgo(r.ts)}<span class="ago">{timeAgo(r.ts)}</span>{/if}
 					</div>
@@ -375,6 +390,43 @@
 		color: var(--faint);
 		white-space: nowrap;
 		font-variant-numeric: tabular-nums;
+	}
+
+	/* rating swing on a ranked result — +gain on the winner side, −loss on the loser side */
+	.delta {
+		flex: none;
+		font-size: 11px;
+		font-weight: 800;
+		font-variant-numeric: tabular-nums;
+	}
+	.delta.up {
+		color: var(--good);
+	}
+	.delta.down {
+		color: var(--live);
+	}
+
+	/* mode chip — neutral by default; ranked gets a faint green wash to match its rating swing */
+	.chip {
+		flex: none;
+		font-size: 9.5px;
+		font-weight: 800;
+		letter-spacing: 0.02em;
+		white-space: nowrap;
+		color: var(--faint);
+		background: var(--panel-2);
+		border: 1px solid var(--line);
+		border-radius: 999px;
+		padding: 1px 7px;
+	}
+	.chip.rk {
+		color: var(--good);
+		border-color: color-mix(in srgb, var(--good) 32%, var(--line));
+		background: color-mix(in srgb, var(--good) 12%, transparent);
+	}
+	/* non-ranked results sit a touch quieter so ranked (with its rating swing) reads first */
+	.rr.nonranked {
+		opacity: 0.82;
 	}
 
 	/* signed-in user's rows get a subtle gold rail + a YOU tag pinned top-right */

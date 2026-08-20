@@ -4,6 +4,7 @@
 	import { NAV } from '$lib/nav';
 	import AuthChip from './AuthChip.svelte';
 	import WalletChip from './WalletChip.svelte';
+	import AgentChip from './AgentChip.svelte';
 
 	// The single global arena bar (DESIGN-SYSTEM.md hard-rule #1): brand cab + cut-tabs + gold seam.
 	// Desktop only — mobile uses the bottom TabBar.
@@ -39,6 +40,7 @@
 		{/each}
 	</nav>
 	<div class="authslot">
+		<AgentChip />
 		<WalletChip />
 		<a class="gear" class:on={active('/settings')} href="{base}/settings" aria-label="Settings" title="Settings">
 			<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">

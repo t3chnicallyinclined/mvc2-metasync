@@ -3,6 +3,7 @@
 	import { base } from '$app/paths';
 	import { auth } from '$lib/stores/auth.svelte';
 	import { wallet } from '$lib/stores/wallet.svelte';
+	import { agent } from '$lib/stores/agent.svelte';
 	import { pwa } from '$lib/stores/pwa.svelte';
 	import { theme, type ThemeChoice } from '$lib/stores/theme.svelte';
 	import { APP_VERSION, api } from '$lib/config';
@@ -58,32 +59,17 @@
 		}
 	}
 
-	// Desktop agent — the signed-in user's OWN tray/Tauri agent status (GET /skinsync/agent, token-auth).
-	// Populated once the agent reports on heartbeat (ver empty until then → "not detected").
-	interface AgentStatus {
-		ver?: string;
-		platform?: string;
-		client?: string;
-		last_seen?: number;
-	}
-	let agent = $state<AgentStatus | null>(null);
-	const agentOn = $derived(!!agent?.ver);
-	async function loadAgent(): Promise<void> {
-		if (!auth.steamid) return;
-		try {
-			const res = await fetch(api('/skinsync/agent'), { headers: { accept: 'application/json', ...auth.headers() } });
-			if (res.ok) agent = (await res.json()) as AgentStatus;
-		} catch {
-			/* quiet — the card just shows the not-detected state */
-		}
-	}
+	// Desktop agent — the signed-in user's OWN tray/Tauri agent status, from the shared store the top-bar
+	// AgentChip owns (GET /skinsync/agent, token-auth). `ver` is empty until the agent reports on heartbeat.
+	const ag = $derived(agent.status);
+	const agentOn = $derived(agent.reporting);
 
 	// 🪙 wallet: the balance is loaded app-wide by WalletChip; make sure it's fresh when this page opens.
 	onMount(() => {
 		if (auth.steamid) {
 			void wallet.load(auth.steamid);
 			void loadSeason();
-			void loadAgent();
+			void agent.load(auth.steamid);
 		}
 	});
 	const bal = $derived(wallet.balance);
@@ -219,8 +205,8 @@
 	<div class="row">
 		<div class="rowlabel">
 			{#if agentOn}
-				<b>Your agent · v{agent?.ver}</b>
-				<span class="sub">{agent?.client === 'tray' ? 'Tray agent' : agent?.client || 'Agent'}{agent?.platform ? ` · ${agent.platform}` : ''}{agent?.last_seen ? ` · last seen ${timeAgo(agent.last_seen)}` : ''} — auto-reports your matches and applies your skins.</span>
+				<b>Your agent · v{ag?.ver}</b>
+				<span class="sub">{ag?.client === 'tray' ? 'Tray agent' : ag?.client || 'Agent'}{ag?.platform ? ` · ${ag.platform}` : ''}{ag?.last_seen ? ` · last seen ${timeAgo(ag.last_seen)}` : ''} — auto-reports your matches and applies your skins.</span>
 			{:else}
 				<b>Skin agent <span class="soon">soon</span></b>
 				<span class="sub">A tiny background app for your gaming PC — auto-reports your matches and applies your skins live. {auth.authed ? 'Not detected on this account yet.' : 'Coming in a future update.'}</span>
