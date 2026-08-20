@@ -127,8 +127,19 @@ fn is_newer(remote: &str, current: &str) -> bool {
 /// mid-match — will be `mem::find_game_pid().is_none()` once the reader loop owns process detection. For the
 /// T1 skeleton there is no auto-apply path calling this, so it is safe to return true.
 pub fn safe_to_apply() -> bool {
-    // TODO(T2): gate on "no game running", e.g. `crate::mem::find_game_pid().is_none()`.
-    true
+    // Never swap the running exe while MvC2 is up — an update mid-match would kill the reader/painter. The
+    // reader owns process detection; when the game is closed it's safe to self-replace + restart.
+    crate::mem::find_game_pid().is_none()
+}
+
+/// Relaunch the just-updated exe and exit THIS (still-old-code) process. `self_replace` swapped the file on
+/// disk, but the running image is still the old binary — only a fresh launch runs the new code. The `--updated`
+/// arg tells the new process to wait briefly for us to exit + release the single-instance mutex before it claims it.
+pub fn restart() -> ! {
+    if let Ok(exe) = std::env::current_exe() {
+        let _ = std::process::Command::new(exe).arg("--updated").spawn();
+    }
+    std::process::exit(0);
 }
 
 /// Full apply path — download the signed binary + its .sig, verify with minisign against MINISIGN_PUBKEY,
@@ -178,12 +189,45 @@ fn download_string(url: &str) -> Result<String, UpdateError> {
 }
 
 /// Minisign verification of `bin` against the embedded public key using the detached `.sig` contents.
+/// ⚠ The `.sig` that `cargo tauri signer sign` writes is the minisign signature **base64-encoded** (Tauri's
+/// convention — the whole `untrusted comment:…` file is one base64 blob). `minisign_verify::Signature::decode`
+/// wants the RAW minisign text, so base64-decode first; fall back to the raw string when it's already
+/// un-encoded, so either form verifies.
 fn verify_signature(bin: &[u8], sig_str: &str) -> Result<(), UpdateError> {
+    use base64::Engine;
     let pk = minisign_verify::PublicKey::from_base64(MINISIGN_PUBKEY)
         .map_err(|e| UpdateError::Verify(format!("bad pubkey: {e}")))?;
-    let sig = minisign_verify::Signature::decode(sig_str)
+    let decoded = base64::engine::general_purpose::STANDARD
+        .decode(sig_str.trim())
+        .ok()
+        .and_then(|b| String::from_utf8(b).ok())
+        .filter(|s| s.contains("untrusted comment"));
+    let raw = decoded.as_deref().unwrap_or(sig_str);
+    let sig = minisign_verify::Signature::decode(raw)
         .map_err(|e| UpdateError::Verify(format!("bad signature: {e}")))?;
     // allow_legacy = false: require modern (prehashed) minisign signatures, matching the release pipeline.
     pk.verify(bin, &sig, false)
         .map_err(|e| UpdateError::Verify(e.to_string()))
+}
+
+/// Show a native popup with the update outcome so the user sees it immediately — not buried in the tray menu
+/// text they'd have to re-open. Modal + top-most; returns when dismissed. No-op-to-stderr on non-Windows.
+#[cfg(windows)]
+pub fn notify(title: &str, msg: &str) {
+    use windows::core::HSTRING;
+    use windows::Win32::UI::WindowsAndMessaging::{
+        MessageBoxW, MB_ICONINFORMATION, MB_OK, MB_SETFOREGROUND, MB_TOPMOST,
+    };
+    unsafe {
+        let _ = MessageBoxW(
+            None,
+            &HSTRING::from(msg),
+            &HSTRING::from(title),
+            MB_OK | MB_ICONINFORMATION | MB_TOPMOST | MB_SETFOREGROUND,
+        );
+    }
+}
+#[cfg(not(windows))]
+pub fn notify(title: &str, msg: &str) {
+    eprintln!("[notify] {title}: {msg}");
 }

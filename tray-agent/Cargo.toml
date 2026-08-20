@@ -1,6 +1,6 @@
 [package]
 name = "metasync-agent"
-version = "0.2.5"  # LOCKSTEP with the MetaSync release train (latest.json / GitHub release). Bump with the app, never independently.
+version = "0.2.6"  # LOCKSTEP with the MetaSync release train (latest.json / GitHub release). Bump with the app, never independently.
 description = "MetaSync tray agent — headless Windows tray companion that reads MvC2 memory, applies skins, and reports matches (replaces the Tauri webview)"
 authors = ["tristech"]
 edition = "2021"
@@ -40,6 +40,10 @@ self-replace = "1"
 # T2: gzip the per-frame gamestate recording before upload (spool_gamestate), ported verbatim from the app.
 flate2 = "1"
 
+# minisign .sig files from `cargo tauri signer sign` are base64-encoded (Tauri convention); the self-updater
+# base64-decodes them back to raw minisign text before verifying. See updater::verify_signature.
+base64 = "0.22"
+
 # Windows-only: process-memory + toolhelp APIs used by mem.rs (ported verbatim from src-tauri). Same version
 # + feature set as the shipped app so the proven RE compiles byte-for-byte. Autostart uses winreg (below),
 # so the Registry/Shell features are intentionally NOT pulled here — kept minimal.
@@ -55,6 +59,8 @@ windows = { version = "0.58", features = [
   # Single-instance guard: CreateMutexW is gated behind Win32_Security (its first arg is SECURITY_ATTRIBUTES,
   # which we pass as NULL). Needed for the named-mutex guard in single_instance.rs.
   "Win32_Security",
+  # Update-result popup (MessageBoxW) so the user sees "updated / failed" without re-opening the tray menu.
+  "Win32_UI_WindowsAndMessaging",
 ] }
 # HKCU\...\Run autostart key — far simpler than the raw windows-crate registry API.
 winreg = "0.55"

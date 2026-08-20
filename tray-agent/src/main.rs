@@ -67,20 +67,41 @@ pub(crate) fn runtime_dir() -> std::path::PathBuf {
 }
 
 fn main() {
+    // If the self-updater relaunched us (`--updated`), give the OLD process a moment to exit and release the
+    // machine-wide single-instance mutex before we claim it — else the guard sees it held and exits us.
+    if std::env::args().any(|a| a == "--updated") {
+        std::thread::sleep(std::time::Duration::from_millis(1500));
+    }
+
     // FIRST: ensure only ONE agent runs machine-wide. If another instance already holds the lock, this logs
     // and exit(0)s here — before any reader/painter/tray starts — so two agents can't double-report matches.
     single_instance::enforce_single_instance();
 
-    // One-shot update check on startup: log the result, DO NOT auto-apply yet (T2 gates apply on safe_to_apply
-    // + real end-to-end testing). Runs on its own thread so a slow/absent network never delays the tray.
+    // Startup auto-update: on its own thread (a slow/absent network never delays the tray), and APPLY it when
+    // it's safe — MvC2 NOT running, so the exe is never swapped mid-match. Short delay lets the tray come up
+    // first; if the game is open we log + defer (the tray menu can also trigger it, and next launch retries).
+    // apply_update verifies the minisign signature before the self-replace.
     std::thread::Builder::new()
         .name("updater-check".into())
-        .spawn(|| match updater::check_for_update(config::VERSION) {
-            Some(u) => eprintln!(
-                "[updater] update available: {} (current {}) → {}",
-                u.version, config::VERSION, u.bin_url
-            ),
-            None => eprintln!("[updater] up to date (v{})", config::VERSION),
+        .spawn(|| {
+            std::thread::sleep(std::time::Duration::from_secs(8));
+            match updater::check_for_update(config::VERSION) {
+                Some(u) if updater::safe_to_apply() => {
+                    eprintln!("[updater] applying {} (current {})", u.version, config::VERSION);
+                    match updater::apply_update(&u) {
+                        Ok(()) => {
+                            updater::notify("MetaSync", &format!("Updated to v{} — restarting.", u.version));
+                            updater::restart()
+                        }
+                        Err(e) => {
+                            eprintln!("[updater] apply failed: {e}");
+                            updater::notify("MetaSync Update", &format!("Update failed:\n\n{e}"));
+                        }
+                    }
+                }
+                Some(u) => eprintln!("[updater] {} available but MvC2 running — deferring", u.version),
+                None => eprintln!("[updater] up to date (v{})", config::VERSION),
+            }
         })
         .ok();
 

@@ -6,7 +6,9 @@
 pub const SERVER_BASE: &str = "https://nobd.net/skinsync";
 
 /// Signed self-update manifest (minisign). Same endpoint the Tauri updater plugin points at.
-pub const UPDATE_MANIFEST: &str = "https://nobd.net/skinsync/update/latest.json";
+// The tray agent's OWN update manifest (flat form: {version,url,signature}), SEPARATE from the Tauri app's
+// nested latest.json — its `url` must point at a metasync-agent binary, never the Tauri installer.
+pub const UPDATE_MANIFEST: &str = "https://nobd.net/skinsync/update/agent-latest.json";
 
 /// The web app the tray "Open MetaSync" item launches in the default browser (the replacement for the
 /// old in-app webview).

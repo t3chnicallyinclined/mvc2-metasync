@@ -248,16 +248,63 @@ pub fn run() -> ! {
                     let paused = handles.pause_item.is_checked();
                     reader::PAUSED.store(paused, Ordering::Relaxed);
                 } else if ev.id == handles.updates_id {
-                    // Immediate feedback, then check off-thread. The result comes back via UpdateResult (the
-                    // menu item is Rc-backed → can't cross the thread boundary). Never auto-applies here.
+                    // Check off-thread, then INSTALL if an update is offered and it's safe (no game running).
+                    // Feedback comes back via UpdateResult (the menu item is Rc-backed → can't cross threads).
                     handles.updates_item.set_text("Checking…");
                     let p = update_proxy.clone();
                     std::thread::spawn(move || {
-                        let msg = match updater::check_for_update(config::VERSION) {
-                            Some(u) => format!("Update available: v{}", u.version),
-                            None => format!("Up to date (v{})", config::VERSION),
-                        };
-                        let _ = p.send_event(UserEvent::UpdateResult(msg));
+                        match updater::check_for_update(config::VERSION) {
+                            None => {
+                                let _ = p.send_event(UserEvent::UpdateResult(format!(
+                                    "Up to date (v{})",
+                                    config::VERSION
+                                )));
+                                updater::notify(
+                                    "MetaSync",
+                                    &format!("You're on the latest version (v{}).", config::VERSION),
+                                );
+                            }
+                            Some(u) if !updater::safe_to_apply() => {
+                                // an update is ready but MvC2 is open — don't swap mid-session
+                                let _ = p.send_event(UserEvent::UpdateResult(format!(
+                                    "v{} ready — close MvC2",
+                                    u.version
+                                )));
+                                updater::notify(
+                                    "MetaSync Update",
+                                    &format!(
+                                        "Update v{} is ready.\n\nClose MvC2 and it will install automatically.",
+                                        u.version
+                                    ),
+                                );
+                            }
+                            Some(u) => {
+                                let _ = p.send_event(UserEvent::UpdateResult(format!(
+                                    "Installing v{}…",
+                                    u.version
+                                )));
+                                updater::notify(
+                                    "MetaSync Update",
+                                    &format!(
+                                        "Installing update v{}…\n\nThe agent will restart when it's done.",
+                                        u.version
+                                    ),
+                                );
+                                match updater::apply_update(&u) {
+                                    // self-replace done → relaunch the new binary (never returns)
+                                    Ok(()) => updater::restart(),
+                                    Err(e) => {
+                                        let _ = p.send_event(UserEvent::UpdateResult(format!(
+                                            "Update failed: {e}"
+                                        )));
+                                        updater::notify(
+                                            "MetaSync Update",
+                                            &format!("Update failed:\n\n{e}"),
+                                        );
+                                    }
+                                }
+                            }
+                        }
                     });
                 } else if ev.id == handles.logs_id {
                     if let Err(e) = open::that(crate::runtime_dir()) {
