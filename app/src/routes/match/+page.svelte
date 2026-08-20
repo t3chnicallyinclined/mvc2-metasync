@@ -4,6 +4,7 @@
 	import { wager } from '$lib/stores/wager.svelte';
 	import { auth } from '$lib/stores/auth.svelte';
 	import MatchBanner from '$lib/components/MatchBanner.svelte';
+	import MyMatch from '$lib/components/MyMatch.svelte';
 	import WagerRail from '$lib/components/WagerRail.svelte';
 	import Marquee from '$lib/components/Marquee.svelte';
 	import SessionModal from '$lib/components/SessionModal.svelte';
@@ -100,6 +101,9 @@
 	<div class="seam" aria-hidden="true"></div>
 	<p class="mdesc">The live match center — games in progress and results as they land, pushed the moment they happen. Leave it open and watch the scene play out.</p>
 </section>
+
+<!-- 🆚 YOUR live match — the versus scoreboard + matchup intel (only while you're in a game, via the agent) -->
+<MyMatch />
 
 <!-- 🪙 Quarter Match: your wager rail + the open-challenge marquee (live off the same `matches` channel) -->
 <WagerRail />
