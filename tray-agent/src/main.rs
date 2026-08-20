@@ -4,7 +4,9 @@
 // does the local work — read MvC2's memory, apply skins, report matches. T1 is the scaffold: a working tray
 // + the proven memory primitive (mem.rs, ported verbatim) + a self-updater skeleton. The heavy game-reading
 // logic lands in T2.
-#![windows_subsystem = "windows"] // no console window
+// `windows_subsystem = "windows"` (no console window) is a Windows-only attribute; cfg_attr keeps it inert
+// on Linux/Bazzite where the agent is a normal process launched from the tray/DE.
+#![cfg_attr(windows, windows_subsystem = "windows")] // no console window (Windows only)
 
 // The validated RE memory primitive, copied byte-for-byte from src-tauri/src/mem.rs. In T1 only
 // find_game_pid is exercised (the reader loop that consumes Proc/exe_base lands in T2) → allow unused so the
@@ -34,6 +36,8 @@ mod painter;
 mod autostart;
 // Persisted tray preferences (prefs.json) — currently just the "Apply my skins" toggle restored below.
 mod prefs;
+// Machine-wide single-instance guard (named mutex on Windows / flock on Unix). Called first in main().
+mod single_instance;
 mod tray;
 
 // Runtime data dir. The reader's call sites (`crate::runtime_dir()`) stay byte-identical to sync.rs; only the
@@ -63,6 +67,10 @@ pub(crate) fn runtime_dir() -> std::path::PathBuf {
 }
 
 fn main() {
+    // FIRST: ensure only ONE agent runs machine-wide. If another instance already holds the lock, this logs
+    // and exit(0)s here — before any reader/painter/tray starts — so two agents can't double-report matches.
+    single_instance::enforce_single_instance();
+
     // One-shot update check on startup: log the result, DO NOT auto-apply yet (T2 gates apply on safe_to_apply
     // + real end-to-end testing). Runs on its own thread so a slow/absent network never delays the tray.
     std::thread::Builder::new()

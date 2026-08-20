@@ -1768,14 +1768,80 @@ fn rich_of(st: &ScoreState) -> GameRich {
         origin: detect_origin() }
 }
 
-// GAME MODE origin, captured at the KO moment (rich_of runs only in the game-end judgment, so this is one
-// lobby read per finished game — and a buffered pending game keeps the origin from when it was PLAYED, not
-// when the side-confirm flush finally reports it). "lobby" = the live session says we're in a Steam lobby
-// (host or member — read_my_lobby covers both); everything else is ranked matchmaking. The server treats
-// this as a CLAIM: tournament/money stamping and the ranked-eligibility decision stay server-side.
+// GAME MODE origin, captured at the KO moment (rich_of runs only in the game-end judgment → one read per
+// finished game; a buffered pending game keeps the origin from when it was PLAYED).
+//
+// ⚠ 2026-08-20: `read_my_lobby` in_lobby is NOT a ranked/custom discriminator. Ghidra (FUN_140037370) +
+// user-confirmed: RANKED matchmaking ALSO runs through a Steam lobby, and session mode fields
+// 0xd0320/0328/037c are versus/spectator/player-count — IDENTICAL for a ranked 1v1 and a custom 1v1. The
+// real split is Steam-lobby-level (lobby TYPE / room-code / +connect_lobby state), pending a ranked-vs-custom
+// capture. So we DEFAULT TO "ranked": only a POSITIVELY-confirmed custom signal downgrades to "lobby", and
+// everything else stays ranked so a genuine ranked match is never dropped by the server. (Tournament/money
+// games are already excluded from ranked by their tourney_id/wager_id server-side, so the only interim cost
+// is a casual custom possibly counting as ranked until `is_custom_lobby` is wired.)
 fn detect_origin() -> String {
-    let l = read_my_lobby();
-    if l.get("in_lobby").and_then(|v| v.as_bool()).unwrap_or(false) { "lobby".into() } else { "ranked".into() }
+    origin_probe(&read_my_lobby()); // keep the capture line (validation net) — in_lobby is OWNERSHIP, not mode
+    match is_custom_lobby() {
+        Some(true) => "lobby".into(),  // CONFIRMED custom lobby (session mode field)
+        _ => "ranked".into(),          // ranked matchmaking, or unreadable → never drop a ranked match
+    }
+}
+
+/// Ranked-vs-custom discriminator, LIVE-CAPTURED 2026-08-20. Some(true)=custom, Some(false)=ranked,
+/// None=unreadable→ranked. The mode config at `*(exe+0xacd3a8)+0xd0328` cleanly + ROLE-INDEPENDENTLY separates
+/// matchmaking from a custom lobby (confirmed across host AND join in one session):
+///   RANKED : d0328=1  (5 samples, vs Strago_503)
+///   CUSTOM : d0328=2  (joined Gdk's lobby AND self-hosted vs NOBD_Arcade — byte-identical 2/0/2)
+/// The RE (FUN_140037370) reads d0328 as the mode/config value; ==4 is the spectator variant (also custom).
+/// read_my_lobby's in_lobby is UNUSABLE here — it flips on lobby OWNERSHIP (ranked-host=true, custom-join=false),
+/// not on mode. This reads the mode field directly, so it's correct whether you host or join. Passive RPM only.
+fn is_custom_lobby() -> Option<bool> {
+    let pid = find_game_pid()?;
+    let proc = mem::Proc::open_read(pid)?;
+    let h = &proc;
+    let exe = game_exe_base(pid);
+    if exe == 0 { return None; }
+    unsafe {
+        let b = read_at(h, exe + SESSION_PTR_OFF, 8)?;
+        if b.len() < 8 { return None; }
+        let sess = u64::from_le_bytes([b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7]]) as usize;
+        if sess <= 0x10000 { return None; }
+        match rpm_u32(h, sess + 0xd0328)? {
+            1 => Some(false),    // matchmaking / ranked
+            2 | 4 => Some(true), // custom versus (2) / custom spectator (4)
+            _ => None,           // unknown → ranked (never drop a ranked match)
+        }
+    }
+}
+
+/// Read-only diagnostic (VAC-safe passive RPM): dump the candidate ranked-vs-custom fields at each game-end so
+/// ONE ranked game + ONE custom game reveal the offset that differs. Includes the "+connect_lobby" join state
+/// (mgr+0x84 / lobby id mgr+0x52) — set only for a custom join-by-link, never ranked — to test that lead.
+/// Remove once `is_custom_lobby` is wired.
+fn origin_probe(lobby: &serde_json::Value) {
+    let pid = match find_game_pid() { Some(p) => p, None => return };
+    let proc = match mem::Proc::open_read(pid) { Some(p) => p, None => return };
+    let h = &proc;
+    let exe = game_exe_base(pid);
+    if exe == 0 { return; }
+    unsafe {
+        let ptr = |base: usize| -> usize {
+            read_at(h, base, 8).filter(|b| b.len() >= 8)
+                .map(|b| u64::from_le_bytes([b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7]]) as usize)
+                .unwrap_or(0)
+        };
+        let sess = ptr(exe + SESSION_PTR_OFF);
+        let sf = |off: usize| -> i64 { if sess > 0x10000 { rpm_u32(h, sess + off).map(|v| v as i64).unwrap_or(-1) } else { -2 } };
+        let mgr = ptr(exe + 0x2eb36a0); // lobby-session manager global (DAT_142eb36a0)
+        let mf = |off: usize| -> i64 { if mgr > 0x10000 { rpm_u32(h, mgr + off).map(|v| v as i64).unwrap_or(-1) } else { -2 } };
+        let in_lobby = lobby.get("in_lobby").and_then(|v| v.as_bool()).unwrap_or(false);
+        let lid = lobby.get("lobby_id").and_then(|v| v.as_str()).unwrap_or("");
+        trace(&format!(
+            "[origin-probe] in_lobby={} lobby_id={} | sess={:#x} d0320={} d0328={} d037c={} d0374={} d03f4={} | mgr={:#x} connect84={} mgrlobby52={} searchkeys2a4={} binsize2e0={}",
+            in_lobby, lid, sess, sf(0xd0320), sf(0xd0328), sf(0xd037c), sf(0xd0374), sf(0xd03f4),
+            mgr, mf(0x84), mf(0x52), mf(0x2a4), mf(0x2e0)
+        ));
+    }
 }
 
 // ── PERSISTENT HEAD-TO-HEAD RECORD (C:\g\records.json, keyed by opponent SteamID) ──────────────────
@@ -2390,7 +2456,7 @@ pub fn start_reader() {
             if same && n > 0 { stable = stable.saturating_add(1); } else { stable = 1; }
             // in_session (live netplay pairing) forces at least "select" even before fighters load, so the
             // opponent surfaces the instant the match forms rather than after the 6-fighter roster stabilizes.
-            let state = if n >= 6 && stable >= 2 { "match" } else if n > 0 || in_session { "select" } else { "menu" }.to_string();
+            let mut state = if n >= 6 && stable >= 2 { "match" } else if n > 0 || in_session { "select" } else { "menu" }.to_string();
             roster = team;
 
             // opponent: STICKY across a set. Looked for only while fighters are loaded (n>0). Once locked we
@@ -2555,6 +2621,16 @@ pub fn start_reader() {
             // live_seen latch: set on every LIVE array read → keeps find_array re-acquiring through rollback flicker
             // (allow_find above) and gates the deterministic side lock below.
             if game.is_some() { live_seen = Some(std::time::Instant::now()); }
+
+            // ── STATE UPGRADE (fixes "web app doesn't detect my current match / live results") ── the `state` above
+            // is derived from the sig-scan roster, which UNIQUE-DEDUPS characters: when both teams share picks (e.g.
+            // both run Cable, or the mirror seen live: P1=42,44,8 / P2=42,44,50 → only 4 unique) the set is < 6, so
+            // `n >= 6` never trips and a REAL fight stays pinned at "select" → /match/live never fires and no
+            // current-match / live-result surfaces. The live fighter read is ground truth: `game.in_match == 1` means
+            // living fighters (health 1..=144) are on the array, already liveness-gated (frozen/stale buffers dropped
+            // to None above), so promote to "match" here regardless of the deduped roster count. Flows to every
+            // consumer: the /match/live broadcast, /result match-end detection, the tray status line, and reporting.
+            if game.as_ref().map(|g| g.in_match == 1).unwrap_or(false) { state = "match".to_string(); }
 
             // ── SIDE — AUTHORITATIVE from localPlayerNum (gs-94) ── localPlayerNum @ exe+0xac7230 is the game's OWN
             // local netplay index (0/1). Validated live: stable 16/16 within a session, while the char-based method
