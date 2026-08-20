@@ -2,9 +2,10 @@
 	import { auth } from '$lib/stores/auth.svelte';
 	import { matchfeed } from '$lib/stores/matchfeed.svelte';
 	import { api } from '$lib/config';
+	import { base } from '$app/paths';
 	import type { Profile } from '$lib/stores/profile.svelte';
 	import { rankOf } from '$lib/ranks';
-	import { charName } from '$lib/chars';
+	import { charName, charAbbr } from '$lib/chars';
 	import { flagEmoji } from '$lib/format';
 	import RankBadge from './RankBadge.svelte';
 	import Avatar from './Avatar.svelte';
@@ -30,19 +31,18 @@
 	const mine = $derived(me ? matchfeed.nowPlaying.find((p) => p.a === me || p.b === me) : undefined);
 	const oppId = $derived(mine ? (mine.a === me ? mine.b : mine.a) : '');
 
-	let myProfile = $state<Profile | null>(null);
 	let oppProfile = $state<Profile | null>(null);
 	let mu = $state<Matchup | null>(null);
-	let fetchedFor = $state(''); // the oppId the three fetches above are currently resolved for
+	let fetchedFor = $state(''); // the oppId the fetches below are currently resolved for
 	let reqId = 0;
 
-	// When the opponent changes (match start / new opponent), pull the details: my teams (from my profile's
-	// current_match), the opponent's profile (avatar/flag/rating), and the matchup intel. Cached by oppId.
+	// When the opponent changes, pull just what the live feed can't give us: the opponent's avatar/flag
+	// (profile) and the matchup intel. Teams + names + ratings + score all ride the feed already, so this is
+	// two cached fetches per opponent, not per poll. My own details come from auth.me (already loaded).
 	$effect(() => {
 		const opp = oppId;
 		const my = me;
 		if (!opp || !my) {
-			myProfile = null;
 			oppProfile = null;
 			mu = null;
 			fetchedFor = '';
@@ -51,11 +51,6 @@
 		if (opp === fetchedFor) return; // already resolved for this opponent
 		const rq = ++reqId;
 		Promise.all([
-			fetch(api(`/skinsync/profile?steamid=${encodeURIComponent(my)}`), {
-				headers: { accept: 'application/json' }
-			})
-				.then((r) => (r.ok ? (r.json() as Promise<Profile>) : null))
-				.catch(() => null),
 			fetch(api(`/skinsync/profile?steamid=${encodeURIComponent(opp)}`), {
 				headers: { accept: 'application/json' }
 			})
@@ -66,9 +61,8 @@
 			})
 				.then((r) => (r.ok ? (r.json() as Promise<Matchup>) : null))
 				.catch(() => null)
-		]).then(([mp, op, m]) => {
+		]).then(([op, m]) => {
 			if (rq !== reqId) return; // superseded by a newer opponent
-			myProfile = mp;
 			oppProfile = op;
 			mu = m && !(m as { error?: unknown }).error ? m : null;
 			fetchedFor = opp;
@@ -76,18 +70,17 @@
 	});
 
 	// ── derived display values ──
-	const cur = $derived(myProfile?.current_match ?? null);
 	const games = (p: Profile | null) => (p ? (p.wins ?? 0) + (p.losses ?? 0) : 0);
 
-	// names — prefer the live feed's name map, then profiles, then a shortened id.
+	// names — prefer the live feed's name map, then profile, then a shortened id.
 	const shortId = (sid: string) => (sid ? `…${sid.slice(-5)}` : 'Player');
-	const myName = $derived(auth.me?.name || myProfile?.name || (me ? shortId(me) : 'You'));
+	const myName = $derived(auth.me?.name || (me ? shortId(me) : 'You'));
 	const oppName = $derived(mine?.names?.[oppId] || oppProfile?.name || shortId(oppId));
 
 	// ratings — the live feed carries per-sid ratings; fall back to the profile.
-	const myRating = $derived(mine?.ratings?.[me ?? ''] ?? auth.me?.rating ?? myProfile?.rating ?? 1000);
+	const myRating = $derived(mine?.ratings?.[me ?? ''] ?? auth.me?.rating ?? 1000);
 	const oppRating = $derived(mine?.ratings?.[oppId] ?? oppProfile?.rating ?? 1000);
-	const myGames = $derived(games(myProfile) || games(auth.me as Profile | null));
+	const myGames = $derived(games(auth.me as Profile | null));
 	const oppGames = $derived(games(oppProfile));
 
 	const myTier = $derived(rankOf(myRating, myGames || null));
@@ -98,10 +91,19 @@
 	const oppWins = $derived(mine?.wins?.[oppId] ?? 0);
 	const hasScore = $derived(myWins > 0 || oppWins > 0);
 
-	// current teams (this game) — char-id lists from my profile's current_match.
-	const myTeam = $derived(cur?.my_chars ?? []);
-	const oppTeam = $derived(cur?.opp_chars ?? []);
-	const teamLine = (ids: number[]) => ids.map((id) => charName(id)).join(' / ');
+	// picked teams (this match) — char-id lists straight off the live feed.
+	const myTeam = $derived(me ? (mine?.chars?.[me] ?? []) : []);
+	const oppTeam = $derived(mine?.chars?.[oppId] ?? []);
+	// server-hosted character portrait (rendered from a default skin); falls back to an abbreviation tile.
+	const charSprite = (id: number) => `${base}/chars/${id}.webp`;
+	// per-char 404 fallback: a sprite that fails to load flips to an abbreviation tile (no broken-img icon).
+	let spriteFailed = $state<Set<number>>(new Set());
+	function onSpriteError(id: number) {
+		if (spriteFailed.has(id)) return;
+		const next = new Set(spriteFailed);
+		next.add(id);
+		spriteFailed = next;
+	}
 
 	// matchup intel
 	const winPct = $derived(mu ? Math.max(0, Math.min(100, Math.round((mu.win_chance ?? 0) * 100))) : null);
@@ -118,22 +120,41 @@
 	const flag = (cc?: string) => (cc ? flagEmoji(cc) : '');
 </script>
 
+{#snippet chip(id: number, idx: number)}
+	<div class="cc" class:point={idx === 0} title={charName(id)}>
+		<div class="cface">
+			{#if spriteFailed.has(id)}
+				<span class="cabbr">{charAbbr(id)}</span>
+			{:else}
+				<img
+					class="cimg"
+					src={charSprite(id)}
+					alt={charName(id)}
+					loading="lazy"
+					onerror={() => onSpriteError(id)}
+				/>
+			{/if}
+			{#if idx === 0}<span class="pt" aria-hidden="true">★</span>{/if}
+		</div>
+		<div class="cnm">{charName(id)}</div>
+	</div>
+{/snippet}
+
 {#if me && mine}
 	<section class="mm" aria-label="Your current match">
 		<div class="ghostvs" aria-hidden="true">VS</div>
 
 		<!-- YOU (left, orange) -->
 		<div class="plate p1">
-			<Avatar url={myProfile?.avatar ?? (auth.me?.avatar as string | undefined)} size={52} alt={myName} />
+			<Avatar url={auth.me?.avatar as string | undefined} size={52} alt={myName} />
 			<div class="who">
 				<div class="sidetag">You</div>
-				<div class="nm">{#if flag(myProfile?.cc ?? auth.me?.cc)}<span class="fl">{flag(myProfile?.cc ?? auth.me?.cc)}</span> {/if}{myName}</div>
+				<div class="nm">{#if flag(auth.me?.cc)}<span class="fl">{flag(auth.me?.cc)}</span> {/if}{myName}</div>
 				<div class="rk">
 					<RankBadge rating={myRating} games={myGames || null} size={15} />
 					<span class="rk-t rk-{myTier.s}">{myTier.n}</span>
 					<span class="elo">· {myRating}</span>
 				</div>
-				{#if myTeam.length}<div class="team">{teamLine(myTeam)}</div>{/if}
 			</div>
 		</div>
 
@@ -156,7 +177,6 @@
 					<span class="rk-t rk-{oppTier.s}">{oppTier.n}</span>
 					<span class="elo">· {oppRating}</span>
 				</div>
-				{#if oppTeam.length}<div class="team">{teamLine(oppTeam)}</div>{/if}
 				{#if h2hW || h2hL}
 					<div class="rec"><span class="lbl">YOU</span> <b class="w">{h2hW}</b><span class="d">–</span><b class="l">{h2hL}</b> <span class="lbl">THEM</span></div>
 				{:else if mu}
@@ -166,6 +186,19 @@
 			<Avatar url={oppProfile?.avatar} size={52} alt={oppName} />
 		</div>
 	</section>
+
+	<!-- picked characters — real character portraits (server-hosted), abbreviation-tile fallback -->
+	{#if myTeam.length || oppTeam.length}
+		<div class="teams">
+			<div class="side me">
+				{#each myTeam.slice(0, 3) as id, i (i)}{@render chip(id, i)}{/each}
+			</div>
+			<div class="tdiv" aria-hidden="true"></div>
+			<div class="side opp">
+				{#each oppTeam.slice(0, 3) as id, i (i)}{@render chip(id, i)}{/each}
+			</div>
+		</div>
+	{/if}
 
 	<!-- matchup intel strip -->
 	{#if mu}
@@ -280,15 +313,6 @@
 	.elo {
 		color: var(--faint);
 		font-variant-numeric: tabular-nums;
-	}
-	.team {
-		font-size: 11px;
-		font-weight: 700;
-		color: var(--dim);
-		margin-top: 3px;
-		white-space: nowrap;
-		overflow: hidden;
-		text-overflow: ellipsis;
 	}
 	.rec {
 		font-size: 11.5px;
@@ -490,7 +514,93 @@
 		font-weight: 600;
 	}
 
-	/* phones: stack the plates, shrink the hero */
+	/* ── picked-characters row ───────────────────────────────────────────────────────────────────── */
+	.teams {
+		display: grid;
+		grid-template-columns: 1fr auto 1fr;
+		align-items: start;
+		gap: 14px;
+		margin-bottom: 10px;
+	}
+	.side {
+		display: flex;
+		gap: 8px;
+	}
+	.side.me {
+		justify-content: flex-start;
+	}
+	.side.opp {
+		justify-content: flex-end;
+	}
+	.tdiv {
+		width: 1px;
+		align-self: stretch;
+		background: var(--line);
+	}
+	.cc {
+		display: flex;
+		flex-direction: column;
+		align-items: center;
+		gap: 4px;
+		width: 68px;
+	}
+	.cface {
+		position: relative;
+		width: 62px;
+		height: 78px;
+		border-radius: 10px;
+		display: grid;
+		place-items: center;
+		overflow: hidden;
+		border: 1px solid var(--line);
+		background: linear-gradient(180deg, var(--panel-2), var(--panel));
+	}
+	.side.me .cc.point .cface {
+		border-color: var(--p1-line);
+		box-shadow: 0 0 0 1px var(--p1-line);
+	}
+	.side.opp .cc.point .cface {
+		border-color: var(--p2-line);
+		box-shadow: 0 0 0 1px var(--p2-line);
+	}
+	.cimg {
+		width: 100%;
+		height: 100%;
+		object-fit: contain;
+		image-rendering: pixelated; /* sprites are low-res pixel art */
+	}
+	.cabbr {
+		font-size: 15px;
+		font-weight: 900;
+		letter-spacing: 0.04em;
+		color: var(--dim);
+	}
+	.side.me .cabbr {
+		color: var(--p1);
+	}
+	.side.opp .cabbr {
+		color: var(--p2);
+	}
+	.pt {
+		position: absolute;
+		top: 2px;
+		left: 3px;
+		font-size: 10px;
+		color: var(--gold);
+		filter: drop-shadow(0 0 3px rgba(0, 0, 0, 0.6));
+	}
+	.cnm {
+		font-size: 10px;
+		font-weight: 700;
+		color: var(--dim);
+		max-width: 72px;
+		white-space: nowrap;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		text-align: center;
+	}
+
+	/* phones: stack the plates, shrink the hero + faces */
 	@media (max-width: 560px) {
 		.mm {
 			gap: 8px;
@@ -502,6 +612,16 @@
 		.plate {
 			padding: 9px 12px;
 			gap: 8px;
+		}
+		.teams {
+			gap: 8px;
+		}
+		.cc {
+			width: 52px;
+		}
+		.cface {
+			width: 48px;
+			height: 60px;
 		}
 	}
 </style>

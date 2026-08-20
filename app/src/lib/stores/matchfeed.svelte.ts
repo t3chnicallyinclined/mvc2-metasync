@@ -59,6 +59,8 @@ export interface NowPlaying {
 	ratings: Record<string, number>;
 	/** live set score per sid — wins so far in the current set (Phase B); 0 until the first game lands. */
 	wins: Record<string, number>;
+	/** picked characters per sid (char-id triples) — from the live feed, drives the versus team portraits. */
+	chars: Record<string, number[]>;
 	/** the current set's id — opens a live SessionModal (game-by-game). "" until known. */
 	session_id?: string;
 	/** steam://joinlobby link for a shareable custom lobby — drives Spectate; "" for ranked/no lobby. */
@@ -74,6 +76,7 @@ type MatchFrame = SseFrame & {
 	ratings?: unknown;
 	ranks?: unknown;
 	wins?: unknown;
+	chars?: unknown;
 	join_link?: unknown;
 	winner?: unknown;
 	loser?: unknown;
@@ -134,6 +137,18 @@ function toWins(x: unknown): Record<string, number> {
 		for (const [k, v] of Object.entries(x as Record<string, unknown>)) {
 			const n = Number(v);
 			if (Number.isFinite(n) && n >= 0) out[k] = Math.round(n);
+		}
+	}
+	return out;
+}
+
+/** Coerce a payload sid→char-ids map into a clean record of char-id arrays (drops empties). */
+function toCharsMap(x: unknown): Record<string, number[]> {
+	const out: Record<string, number[]> = {};
+	if (x && typeof x === 'object') {
+		for (const [k, v] of Object.entries(x as Record<string, unknown>)) {
+			const ids = Array.isArray(v) ? v.map(Number).filter((n) => Number.isFinite(n)) : [];
+			if (ids.length) out[k] = ids;
 		}
 	}
 	return out;
@@ -240,12 +255,13 @@ export class MatchFeedStore {
 		const names = d.names && typeof d.names === 'object' ? { ...d.names } : {};
 		const ratings = toRatings(d.ratings);
 		const wins = toWins(d.wins);
+		const chars = toCharsMap(d.chars);
 		const mode = typeof d.mode === 'string' && d.mode ? d.mode : undefined;
 		const session_id = typeof d.session_id === 'string' && d.session_id ? d.session_id : undefined;
 		const join_link = typeof d.join_link === 'string' && d.join_link ? d.join_link : undefined;
 		const existing = this.nowPlaying.find((p) => p.key === key);
 		if (existing) {
-			// same pair re-announced — refresh names/ratings/score, keep it where it is (and its since).
+			// same pair re-announced — refresh names/ratings/score/teams, keep it where it is (and its since).
 			this.nowPlaying = this.nowPlaying.map((p) =>
 				p.key === key
 					? {
@@ -253,6 +269,7 @@ export class MatchFeedStore {
 							names: { ...p.names, ...names },
 							ratings: { ...p.ratings, ...ratings },
 							wins: { ...p.wins, ...wins },
+							chars: { ...p.chars, ...chars },
 							// keep a good session/link sticky if a later announce omits it
 							session_id: session_id ?? p.session_id,
 							join_link: join_link ?? p.join_link,
@@ -262,7 +279,7 @@ export class MatchFeedStore {
 			);
 			return;
 		}
-		const row: NowPlaying = { key, a, b, names, ratings, wins, session_id, join_link, mode, since: Date.now() };
+		const row: NowPlaying = { key, a, b, names, ratings, wins, chars, session_id, join_link, mode, since: Date.now() };
 		this.nowPlaying = [row, ...this.nowPlaying].slice(0, NOWPLAYING_CAP);
 	}
 

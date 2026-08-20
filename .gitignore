@@ -71,3 +71,6 @@ docs/REALTIME-NEXT-WORK.md
 docs/SERVER-DEPLOY-HANDOVER.md
 docs/TOURNAMENT-FEATURES-SPEC.md
 docs/BTCPAY-ECONOMY-STUDY.md
+
+# ROM-derived character portraits (rendered from idle_frames; served via deploy, never committed)
+app/static/chars/
