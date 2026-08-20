@@ -24,6 +24,25 @@ fails CI on drift).
 
 ---
 
+## 2z. 0.2.8 — SHIPPED (versus screen + Regions-in-Ranks + autostart default), 2026-08-20
+
+Live across server (no change — reused existing endpoints) + PWA + Windows tray (Tauri frozen 0.2.6).
+- **Live versus scoreboard** (`app/src/lib/components/MyMatch.svelte`, mounted top of the Match tab): the
+  signed-in user's current game as a Tauri-parity versus hero — skewed orange/blue plates (avatar, flag,
+  rank badge + ELO, current team), gold VS, live set score, IN MATCH pulse, and a matchup-intel strip
+  (win% · H2H · best team vs them · their kryptonite). Presence + live score from the `nowPlaying` feed;
+  teams from `profile.current_match`; intel from `/skinsync/matchup`. **All server data already existed** —
+  pure PWA work.
+- **Regions off the primary nav → folded into Ranks** as a 🌍 board mode (a sibling of the scope control;
+  swaps in the city-ladder board via the regions store + RegionRow). Tab bar 5→4. `/regions` stays a
+  deep-link. `nav.ts` + `TabBar.svelte` grid + `ranks/+page.svelte`.
+- **Start-with-Windows now defaults ON and self-heals** (`tray-agent`): replaced the first-run-only gate
+  (which could never re-enable for installs whose first run predated it) with a choice model — while the
+  user has never toggled it, every launch re-asserts the Run key (also repairs a stale path after a
+  move/auto-update); an explicit OFF is honored forever. `prefs.rs` (`autostart_choice`) + `main.rs` + `tray.rs`.
+- Shipped same pattern as 0.2.7: PWA atomic-swap deploy; tray non-latest GH `v0.2.8` + `agent-latest.json`
+  → 0.2.8; served exe sha256 == signed. v0.2.6 still "latest" (frozen app protected).
+
 ## 2a. 0.2.7 — SHIPPED (Phase B + Spectate), 2026-08-20
 
 Live across server + PWA + Windows tray (Tauri app frozen at 0.2.6). What shipped:
