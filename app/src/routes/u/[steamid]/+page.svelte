@@ -205,13 +205,13 @@
 
 	<!-- Rivalries + recent form -->
 	{#if hasRivalries}
-		<div class="rail sec-hd">Rivalries</div>
+		<div class="rail sec-hd">Head-to-head</div>
 		<div class="rivals">
 			{#if nemesis}
 				<a class="rival nem" href="{base}/u/{nemesis.opp_id}">
 					<div class="rhd">
-						<span class="rlabel">Nemesis</span>
-						<span class="rtag">has your number</span>
+						<span class="rlabel">Most losses against</span>
+						<span class="rtag">ranked · toughest matchup</span>
 					</div>
 					<div class="rbody">
 						<Avatar url={nemesis.avatar} size={38} alt={nemesis.name ?? 'Opponent'} />
@@ -228,8 +228,8 @@
 			{#if victim}
 				<a class="rival vic" href="{base}/u/{victim.opp_id}">
 					<div class="rhd">
-						<span class="rlabel">Victim</span>
-						<span class="rtag">you own this matchup</span>
+						<span class="rlabel">Most wins against</span>
+						<span class="rtag">ranked · best matchup</span>
 					</div>
 					<div class="rbody">
 						<Avatar url={victim.avatar} size={38} alt={victim.name ?? 'Opponent'} />
