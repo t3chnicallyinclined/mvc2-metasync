@@ -1,6 +1,7 @@
 import { fetchLeaderboard } from '$lib/api';
 import { getChannel } from '$lib/rt.svelte';
 import type { Player, LeaderboardTab, LeaderboardPeriod } from '$lib/types';
+import type { LeaderboardScope } from '$lib/boards';
 
 // The live board store. rune-$state so consumers re-render only on the fields that change (no
 // full-DOM rebuild — the exact CPU tax the rewrite exists to kill). Wired to the shipped bus:
@@ -12,6 +13,7 @@ import type { Player, LeaderboardTab, LeaderboardPeriod } from '$lib/types';
 export class LeaderboardStore {
 	tab = $state<LeaderboardTab>('rating');
 	period = $state<LeaderboardPeriod>('all');
+	scope = $state<LeaderboardScope>('ranked');
 	players = $state<Player[]>([]);
 	loading = $state(false);
 	error = $state<string | null>(null);
@@ -29,10 +31,26 @@ export class LeaderboardStore {
 		return this.tab === 'rating';
 	}
 
+	/** True under a Lobby/Tournament scope — rows carry no rating/rank (ranked-only). */
+	get scoped(): boolean {
+		return this.scope !== 'ranked';
+	}
+
 	setTab(t: LeaderboardTab) {
+		// The 'rating' board is ranked-only; it's hidden under a scope, so ignore a stray select.
+		if (this.scoped && t === 'rating') return;
 		if (t === this.tab) return;
 		this.tab = t;
 		if (this.periodLocked) this.period = 'all';
+		void this.load(true);
+	}
+
+	setScope(s: LeaderboardScope) {
+		if (s === this.scope) return;
+		this.scope = s;
+		// Scoped rows have no rating → the ranked-only 'rating' board falls back to Wins (per the
+		// handoff): if the user is on Rating and switches to Lobby/Tournament, land them on Wins.
+		if (this.scoped && this.tab === 'rating') this.tab = 'wins';
 		void this.load(true);
 	}
 
@@ -47,11 +65,16 @@ export class LeaderboardStore {
 		this.loading = true;
 		const tab = this.tab;
 		const period = this.period;
+		const scope = this.scope;
 		try {
-			const res = await fetchLeaderboard(tab, period, 50);
+			const res = await fetchLeaderboard(tab, period, scope, 50);
 			if (myReq !== this.#reqId) return; // a newer request superseded this one
-			const next = res.players ?? [];
-			if (!reset) this.#computeFlash(next);
+			// Skew guard: only trust rows when the server ECHOES the scope we asked for. A pre-scope
+			// server ignores &scope= (echoes 'ranked' / nothing), so under Lobby/Tournament we show the
+			// honest empty state rather than ranked rows dressed as scoped data.
+			const skew = scope !== 'ranked' && res.scope !== scope;
+			const next = skew ? [] : (res.players ?? []);
+			if (!reset && !skew) this.#computeFlash(next);
 			this.players = next;
 			this.error = null;
 			this.lastLoaded = Date.now();

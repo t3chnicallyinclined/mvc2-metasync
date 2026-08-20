@@ -5,8 +5,24 @@ import { rankOf, gamesOf, RK_PLATE, TIER_FLOOR } from './ranks';
 // Phase 1 mirrors the player-stat boards; the character 'tierlist' board (different data shape /
 // endpoint) is deferred.
 
+/**
+ * Board SCOPE (gs-217 game modes): which games feed the boards. `ranked` is the ELO ladder — it
+ * carries ratings + tier titles. `lobby`/`tourney` are pure records off the typed match log (NO
+ * rating/rank on their rows). Declared here — not types.ts (off-limits) — as the board vocabulary.
+ */
+export type LeaderboardScope = 'ranked' | 'lobby' | 'tourney';
+
+export const SCOPES: { id: LeaderboardScope; label: string; short: string; icon: string }[] = [
+	{ id: 'ranked', label: 'Ranked', short: 'Rank', icon: '⚔️' },
+	{ id: 'lobby', label: 'Lobby', short: 'Lobby', icon: '🎮' },
+	{ id: 'tourney', label: 'Tournament', short: 'Tourney', icon: '🏆' }
+];
+
+// The stat-tab strip. NOTE the 'rating' tab is labelled "Rating" (not "Ranked") on purpose — the
+// scope switch owns the word "Ranked" now, so the ELO board reads as "Rating" to avoid two "Ranked"
+// controls sitting side-by-side (§4 design lesson).
 export const TABS: { id: LeaderboardTab; label: string }[] = [
-	{ id: 'rating', label: 'Ranked' },
+	{ id: 'rating', label: 'Rating' },
 	{ id: 'wins', label: 'Wins' },
 	{ id: 'streak', label: 'Streak' },
 	{ id: 'ocv', label: 'OCV' },

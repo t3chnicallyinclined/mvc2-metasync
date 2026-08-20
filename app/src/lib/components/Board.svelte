@@ -11,12 +11,15 @@
 		items,
 		tab,
 		flashIds,
-		mySteam = null
+		mySteam = null,
+		scoped = false
 	}: {
 		items: BoardItem[];
 		tab: LeaderboardTab;
 		flashIds: Set<string>;
 		mySteam?: string | null;
+		// Lobby/Tournament scope: rows carry no rating/rank → drop the Tier column entirely.
+		scoped?: boolean;
 	} = $props();
 
 	const ROW = 44;
@@ -39,11 +42,11 @@
 	});
 </script>
 
-<div class="board">
+<div class="board" class:scoped>
 	<div class="bd-head">
 		<span class="c">#</span>
 		<span>Player</span>
-		<span class="col-tier">Tier</span>
+		{#if !scoped}<span class="col-tier">Tier</span>{/if}
 		<span class="r">{tab === 'rating' ? 'Rating' : STAT_LABEL[tab]}</span>
 		<span class="r col-wl">W – L</span>
 		<span class="r col-wr">Win %</span>
@@ -60,6 +63,7 @@
 							player={item.player}
 							pos={item.pos}
 							{tab}
+							{scoped}
 							me={mySteam != null && item.player.steamid === mySteam}
 							flash={flashIds.has(item.player.steamid)}
 						/>
@@ -78,6 +82,11 @@
 		overflow: hidden;
 		/* desktop: rank · name · tier · stat · W–L · win% (defined here so a media query can override) */
 		--bd-cols: 40px minmax(0, 1fr) 138px 92px 84px 60px;
+	}
+	/* Scoped (Lobby/Tournament): no Tier column — rank · name · stat · W–L · win%. Rows omit the
+	   tier cell too (BoardRow) so the grid stays aligned. */
+	.board.scoped {
+		--bd-cols: 40px minmax(0, 1fr) 92px 84px 60px;
 	}
 	.bd-head {
 		display: grid;
@@ -140,7 +149,10 @@
 	/* Phones can't hold six columns — the tier cutline bands already label each tier, so
 	   collapse to rank · name · stat. Rows hide the same cells (BoardRow) to stay aligned. */
 	@media (max-width: 640px) {
-		.board {
+		/* Both selectors listed so `.board.scoped` (higher specificity) can't keep its desktop
+		   track count on phones. */
+		.board,
+		.board.scoped {
 			--bd-cols: 28px minmax(0, 1fr) auto;
 		}
 		.bd-head {

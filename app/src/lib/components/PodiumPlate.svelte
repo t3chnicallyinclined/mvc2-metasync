@@ -10,11 +10,13 @@
 	let {
 		player,
 		place,
-		tab
-	}: { player: Player; place: 1 | 2 | 3; tab: LeaderboardTab } = $props();
+		tab,
+		scoped = false
+	}: { player: Player; place: 1 | 2 | 3; tab: LeaderboardTab; scoped?: boolean } = $props();
 
 	const r = $derived(rankOf(player.rating, gamesOf(player)));
-	const acc = $derived(RK_PLATE[r.s] ?? RK_PLATE.civilian);
+	// Scoped podiums (Lobby/Tournament) carry no rating → no tier badge and a neutral plate accent.
+	const acc = $derived(scoped ? RK_PLATE.civilian : (RK_PLATE[r.s] ?? RK_PLATE.civilian));
 	const crown = $derived(place === 1);
 </script>
 
@@ -33,10 +35,12 @@
 		<Avatar url={player.avatar} size={crown ? 58 : 46} alt={player.name} />
 		<b class="pnm">{#if player.cc}{flagEmoji(player.cc)} {/if}{player.name || 'Player'}</b>
 	{/if}
-	<span class="ptier bd-tier">
-		<RankBadge rating={player.rating} games={gamesOf(player)} size={crown ? 20 : 16} />
-		<span class="rk-{r.s}">{r.n}</span>
-	</span>
+	{#if !scoped}
+		<span class="ptier bd-tier">
+			<RankBadge rating={player.rating} games={gamesOf(player)} size={crown ? 20 : 16} />
+			<span class="rk-{r.s}">{r.n}</span>
+		</span>
+	{/if}
 	<b class="prt">{statValue(player, tab)}</b>
 	<span class="pwl">{player.wins ?? 0}W · {player.losses ?? 0}L · {winrateOf(player)}%</span>
 </div>

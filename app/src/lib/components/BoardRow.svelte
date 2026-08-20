@@ -12,13 +12,16 @@
 		pos,
 		tab,
 		me = false,
-		flash = false
+		flash = false,
+		scoped = false
 	}: {
 		player: Player;
 		pos: number | null;
 		tab: LeaderboardTab;
 		me?: boolean;
 		flash?: boolean;
+		// Lobby/Tournament scope: no rating/rank on the row → the tier cell is omitted.
+		scoped?: boolean;
 	} = $props();
 
 	const r = $derived(rankOf(player.rating, gamesOf(player)));
@@ -45,10 +48,12 @@
 		{/if}
 		{#if me}<span class="me-tag">YOU</span>{/if}
 	</div>
-	<div class="bd-tier">
-		<RankBadge rating={player.rating} games={gamesOf(player)} size={16} />
-		<span class="rk-{r.s}">{r.n}</span>
-	</div>
+	{#if !scoped}
+		<div class="bd-tier">
+			<RankBadge rating={player.rating} games={gamesOf(player)} size={16} />
+			<span class="rk-{r.s}">{r.n}</span>
+		</div>
+	{/if}
 	<div class="bd-num">
 		{val}{#if showVerified}<span class="verified" title="{cw} of {val} wins verified">✓{cw}</span>{/if}
 	</div>

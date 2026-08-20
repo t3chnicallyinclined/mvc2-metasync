@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import { leaderboard } from '$lib/stores/leaderboard.svelte';
-	import { TABS, PERIODS, MAST, STAT_DESC, PERIOD_LABEL, podiumOn, buildBoardItems } from '$lib/boards';
+	import { TABS, PERIODS, SCOPES, MAST, STAT_DESC, PERIOD_LABEL, podiumOn, buildBoardItems } from '$lib/boards';
 	import Board from '$lib/components/Board.svelte';
 	import PodiumPlate from '$lib/components/PodiumPlate.svelte';
 	import RankBadge from '$lib/components/RankBadge.svelte';
@@ -34,6 +34,8 @@
 	let q = $state('');
 
 	const tab = $derived(leaderboard.tab);
+	const scope = $derived(leaderboard.scope);
+	const scoped = $derived(leaderboard.scoped);
 	const players = $derived(leaderboard.players);
 	const searching = $derived(q.trim().length > 0);
 	const shown = $derived(
@@ -42,8 +44,20 @@
 			: players
 	);
 	const mast = $derived(MAST[tab]);
+	// Under a scope the ghost watermark names the mode (LOBBY/TOURNAMENT) instead of the stat.
+	const ghost = $derived(scoped ? (scope === 'lobby' ? 'LOBBY' : 'TOURNAMENT') : mast[1]);
+	// The 'rating' board is ranked-only → hide that stat tab under Lobby/Tournament.
+	const visibleTabs = $derived(scoped ? TABS.filter((t) => t.id !== 'rating') : TABS);
 	const showPodium = $derived(podiumOn(shown, searching));
 	const items = $derived(buildBoardItems(shown, tab, searching));
+
+	// Short period labels for the tight ~900px one-row band (see .controls responsive rules).
+	const PERIOD_SHORT: Record<LeaderboardPeriod, string> = {
+		all: 'All',
+		day: 'Day',
+		week: 'Wk',
+		month: 'Mo'
+	};
 
 	const coldLoad = $derived(leaderboard.loading && players.length === 0);
 
@@ -57,7 +71,7 @@
 
 <!-- Masthead: title + ghost watermark + accent seam + description -->
 <section class="mast" style="--acc:{mast[2]}">
-	<div class="ghost" aria-hidden="true">{mast[1]}</div>
+	<div class="ghost" aria-hidden="true">{ghost}</div>
 	<div class="mrow">
 		<h1 class="mtitle">{mast[0]}</h1>
 		{#if leaderboard.error && players.length}
@@ -70,10 +84,26 @@
 	<p class="mdesc">{STAT_DESC[tab]}</p>
 </section>
 
-<!-- Controls: board tabs · period · search -->
+<!-- Board control area (ONE grouped masthead row — DESIGN-SYSTEM hard-rule #1: never a second
+     control row). Scope · stat tabs · period · search. Stays one row from ~900px up; wraps on phones. -->
 <div class="controls">
+	<!-- Scope switch: which games feed the boards. Ranked carries ratings + titles; Lobby/Tournament
+	     are pure records. A distinct segmented control so it never reads as another stat tab. -->
+	<div class="scopes" role="tablist" aria-label="Board scope">
+		{#each SCOPES as s (s.id)}
+			<button
+				class="scope"
+				class:on={s.id === scope}
+				role="tab"
+				aria-selected={s.id === scope}
+				title={s.label}
+				onclick={() => leaderboard.setScope(s.id)}
+				><span class="sic" aria-hidden="true">{s.icon}</span><span class="slbl">{s.label}</span></button
+			>
+		{/each}
+	</div>
 	<div class="cuts" role="tablist" aria-label="Leaderboard">
-		{#each TABS as t (t.id)}
+		{#each visibleTabs as t (t.id)}
 			<button
 				class="cut"
 				class:on={t.id === tab}
@@ -89,7 +119,8 @@
 				<button
 					class="per"
 					class:on={p.id === leaderboard.period}
-					onclick={() => leaderboard.setPeriod(p.id as LeaderboardPeriod)}>{p.label}</button
+					onclick={() => leaderboard.setPeriod(p.id as LeaderboardPeriod)}
+					><span class="lg">{p.label}</span><span class="sm">{PERIOD_SHORT[p.id]}</span></button
 				>
 			{/each}
 		</div>
@@ -103,6 +134,8 @@
 	<div class="empty">
 		{#if searching}
 			No players match “{q}”.
+		{:else if scoped}
+			No {scope === 'lobby' ? 'lobby' : 'tournament'} games recorded {leaderboard.period === 'all' ? 'yet' : PERIOD_LABEL[leaderboard.period]} — they log automatically as they happen.
 		{:else}
 			No rankings {leaderboard.period === 'all' ? 'yet' : `for ${PERIOD_LABEL[leaderboard.period]}`} — win a match to get on the board.
 		{/if}
@@ -110,16 +143,18 @@
 {:else}
 	{#if showPodium}
 		<div class="podium">
-			<PodiumPlate player={shown[1]} place={2} {tab} />
-			<PodiumPlate player={shown[0]} place={1} {tab} />
-			<PodiumPlate player={shown[2]} place={3} {tab} />
+			<PodiumPlate player={shown[1]} place={2} {tab} {scoped} />
+			<PodiumPlate player={shown[0]} place={1} {tab} {scoped} />
+			<PodiumPlate player={shown[2]} place={3} {tab} {scoped} />
 		</div>
 	{/if}
 
-	<Board {items} {tab} flashIds={leaderboard.flashIds} mySteam={auth.steamid} />
+	<Board {items} {tab} {scoped} flashIds={leaderboard.flashIds} mySteam={auth.steamid} />
 
-	<!-- pinned YOU row -->
-	{#if auth.authed}
+	<!-- pinned YOU row — ranked only: scoped boards have no per-mode rating/rank to pin. -->
+	{#if scoped}
+		<!-- intentionally no YOU card under Lobby/Tournament -->
+	{:else if auth.authed}
 		<a class="you-card" href="{base}/u/{auth.steamid}">
 			<span class="you-tag">YOU</span>
 			<Avatar url={auth.me?.avatar} size={30} alt={auth.me?.name ?? 'You'} />
@@ -199,6 +234,45 @@
 		flex-wrap: wrap;
 		margin: 4px 0 12px;
 	}
+	/* Scope switch — a rounded segmented control, deliberately distinct from the skewed stat cuts so
+	   "Ranked/Lobby/Tournament" never reads as another stat tab. */
+	.scopes {
+		display: inline-flex;
+		align-items: center;
+		flex: none;
+		gap: 2px;
+		padding: 2px;
+		border: 1px solid var(--line);
+		border-radius: 999px;
+		background: var(--panel);
+	}
+	.scope {
+		display: inline-flex;
+		align-items: center;
+		gap: 5px;
+		border: 0;
+		background: transparent;
+		color: var(--dim);
+		border-radius: 999px;
+		padding: 6px 12px;
+		font-size: 12px;
+		font-weight: 700;
+		cursor: pointer;
+		white-space: nowrap;
+		transition: color 0.15s, background 0.15s;
+	}
+	.scope:hover {
+		color: var(--ink);
+	}
+	.scope.on {
+		background: linear-gradient(180deg, #ffe084, #c98f0e);
+		color: var(--gold-ink);
+		font-style: italic;
+	}
+	.sic {
+		font-size: 12.5px;
+		line-height: 1;
+	}
 	.cuts {
 		display: flex;
 		gap: 4px;
@@ -213,6 +287,7 @@
 		color: var(--dim);
 		font-size: 11.5px;
 		font-weight: 700;
+		white-space: nowrap;
 		cursor: pointer;
 		transition: color 0.15s, background 0.15s, border-color 0.15s;
 	}
@@ -243,12 +318,17 @@
 		color: var(--dim);
 		font-size: 11px;
 		font-weight: 700;
+		white-space: nowrap;
 		cursor: pointer;
 	}
 	.per.on {
 		color: var(--ink);
 		background: var(--panel);
 		border-color: var(--gold-soft);
+	}
+	/* Period buttons carry a full + a short label; the short one only shows in the tight ~900px band. */
+	.per .sm {
+		display: none;
 	}
 	.search {
 		margin-left: auto;
@@ -368,6 +448,59 @@
 		padding: 8px 4px 0;
 		font-size: 11.5px;
 		color: var(--faint);
+	}
+
+	/* ── One control row from ~900px up (DESIGN-SYSTEM hard-rule #1: never a second control row). ──
+	   The row can't grow taller: it goes NOWRAP and the search field becomes the flexible absorber
+	   (shrinks, never grows huge), while scope collapses to icons and the period uses short labels in
+	   the tight 900–1079 band. Below 900 the area wraps freely (mobile). */
+	@media (min-width: 900px) {
+		.controls {
+			flex-wrap: nowrap;
+		}
+		.cuts {
+			flex-wrap: nowrap;
+		}
+		.cut {
+			padding: 6px 10px;
+		}
+		.scope {
+			padding: 6px 10px;
+		}
+		.scope .slbl {
+			display: none; /* icon-only in the tight band; title attr keeps the name accessible */
+		}
+		.per {
+			padding: 6px 9px;
+		}
+		.per .lg {
+			display: none;
+		}
+		.per .sm {
+			display: inline;
+		}
+		.search {
+			flex: 0 1 150px;
+			min-width: 96px;
+		}
+	}
+	/* ≥1080px: room returns → scope shows its labels and the period shows full words again. */
+	@media (min-width: 1080px) {
+		.scope {
+			padding: 6px 12px;
+		}
+		.scope .slbl {
+			display: inline;
+		}
+		.cut {
+			padding: 6px 12px;
+		}
+		.per .lg {
+			display: inline;
+		}
+		.per .sm {
+			display: none;
+		}
 	}
 	@media (max-width: 560px) {
 		.podium {

@@ -5,7 +5,7 @@
 	import { wallet } from '$lib/stores/wallet.svelte';
 	import { pwa } from '$lib/stores/pwa.svelte';
 	import { theme, type ThemeChoice } from '$lib/stores/theme.svelte';
-	import { APP_VERSION } from '$lib/config';
+	import { APP_VERSION, api } from '$lib/config';
 	import Avatar from '$lib/components/Avatar.svelte';
 	import RankBadge from '$lib/components/RankBadge.svelte';
 	import { rankOf, gamesOf } from '$lib/ranks';
@@ -21,9 +21,49 @@
 		{ id: 'auto', label: 'Auto' }
 	];
 
+	// ── Season Zero (light touch): policy v1 makes registering a functional no-op, so this is flavor,
+	// not a CTA. Status from GET /season/status; join via the shared authed POST. ──
+	interface SeasonStatus {
+		registered?: boolean;
+		since?: number;
+		registered_count?: number;
+		season?: string;
+	}
+	let season = $state<SeasonStatus | null>(null);
+	let seasonBusy = $state(false);
+	let seasonMsg = $state('');
+
+	async function loadSeason(): Promise<void> {
+		if (!auth.steamid) return;
+		try {
+			const res = await fetch(api(`/skinsync/season/status?steamid=${encodeURIComponent(auth.steamid)}`), {
+				headers: { accept: 'application/json', ...auth.headers() }
+			});
+			if (res.ok) season = (await res.json()) as SeasonStatus;
+		} catch {
+			/* keep last-good; the line just stays quiet on a blip */
+		}
+	}
+
+	async function joinSeason(): Promise<void> {
+		seasonBusy = true;
+		seasonMsg = '';
+		const r = await auth.post('/skinsync/season/register', {});
+		seasonBusy = false;
+		if (r.ok) {
+			seasonMsg = 'You’re in. See you on the ladder.';
+			await loadSeason();
+		} else {
+			seasonMsg = r.error ?? 'Could not join right now.';
+		}
+	}
+
 	// 🪙 wallet: the balance is loaded app-wide by WalletChip; make sure it's fresh when this page opens.
 	onMount(() => {
-		if (auth.steamid) void wallet.load(auth.steamid);
+		if (auth.steamid) {
+			void wallet.load(auth.steamid);
+			void loadSeason();
+		}
 	});
 	const bal = $derived(wallet.balance);
 	const recent = $derived(wallet.recent.slice(0, 6));
@@ -96,6 +136,29 @@
 		{:else}
 			<div class="wempty">No quarter activity yet — put one up on the Match tab.</div>
 		{/if}
+	</div>
+
+	<!-- Season Zero — deliberately subtle (policy v1: joining is just a flag, no reset, no side ladder) -->
+	<div class="rail sec-hd">Season</div>
+	<div class="card">
+		<div class="row">
+			<div class="rowlabel">
+				<b>Season Zero <span class="soon">preseason</span></b>
+				<span class="sub">
+					{#if season?.registered}
+						You’re in for Season Zero{#if season.registered_count}, with {season.registered_count} other{season.registered_count === 1 ? '' : 's'}{/if}. Nothing to do yet — your rank carries on as normal.
+					{:else}
+						A soft prologue while the season format is finalized. Joining is just a flag for now — no reset, no separate ladder.
+					{/if}
+				</span>
+			</div>
+			{#if season?.registered}
+				<span class="pill good">JOINED</span>
+			{:else}
+				<button class="btn ghost" onclick={joinSeason} disabled={seasonBusy}>{seasonBusy ? 'Joining…' : 'Join Season Zero'}</button>
+			{/if}
+		</div>
+		{#if seasonMsg}<div class="season-msg">{seasonMsg}</div>{/if}
 	</div>
 {/if}
 
@@ -292,6 +355,11 @@
 		color: var(--live);
 	}
 	.wempty {
+		margin-top: 10px;
+		font-size: 12px;
+		color: var(--dim);
+	}
+	.season-msg {
 		margin-top: 10px;
 		font-size: 12px;
 		color: var(--dim);
