@@ -33,7 +33,12 @@ export interface MatchResult {
 	mode?: string;
 	/** the WINNER's rating gain for a ranked result (loser's is the negative); undefined when unrated. */
 	elo?: number;
-	/** char-id triples for the arena matchup line (via charName); undefined until the seed carries them. */
+	/** the set this game belongs to — opens the session modal (game-by-game set view). */
+	session_id?: string;
+	/** ranked ELO for each player at match time — drives the rank badge (client-derived tier). */
+	winner_rating?: number;
+	loser_rating?: number;
+	/** char-id triples for the arena matchup line (via teamAbbr); undefined until the seed carries them. */
 	winner_team?: number[];
 	loser_team?: number[];
 	/** biggest combo landed in the set (hit count); undefined/0 → no callout. */
@@ -50,12 +55,18 @@ export interface NowPlaying {
 	a: string;
 	b: string;
 	names: Record<string, string>;
+	/** ranked ELO per sid (when the feed carries it) — drives the rank badge on the live card. */
+	ratings: Record<string, number>;
+	/** match origin, when the feed tags it (match_start deltas may omit it). */
+	mode?: string;
 	since: number;
 }
 
 type MatchFrame = SseFrame & {
 	players?: unknown[];
 	names?: Record<string, string>;
+	ratings?: unknown;
+	ranks?: unknown;
 	winner?: unknown;
 	loser?: unknown;
 	winner_name?: unknown;
@@ -64,6 +75,9 @@ type MatchFrame = SseFrame & {
 	ts?: unknown;
 	mode?: unknown;
 	elo?: unknown;
+	session_id?: unknown;
+	winner_rating?: unknown;
+	loser_rating?: unknown;
 	winner_team?: unknown;
 	loser_team?: unknown;
 	combo?: unknown;
@@ -85,6 +99,24 @@ function toTeam(x: unknown): number[] | undefined {
 	if (!Array.isArray(x)) return undefined;
 	const ids = x.map(Number).filter((n) => Number.isFinite(n));
 	return ids.length ? ids : undefined;
+}
+
+/** Coerce a positive integer rating (ELO base 1000; 0/absent → undefined so no badge renders). */
+function toRating(x: unknown): number | undefined {
+	const n = Number(x);
+	return Number.isFinite(n) && n > 0 ? Math.round(n) : undefined;
+}
+
+/** Coerce a payload sid→rating map into a clean numeric record. */
+function toRatings(x: unknown): Record<string, number> {
+	const out: Record<string, number> = {};
+	if (x && typeof x === 'object') {
+		for (const [k, v] of Object.entries(x as Record<string, unknown>)) {
+			const n = toRating(v);
+			if (n !== undefined) out[k] = n;
+		}
+	}
+	return out;
 }
 
 /** Order-independent key for a two-player pair. */
@@ -185,15 +217,19 @@ export class MatchFeedStore {
 		const [a, b] = players;
 		const key = pairKey(a, b);
 		const names = d.names && typeof d.names === 'object' ? { ...d.names } : {};
+		const ratings = toRatings(d.ratings);
+		const mode = typeof d.mode === 'string' && d.mode ? d.mode : undefined;
 		const existing = this.nowPlaying.find((p) => p.key === key);
 		if (existing) {
-			// same pair re-announced — refresh names, keep it where it is (and its since).
+			// same pair re-announced — refresh names/ratings, keep it where it is (and its since).
 			this.nowPlaying = this.nowPlaying.map((p) =>
-				p.key === key ? { ...p, names: { ...p.names, ...names } } : p
+				p.key === key
+					? { ...p, names: { ...p.names, ...names }, ratings: { ...p.ratings, ...ratings }, mode: mode ?? p.mode }
+					: p
 			);
 			return;
 		}
-		const row: NowPlaying = { key, a, b, names, since: Date.now() };
+		const row: NowPlaying = { key, a, b, names, ratings, mode, since: Date.now() };
 		this.nowPlaying = [row, ...this.nowPlaying].slice(0, NOWPLAYING_CAP);
 	}
 
@@ -217,6 +253,7 @@ export class MatchFeedStore {
 		const elo = Number.isFinite(eloN) && eloN !== 0 ? Math.abs(eloN) : undefined;
 		const comboN = Number(d.combo);
 		const combo = Number.isFinite(comboN) && comboN > 1 ? Math.round(comboN) : undefined;
+		const session_id = typeof d.session_id === 'string' && d.session_id ? d.session_id : undefined;
 		return {
 			key: `${winner}_${loser}_${ts}`,
 			winner,
@@ -227,6 +264,9 @@ export class MatchFeedStore {
 			ts,
 			mode,
 			elo,
+			session_id,
+			winner_rating: toRating(d.winner_rating),
+			loser_rating: toRating(d.loser_rating),
 			winner_team: toTeam(d.winner_team),
 			loser_team: toTeam(d.loser_team),
 			combo,
@@ -249,7 +289,7 @@ export class MatchFeedStore {
 		const idx = this.results.findIndex((r) => r.key === row.key);
 		if (idx >= 0) {
 			// Provisional already shown → upgrade in place when a richer/verified copy lands (never
-			// re-order, never duplicate). Prefer existing non-empty teams/flags over a barer delta.
+			// re-order, never duplicate). Prefer existing non-empty teams/ratings/flags over a barer delta.
 			const cur = this.results[idx];
 			const next: MatchResult = {
 				...cur,
@@ -258,6 +298,9 @@ export class MatchFeedStore {
 				loser_name: row.loser_name || cur.loser_name,
 				mode: row.mode ?? cur.mode,
 				elo: row.elo ?? cur.elo,
+				session_id: row.session_id ?? cur.session_id,
+				winner_rating: row.winner_rating ?? cur.winner_rating,
+				loser_rating: row.loser_rating ?? cur.loser_rating,
 				winner_team: row.winner_team ?? cur.winner_team,
 				loser_team: row.loser_team ?? cur.loser_team,
 				combo: row.combo ?? cur.combo,
@@ -271,6 +314,9 @@ export class MatchFeedStore {
 				next.loser_name === cur.loser_name &&
 				next.mode === cur.mode &&
 				next.elo === cur.elo &&
+				next.session_id === cur.session_id &&
+				next.winner_rating === cur.winner_rating &&
+				next.loser_rating === cur.loser_rating &&
 				next.winner_team === cur.winner_team &&
 				next.loser_team === cur.loser_team &&
 				next.combo === cur.combo &&
