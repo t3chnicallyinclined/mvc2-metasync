@@ -2092,12 +2092,46 @@ fn rich_of(st: &ScoreState) -> GameRich {
 
 // GAME MODE origin, captured at the KO moment (rich_of runs only in the game-end judgment, so this is one
 // lobby read per finished game — and a buffered pending game keeps the origin from when it was PLAYED, not
-// when the side-confirm flush finally reports it). "lobby" = the live session says we're in a Steam lobby
-// (host or member — read_my_lobby covers both); everything else is ranked matchmaking. The server treats
-// this as a CLAIM: tournament/money stamping and the ranked-eligibility decision stay server-side.
+// when the side-confirm flush finally reports it). ⚠ 2026-08-20 LIVE-VALIDATED FIX: read_my_lobby's in_lobby
+// is NOT a ranked/custom signal — ranked matchmaking ALSO runs through a Steam lobby (Ghidra FUN_140037370),
+// and session mode fields 0xd0320/0328/037c are versus/spectator/player-count, IDENTICAL for a ranked 1v1 and
+// a custom 1v1. The real split is session+0xd0328 (1=ranked, 2/4=custom lobby), role-independent (host AND
+// join). Default to "ranked" so a real ranked match is never dropped. Server still owns tournament/money
+// stamping + the final ranked-eligibility decision.
 fn detect_origin() -> String {
-    let l = read_my_lobby();
-    if l.get("in_lobby").and_then(|v| v.as_bool()).unwrap_or(false) { "lobby".into() } else { "ranked".into() }
+    match is_custom_lobby() {
+        Some(true) => "lobby".into(), // CONFIRMED custom lobby
+        _ => "ranked".into(),         // ranked matchmaking, or unreadable → never drop a ranked match
+    }
+}
+
+/// Ranked-vs-custom discriminator, LIVE-VALIDATED 2026-08-20 (both directions, on the shipping build):
+/// Some(true)=custom, Some(false)=ranked, None=unreadable→ranked. session+0xd0328 = 1 ranked matchmaking /
+/// 2 custom versus / 4 custom spectator, role-independent. read_my_lobby's in_lobby only tracks lobby
+/// OWNERSHIP (ranked-host=true, custom-join=false), not the mode — hence the old misclassification. Passive RPM.
+fn is_custom_lobby() -> Option<bool> {
+    let pid = find_game_pid()?;
+    let proc = mem::Proc::open_read(pid)?;
+    let h = &proc;
+    let exe = game_exe_base(pid);
+    if exe == 0 {
+        return None;
+    }
+    unsafe {
+        let b = read_at(h, exe + SESSION_PTR_OFF, 8)?;
+        if b.len() < 8 {
+            return None;
+        }
+        let sess = u64::from_le_bytes([b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7]]) as usize;
+        if sess <= 0x10000 {
+            return None;
+        }
+        match rpm_u32(h, sess + 0xd0328)? {
+            1 => Some(false),    // matchmaking / ranked
+            2 | 4 => Some(true), // custom versus (2) / custom spectator (4)
+            _ => None,           // unknown → ranked (never drop a ranked match)
+        }
+    }
 }
 
 // ── PERSISTENT HEAD-TO-HEAD RECORD (C:\g\records.json, keyed by opponent SteamID) ──────────────────

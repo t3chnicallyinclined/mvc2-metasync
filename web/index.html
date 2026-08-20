@@ -2982,6 +2982,10 @@ let _updHideT=null;
 // so it can be updated without shipping a new build. This bundled copy is the offline FALLBACK — keep it
 // roughly current, but the remote is authoritative.
 let CHANGELOG = [
+  { v:'0.2.6', t:'Ranked vs lobby, done right', items:[
+    'We now reliably tell RANKED matchmaking apart from CUSTOM lobbies — so only your ranked games move your rating and rank, and casual lobby games never touch your ladder. (A bug had been mislabeling many ranked matches as lobby and dropping them from the ladder; fixed.)',
+    'Head-to-head cards are gentler and ranked-only: "Most losses against" / "Most wins against".',
+  ]},
   { v:'0.2.5', t:'Leaderboards by mode + cleaner matches', items:[
     'Leaderboards now split by mode — a Ranked / Lobby / Tournament switch up top by Live Sync. Ranked carries the ratings and rank titles; Lobby and Tournament are pure records.',
     'Only ranked matches move your rating and rank — lobby, tournament, and money matches are tracked separately, so casual games never touch your ladder.',
@@ -5912,7 +5916,7 @@ async function openProfile(sid,nm){
     const form=(ps.form||[]).map(w=>`<span class="fmw" style="display:inline-block;width:16px;height:16px;line-height:16px;text-align:center;border-radius:3px;font-size:10px;font-weight:700;margin-right:2px;color:#0b0d12;background:${w?'#4ade80':'#f87171'}">${w?'W':'L'}</span>`).join('');
     // nemesis / favourite victim (clickable → their profile)
     const badge=(o,ico,lbl,col)=> o?`<span class="lb-click" data-sid="${esc(o.opp_id)}" data-nm="${esc(o.name||'Player')}" style="cursor:pointer;background:#161a24;border:1px solid ${col}55;border-radius:8px;padding:4px 10px;font-size:12px">${ico} ${lbl}: ${o.cc?flagEmoji(o.cc)+' ':''}<b>${esc(o.name||'Player')}</b> ${o.wins}–${o.losses}</span>`:'';
-    const badges=[badge(ps.nemesis,'😈','Nemesis','#f87171'),badge(ps.victim,'🎯','Favourite victim','#4ade80')].filter(Boolean).join(' ');
+    const badges=[badge(ps.nemesis,'📉','Most losses against','#f87171'),badge(ps.victim,'📈','Most wins against','#4ade80')].filter(Boolean).join(' ');
     // gs-110: the lower half fights back — h2h CARDS, team win-rate BARS, fight ROWS (no flat tables)
     const wrBarCol=r=>r>=60?'#4ade80':(r>=45?'#a3e635':'#fb923c');
     const teams=(p.teams||[]).slice(0,8).map(t=>{ const cids=String(t.team).split(',').map(Number); const tw=t.games?Math.round(100*t.wins/t.games):0;
