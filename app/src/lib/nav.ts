@@ -1,4 +1,5 @@
-// The five arena tabs. Only Ranks is functional this phase; the rest are stub routes ("coming soon").
+// The primary arena tabs. Regions is intentionally NOT here — the city/region leaderboard lives inside the
+// Ranks page (a board mode there); /regions stays a deep-linkable route but is off the primary nav.
 export interface NavItem {
 	id: string;
 	label: string;
@@ -22,13 +23,6 @@ export const NAV: NavItem[] = [
 		label: 'Tournament',
 		href: '/tournament',
 		d: 'M6 3 v18 M6 4 h12 l-3 4 l3 4 H6',
-		live: false
-	},
-	{
-		id: 'regions',
-		label: 'Regions',
-		href: '/regions',
-		d: 'M12 3 a9 9 0 1 0 0.001 0 M3 12 h18 M12 3 c-4 4 -4 14 0 18 c4 -4 4 -14 0 -18',
 		live: false
 	},
 	{

@@ -42,7 +42,7 @@
 			bottom: 0;
 			z-index: 40;
 			display: grid;
-			grid-template-columns: repeat(5, 1fr);
+			grid-template-columns: repeat(4, 1fr);
 			gap: 2px;
 			padding: 6px 6px calc(6px + env(safe-area-inset-bottom));
 			background: color-mix(in srgb, var(--panel) 92%, transparent);

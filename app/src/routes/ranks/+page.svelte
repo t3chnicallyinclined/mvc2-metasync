@@ -1,8 +1,10 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import { leaderboard } from '$lib/stores/leaderboard.svelte';
+	import { regions } from '$lib/stores/regions.svelte';
 	import { TABS, PERIODS, SCOPES, MAST, STAT_DESC, PERIOD_LABEL, podiumOn, buildBoardItems } from '$lib/boards';
 	import Board from '$lib/components/Board.svelte';
+	import RegionRow from '$lib/components/RegionRow.svelte';
 	import PodiumPlate from '$lib/components/PodiumPlate.svelte';
 	import RankBadge from '$lib/components/RankBadge.svelte';
 	import Avatar from '$lib/components/Avatar.svelte';
@@ -61,6 +63,30 @@
 
 	const coldLoad = $derived(leaderboard.loading && players.length === 0);
 
+	// ── Regions board mode — the city ladder lives inside Ranks now (Regions left the primary nav). It's a
+	// sibling of the scope buttons; entering it lazy-loads the regions store and swaps the board + masthead. ──
+	let regionView = $state(false);
+	function enterRegions() {
+		regionView = true;
+		void regions.load();
+	}
+	/** Pick a player-board scope → leave region view first. */
+	function pickScope(id: (typeof SCOPES)[number]['id']) {
+		regionView = false;
+		leaderboard.setScope(id);
+	}
+	const regionList = $derived(regions.regions);
+	const regionCold = $derived(regions.loading && regionList.length === 0);
+	// Masthead adapts to the active mode (green REGIONS/REPRESENT vs the stat masthead).
+	const heroTitle = $derived(regionView ? 'REGIONS' : mast[0]);
+	const heroGhost = $derived(regionView ? 'REPRESENT' : ghost);
+	const heroAcc = $derived(regionView ? '#34d39a' : mast[2]);
+	const heroDesc = $derived(
+		regionView
+			? `Where the fighters rep — city ladders by total wins. Play ${regions.minGames} games to put your city on the map.`
+			: STAT_DESC[tab]
+	);
+
 	// The signed-in user's position on the CURRENT board (‑1 if not among the loaded rows).
 	const myPos = $derived(auth.steamid ? players.findIndex((p) => p.steamid === auth.steamid) : -1);
 	const myGames = $derived((auth.me?.wins ?? 0) + (auth.me?.losses ?? 0));
@@ -69,19 +95,19 @@
 
 <svelte:head><title>Ranks · MetaSync</title></svelte:head>
 
-<!-- Masthead: title + ghost watermark + accent seam + description -->
-<section class="mast" style="--acc:{mast[2]}">
-	<div class="ghost" aria-hidden="true">{ghost}</div>
+<!-- Masthead: title + ghost watermark + accent seam + description (adapts for the Regions board mode) -->
+<section class="mast" style="--acc:{heroAcc}">
+	<div class="ghost" aria-hidden="true">{heroGhost}</div>
 	<div class="mrow">
-		<h1 class="mtitle">{mast[0]}</h1>
-		{#if leaderboard.error && players.length}
-			<span class="pill live" title={leaderboard.error}>RECONNECTING…</span>
+		<h1 class="mtitle">{heroTitle}</h1>
+		{#if (regionView ? regions.error && regionList.length : leaderboard.error && players.length)}
+			<span class="pill live" title={regionView ? regions.error : leaderboard.error}>RECONNECTING…</span>
 		{:else}
 			<span class="pill good">LIVE</span>
 		{/if}
 	</div>
 	<div class="seam" aria-hidden="true"></div>
-	<p class="mdesc">{STAT_DESC[tab]}</p>
+	<p class="mdesc">{heroDesc}</p>
 </section>
 
 <!-- Board control area (ONE grouped masthead row — DESIGN-SYSTEM hard-rule #1: never a second
@@ -93,42 +119,74 @@
 		{#each SCOPES as s (s.id)}
 			<button
 				class="scope"
-				class:on={s.id === scope}
+				class:on={!regionView && s.id === scope}
 				role="tab"
-				aria-selected={s.id === scope}
+				aria-selected={!regionView && s.id === scope}
 				title={s.label}
-				onclick={() => leaderboard.setScope(s.id)}
+				onclick={() => pickScope(s.id)}
 				><span class="sic" aria-hidden="true">{s.icon}</span><span class="slbl">{s.label}</span></button
 			>
 		{/each}
+		<!-- Regions board mode — the city ladder, folded into Ranks (off the primary nav). -->
+		<button
+			class="scope"
+			class:on={regionView}
+			role="tab"
+			aria-selected={regionView}
+			title="Region leaderboard"
+			onclick={enterRegions}
+			><span class="sic" aria-hidden="true">🌍</span><span class="slbl">Regions</span></button
+		>
 	</div>
-	<div class="cuts" role="tablist" aria-label="Leaderboard">
-		{#each visibleTabs as t (t.id)}
-			<button
-				class="cut"
-				class:on={t.id === tab}
-				role="tab"
-				aria-selected={t.id === tab}
-				onclick={() => leaderboard.setTab(t.id as LeaderboardTab)}>{t.label}</button
-			>
-		{/each}
-	</div>
-	{#if !leaderboard.periodLocked}
-		<div class="periods">
-			{#each PERIODS as p (p.id)}
+	{#if !regionView}
+		<div class="cuts" role="tablist" aria-label="Leaderboard">
+			{#each visibleTabs as t (t.id)}
 				<button
-					class="per"
-					class:on={p.id === leaderboard.period}
-					onclick={() => leaderboard.setPeriod(p.id as LeaderboardPeriod)}
-					><span class="lg">{p.label}</span><span class="sm">{PERIOD_SHORT[p.id]}</span></button
+					class="cut"
+					class:on={t.id === tab}
+					role="tab"
+					aria-selected={t.id === tab}
+					onclick={() => leaderboard.setTab(t.id as LeaderboardTab)}>{t.label}</button
 				>
 			{/each}
 		</div>
+		{#if !leaderboard.periodLocked}
+			<div class="periods">
+				{#each PERIODS as p (p.id)}
+					<button
+						class="per"
+						class:on={p.id === leaderboard.period}
+						onclick={() => leaderboard.setPeriod(p.id as LeaderboardPeriod)}
+						><span class="lg">{p.label}</span><span class="sm">{PERIOD_SHORT[p.id]}</span></button
+					>
+				{/each}
+			</div>
+		{/if}
+		<input class="search" type="search" placeholder="Search player…" bind:value={q} aria-label="Search player" />
 	{/if}
-	<input class="search" type="search" placeholder="Search player…" bind:value={q} aria-label="Search player" />
 </div>
 
-{#if coldLoad}
+{#if regionView}
+	<!-- Region leaderboard — city ladders by total wins (same store/rows as the old /regions page). -->
+	{#if regionCold}
+		<div class="empty">LOADING…</div>
+	{:else if regionList.length === 0}
+		<div class="empty">No regions on the board yet — win some matches to put your city up.</div>
+	{:else}
+		<div class="rboard">
+			<div class="rbd-head">
+				<span>Region</span>
+				<span class="r">Record</span>
+				<span class="r col-top">Top player</span>
+			</div>
+			<div class="rbd-body">
+				{#each regionList as rg, i (rg.name + '|' + (rg.region ?? '') + '|' + (rg.cc ?? ''))}
+					<RegionRow region={rg} pos={i + 1} />
+				{/each}
+			</div>
+		</div>
+	{/if}
+{:else if coldLoad}
 	<div class="empty">LOADING…</div>
 {:else if shown.length === 0}
 	<div class="empty">
@@ -510,6 +568,46 @@
 			flex-basis: 100%;
 			margin-left: 0;
 			order: 3;
+		}
+	}
+
+	/* Region leaderboard (Regions board mode) — mirrors the standalone /regions board styling. */
+	.rboard {
+		background: var(--panel);
+		border: 1px solid var(--line);
+		border-radius: 14px;
+		overflow: hidden;
+		margin-top: 10px;
+	}
+	.rbd-head {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: 10px;
+		padding: 0 14px;
+		height: 32px;
+		border-bottom: 1px solid var(--line);
+		font-size: 10px;
+		font-weight: 700;
+		letter-spacing: 0.14em;
+		text-transform: uppercase;
+		color: var(--faint);
+	}
+	.rbd-head .r {
+		text-align: right;
+	}
+	.rbd-head .col-top {
+		flex: 0 0 170px;
+	}
+	.rbd-body {
+		max-height: min(74vh, 900px);
+		max-height: min(74dvh, 900px);
+		overflow-y: auto;
+		overscroll-behavior: contain;
+	}
+	@media (max-width: 560px) {
+		.rbd-head .col-top {
+			display: none;
 		}
 	}
 </style>
