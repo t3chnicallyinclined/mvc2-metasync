@@ -27,14 +27,21 @@ mod reader;
 mod autostart;
 mod tray;
 
-// Cross-platform runtime data dir — ported verbatim from src-tauri/src/lib.rs. On WINDOWS this MUST stay
-// exactly C:\g so the agent shares the app's records.json / mvc_session.txt / anchors / trace + reads the same
-// steam_self.txt fallback (continuity with an existing MetaSync install). The reader module refers to this as
-// `crate::runtime_dir()`, exactly as sync.rs referred to it — so those call sites are byte-identical.
+// Runtime data dir. The reader's call sites (`crate::runtime_dir()`) stay byte-identical to sync.rs; only the
+// returned PATH changes here. On WINDOWS we deliberately do NOT reuse the app's legacy `C:\g` — that path only
+// mattered for the injected D3D-hook DLL (compiled to watch `C:\g\skins.dat`), which the tray never uses (it
+// paints out-of-process via RPM). Instead everything lives under the standard per-user app-data root
+// `%LOCALAPPDATA%\MetaSync\runtime`, next to `auth.json` + `gs-cache` (best practice; no stray top-level dir,
+// no clash with a co-installed Tauri app, clean uninstall).
 pub(crate) fn runtime_dir() -> std::path::PathBuf {
     #[cfg(windows)]
     {
-        std::path::PathBuf::from("C:\\g")
+        let base = std::env::var_os("LOCALAPPDATA")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(std::env::temp_dir);
+        let dir = base.join("MetaSync").join("runtime");
+        let _ = std::fs::create_dir_all(&dir);
+        dir
     }
     #[cfg(not(windows))]
     {
