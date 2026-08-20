@@ -24,6 +24,20 @@ fails CI on drift).
 
 ---
 
+## 2y. 0.2.8+ follow-up — SHIPPED (real character portraits + teams on the feed), 2026-08-20
+
+PWA + server redeploy (no version bump — folded into the 0.2.8 the user is testing; no tray change).
+- **Picked characters** now render on the versus screen (`MyMatch`) as **real idle portraits** — Point
+  starred, orange/blue plate tint — with an abbreviation-tile fallback.
+- **Portrait pipeline** (`scripts/render-char-portraits.py`): batch-renders 59 idle portraits from the
+  desktop repo's `idle_frames.json` (idle frame `px` = base64 → w×h palette indices, coloured through the
+  16-colour `bank0`) → lossless webp **~2 KB each (108 KB total)** → `app/static/chars/<id>.webp`. **ROM-
+  derived → git-ignored**; shipped via the PWA deploy only, served at `/app/chars/<id>.webp`. Rerun the
+  script to regenerate. (The web can't touch the ROM — this is the "host sprites, point at them" approach.)
+- **Teams now ride the live feed**: `now_playing` carries `chars` per SteamID (`app.rs` — `ActiveMatch.chars`
+  already stored), so MyMatch reads teams straight off the feed and dropped a fetch (3 → 2: opp profile +
+  matchup). More optimized + live.
+
 ## 2z. 0.2.8 — SHIPPED (versus screen + Regions-in-Ranks + autostart default), 2026-08-20
 
 Live across server (no change — reused existing endpoints) + PWA + Windows tray (Tauri frozen 0.2.6).
