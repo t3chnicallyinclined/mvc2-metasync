@@ -1,0 +1,54 @@
+[package]
+name = "metasync-agent"
+version = "0.1.0"
+description = "MetaSync tray agent — headless Windows tray companion that reads MvC2 memory, applies skins, and reports matches (replaces the Tauri webview)"
+authors = ["tristech"]
+edition = "2021"
+rust-version = "1.77"
+
+[[bin]]
+name = "metasync-agent"
+path = "src/main.rs"
+
+[dependencies]
+# Tray shell — icon + native menu + event loop. tray-icon 0.24 depends on muda ^0.19.1, so these resolve
+# together; tao provides the winit-style event loop the tray + menu pump their events into.
+tray-icon = "0.24"
+muda = "0.19"
+tao = "0.36"
+
+# Opens https://nobd.net/app in the user's default browser (no window of our own).
+open = "5"
+
+# Self-updater skeleton (T1): fetch the manifest + signed binary, verify the minisign signature, swap the exe.
+ureq = { version = "2", features = ["json", "tls"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+minisign-verify = "0.2"
+self-replace = "1"
+
+# Windows-only: process-memory + toolhelp APIs used by mem.rs (ported verbatim from src-tauri). Same version
+# + feature set as the shipped app so the proven RE compiles byte-for-byte. Autostart uses winreg (below),
+# so the Registry/Shell features are intentionally NOT pulled here — kept minimal.
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.58", features = [
+  "Win32_Foundation",
+  "Win32_System_Threading",
+  "Win32_System_Memory",
+  "Win32_System_Diagnostics_Debug",
+  "Win32_System_Diagnostics_ToolHelp",
+] }
+# HKCU\...\Run autostart key — far simpler than the raw windows-crate registry API.
+winreg = "0.55"
+
+# Unix (Linux/Proton) only: keeps mem.rs's #[cfg(unix)] backend compilable if ever cross-built. The agent
+# itself is Windows-only, so this is never exercised on the shipping target — it only preserves mem.rs verbatim.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[profile.release]
+# Match the app's beta profile: fast compiles, agent is I/O-bound so heavy opt buys ~nothing at runtime.
+codegen-units = 16
+lto = false
+opt-level = 1
+strip = true
