@@ -26,6 +26,15 @@
 					history.replaceState(null, '', location.pathname + location.search);
 				} catch (e) {}
 			})();
+			// Theme: default DARK (hardcoded on <html> as the no-JS fallback); a saved 'light'/'auto' wins.
+			// Runs before first paint → no flash.
+			(function () {
+				try {
+					var t = localStorage.getItem('metasync_theme') || 'dark';
+					if (t === 'auto') document.documentElement.removeAttribute('data-theme');
+					else document.documentElement.setAttribute('data-theme', t === 'light' ? 'light' : 'dark');
+				} catch (e) {}
+			})();
 		</script>
 		%sveltekit.head%
 	</head>
