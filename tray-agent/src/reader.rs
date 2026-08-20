@@ -2163,9 +2163,14 @@ fn update_score(st: &mut ScoreState, game: &Option<GameSt>, opp: &Option<(String
     }
 }
 
-pub fn report_live_match(opp: String, my_chars: Vec<i64>, opp_chars: Vec<i64>) {
+pub fn report_live_match(opp: String, my_chars: Vec<i64>, opp_chars: Vec<i64>,
+                         session_id: String, my_wins: u32, opp_wins: u32, join_link: String) {
     if opp.len() != 17 || !opp.bytes().all(|b| b.is_ascii_digit()) { return; } // real SteamID only
-    let body = serde_json::json!({ "opp": opp, "my_chars": my_chars, "opp_chars": opp_chars });
+    // Phase B: carry the live set context so peers see a running score + can spectate a shareable lobby.
+    // my_wins/opp_wins = wins-so-far in the current set from THE CALLER's perspective (the server maps them to
+    // caller/opp SteamIDs; it stores players sorted by id, so physical p1/p2 would be ambiguous). "" join_link = ranked.
+    let body = serde_json::json!({ "opp": opp, "my_chars": my_chars, "opp_chars": opp_chars,
+        "session_id": session_id, "my_wins": my_wins, "opp_wins": opp_wins, "join_link": join_link });
     let _ = auth_post(&format!("{}/match/live", SKINSYNC))
         .timeout(std::time::Duration::from_secs(5))
         .send_json(body); // fire-and-forget: errors intentionally ignored
@@ -2336,6 +2341,7 @@ pub fn start_reader() {
         let mut last_hb = std::time::Instant::now() - std::time::Duration::from_secs(60);
         let mut live_rep_last = std::time::Instant::now() - std::time::Duration::from_secs(60);
         let mut live_rep_opp = String::new();
+        let mut live_rep_link = String::new();   // Phase B: cached steam://joinlobby, recomputed once per new opponent (custom only)
         let mut side_seen: u8 = 0;       // gs-77: localPlayerNum debounce — last side value read
         let mut side_stable: u32 = 0;    // consecutive reads of the SAME side; confirm only when stable (kills the stale-read first-match flash)
         let mut handle: Option<mem::Proc> = None;   // dropping/reassigning this closes the previous handle
@@ -2706,8 +2712,17 @@ pub fn start_reader() {
             // so an unpause reports the current match immediately).
             if !PAUSED.load(Ordering::Relaxed) && state == "match" {
                 if let Some((oid, _)) = opp.as_ref() {
+                    let new_opp = oid.as_str() != live_rep_opp.as_str();
                     if oid.len() == 17 && oid.bytes().all(|b| b.is_ascii_digit())
-                        && (oid.as_str() != live_rep_opp.as_str() || live_rep_last.elapsed().as_secs() >= 20) {
+                        && (new_opp || live_rep_last.elapsed().as_secs() >= 20) {
+                        // Phase B: the join link is stable for the whole set, so recompute it only when the
+                        // opponent changes (≈once per match) — read_my_lobby is a heap scan (up to 1GB on Proton).
+                        // Ranked has no shareable lobby (d0328==1) so we skip the scan entirely there → "".
+                        if new_opp {
+                            live_rep_link = if is_custom_lobby() == Some(true) {
+                                read_my_lobby().get("join_link").and_then(|v| v.as_str()).unwrap_or("").to_string()
+                            } else { String::new() };
+                        }
                         live_rep_opp = oid.clone();
                         live_rep_last = std::time::Instant::now();
                         let (mine, theirs): (Vec<i64>, Vec<i64>) = match &game {
@@ -2718,7 +2733,15 @@ pub fn start_reader() {
                             _ => (Vec::new(), Vec::new()),
                         };
                         let opp_id = oid.clone();
-                        std::thread::spawn(move || report_live_match(opp_id, mine, theirs));
+                        let sid = ss.session_id.clone().unwrap_or_default();  // current ranked set id ("" = none)
+                        // caller-relative wins: side_for_stats is the caller's physical side; p1/p2 are side-1/side-2 wins.
+                        let (my_wins, opp_wins) = match side_for_stats {
+                            1 => (ss.p1, ss.p2),
+                            2 => (ss.p2, ss.p1),
+                            _ => (0, 0),
+                        };
+                        let link = live_rep_link.clone();
+                        std::thread::spawn(move || report_live_match(opp_id, mine, theirs, sid, my_wins, opp_wins, link));
                     }
                 }
             }
