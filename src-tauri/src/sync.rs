@@ -691,7 +691,12 @@ fn read_my_lobby_inner() -> Option<serde_json::Value> {
         let mut counts: HashMap<u64, u32> = HashMap::new();          // lobby id → owner-adjacency hits
         let mut lobby_at: HashMap<u64, Vec<usize>> = HashMap::new(); // lobby id → addresses it occupies
         for r in h.regions() {
-            if r.private && r.readable && r.size <= 0x800_0000 {
+            // ⚠ region cap raised 0x800_0000 (128MB) → 0x4000_0000 (1GB) for PROTON/WINE hosts: on Linux the
+            // game's heap — where the lobby-owner structure lives — consolidates into ONE large region that the
+            // old 128MB cap skipped, so read_my_lobby returned NOT-IN-LOBBY on Bazzite (live-confirmed 2026-08-19:
+            // owner-adjacency only appeared once regions >128MB were scanned). Windows heaps stay small; the
+            // higher cap is harmless there and correct on Proton.
+            if r.private && r.readable && r.size <= 0x4000_0000 {
                 let (base, size) = (r.base, r.size);
                 let mut off = 0usize;
                 while off < size {
@@ -2437,13 +2442,15 @@ pub fn wager_respond(id: String, accept: Option<bool>) -> Result<serde_json::Val
 pub fn wager_cancel(id: String) -> Result<serde_json::Value, String> {
     json_or_err(auth_post(&format!("{}/wager/cancel", SKINSYNC)).send_json(serde_json::json!({"id": id})))
 }
-/// Keep the challenge's join link current while our quarter is up (fresh lobby read each beat).
+/// Keep the challenge's join link current while our quarter is up (fresh lobby read each beat), and report
+/// match-active (session+0x1cd) so the rail can show 🔴 IN GAME the moment a game starts.
 #[tauri::command]
 pub fn wager_heartbeat(id: String) -> Result<serde_json::Value, String> {
     let lob = read_my_lobby();
     let lobby_id = lob.get("lobby_id").and_then(|v| v.as_str()).unwrap_or("").to_string();
     let owner = lob.get("owner_id").and_then(|v| v.as_str()).unwrap_or("").to_string();
-    json_or_err(auth_post(&format!("{}/wager/heartbeat", SKINSYNC)).send_json(serde_json::json!({"id": id, "lobby_id": lobby_id, "owner": owner})))
+    let active = read_session_active();   // 1 = fighting, 0 = lobby/select, -1 = unreadable
+    json_or_err(auth_post(&format!("{}/wager/heartbeat", SKINSYNC)).send_json(serde_json::json!({"id": id, "lobby_id": lobby_id, "owner": owner, "active": active})))
 }
 /// My active/most-recent wager (drives the marquee rail).
 #[tauri::command]

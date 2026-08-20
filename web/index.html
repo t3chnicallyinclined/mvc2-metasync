@@ -1141,6 +1141,10 @@ try{document.documentElement.setAttribute('data-theme', localStorage.getItem('me
   #wagerRail{display:flex; align-items:center; gap:12px; padding:8px 14px; margin:10px 0 0; min-height:40px;
     border:1px solid var(--line); border-radius:14px; background:var(--card); position:relative; overflow:hidden; flex-wrap:wrap}
   #wagerRail.locked{border-left:3px solid var(--gold)}
+  #wagerRail.ingame{border-left:3px solid var(--live,#ff3d68); background:linear-gradient(90deg,color-mix(in srgb,var(--live,#ff3d68) 9%,transparent),var(--card) 55%)}
+  .wgr-livedot{display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--live,#ff3d68);margin-right:7px;vertical-align:middle;box-shadow:0 0 7px var(--live,#ff3d68);animation:wgrpulse 1.8s ease-in-out infinite}
+  @keyframes wgrpulse{0%,100%{opacity:1}50%{opacity:.35}}
+  @media (prefers-reduced-motion: reduce){ .wgr-livedot{animation:none} }
   #wagerRail.win{border-left:3px solid var(--gold); background:linear-gradient(90deg,var(--gold-soft),var(--card) 55%)}
   .wgr-lab{flex:none; font-size:10px; font-weight:700; letter-spacing:.16em; text-transform:uppercase; color:var(--faint)}
   .wgr-line{flex:1; font-size:12.5px; color:var(--ink); min-width:180px}
@@ -1148,6 +1152,8 @@ try{document.documentElement.setAttribute('data-theme', localStorage.getItem('me
   .wgr-big{font-size:15px; font-weight:900; font-style:italic; color:var(--gold)}
   .wgr-big.loss{color:var(--dim); font-weight:700; font-style:normal}
   .wgr-echo{font-size:11px; color:var(--faint); font-style:italic; flex:none}
+  .wgr-warn{font-size:11px; color:var(--gold); font-style:italic}
+  .mc-coins{display:inline-flex; align-items:center; gap:3px; color:var(--gold); font-weight:800; font-variant-numeric:tabular-nums; font-size:11.5px}
   .wgr-acts{display:flex; align-items:center; gap:6px; flex:none; flex-wrap:wrap}
   .wgr-stake{font-variant-numeric:tabular-nums}
   .wgr-stake.on{border-color:color-mix(in srgb,var(--gold) 50%,var(--line)); color:var(--gold); background:var(--gold-soft)}
@@ -1312,6 +1318,8 @@ try{document.documentElement.setAttribute('data-theme', localStorage.getItem('me
           <span class="mc-sub">
             <span class="mc-rank" id="mcRank" title="Your rank — click for the tier ladder"><span id="rankChipB" style="display:inline-flex"></span><b id="rankChipTxt">—</b></span>
             <span class="mc-sep">·</span>
+            <span class="mc-coins" id="mcCoins" style="display:none" title="Your quarters — play money. Stake them on matches and tournaments; winner takes the pot.">🪙<b id="mcCoinsN">—</b></span>
+            <span class="mc-sep" id="mcCoinsSep" style="display:none">·</span>
             <span class="mc-loc" id="mcLoc" title="Where you represent — click to change"><span id="repFlag" style="line-height:1">📍</span><b id="repTxt">Set location</b></span>
           </span>
         </span>
@@ -3565,7 +3573,13 @@ async function coinsRefresh(){
   if(!invoke || !(mySteam&&mySteam.steamid)) return;
   try{ const r=await invoke('coins',{steamid:String(mySteam.steamid)}); if(r&&r.ok&&typeof r.balance==='number'){ MY_COINS=r.balance; coinsPaint(); } }catch(_){}
 }
-function coinsPaint(){ const c=$('#coinChip'), b=$('#coinBal'); if(c&&b&&MY_COINS!=null){ b.textContent=MY_COINS; c.style.display=''; } }
+function coinsPaint(){
+  if(MY_COINS==null) return;
+  const c=$('#coinChip'), b=$('#coinBal'); if(c&&b){ b.textContent=MY_COINS; c.style.display=''; }
+  // gs-217: the balance lives on the MAIN BANNER too — in your identity card, next to your rank
+  const mc=$('#mcCoins'), mn=$('#mcCoinsN'), ms=$('#mcCoinsSep');
+  if(mc&&mn){ mn.textContent=MY_COINS; mc.style.display=''; if(ms) ms.style.display=''; }
+}
 // ── gs-216 🪙 QUARTER MATCH — the marquee rail + the open marquee (spec: docs/WAGER-MATCH-SPEC.md).
 // One home for every wager state; all mutations go through the server (offers move nothing; accepting
 // stakes BOTH sides; the memory-read referee settles). State cached on WGR — never one-shot DOM.
@@ -3575,8 +3589,9 @@ async function wgrPoll(){
   const sid=wgrSid(); if(!invoke||!sid){ wgrRender(); return; }
   try{ const r=await invoke('wager_state',{steamid:sid}); if(r&&r.ok) WGR.mine=r.wager||null; }catch(_){}
   try{ const o=await invoke('wager_open'); if(o&&o.ok) WGR.open=o.wagers||[]; }catch(_){}
-  // the challenger keeps the join link fresh while their quarter waits on the marquee
-  if(WGR.mine && WGR.mine.status==='open' && WGR.mine.challenger===sid){ try{ await invoke('wager_heartbeat',{id:WGR.mine.id}); }catch(_){} }
+  // gs-217: the challenger keeps the join link fresh while the quarter is up AND after lock — so a lobby
+  // opened late still lights the JOIN button on both rails within a beat
+  if(WGR.mine && (WGR.mine.status==='open'||WGR.mine.status==='locked') && WGR.mine.challenger===sid){ try{ await invoke('wager_heartbeat',{id:WGR.mine.id}); }catch(_){} }
   wgrRender(); mqRender(); coinsRefresh();
 }
 function wgrEnter(){ if(WGR.t) clearInterval(WGR.t); WGR.t=setInterval(wgrPoll, 6000); wgrPoll(); }
@@ -3599,7 +3614,9 @@ function wgrRender(){
   if(!sid){ el.style.display='none'; return; }
   if(w && w.status==='open'){
     if(w.challenger===sid){
-      h=rail+'<span class="wgr-line">🪙 '+w.stake+' on the marquee — waiting for a taker… </span>'+
+      // gs-217: no lobby = no door — say it while there's still time to fix it
+      const warn=w.has_lobby?'':' <span class="wgr-warn">⚠ open a lobby in-game (Casual → Create Lobby, FT'+(w.ft||2)+') so your taker can jump in</span>';
+      h=rail+'<span class="wgr-line">🪙 '+w.stake+' on the marquee — FT'+(w.ft||2)+' for the pot · waiting for a taker…'+warn+'</span>'+
         '<span class="wgr-acts"><button class="tny-btn sm" data-wact="share">⧉ SHARE</button><button class="tny-btn ghost sm" data-wact="cancel">CANCEL</button></span>';
     } else if(w.opp===sid){
       h=rail+'<span class="wgr-line"><b>'+esc(w.challenger_name||'A challenger')+'</b> puts up 🪙 '+w.stake+' — match it and the machine holds 🪙 '+(w.stake*2)+'.</span>'+
@@ -3607,9 +3624,17 @@ function wgrRender(){
         '<span class="wgr-acts"><button class="tny-btn gold sm" data-wact="match" data-id="'+esc(w.id)+'">MATCH 🪙 '+w.stake+'</button><button class="tny-btn ghost sm" data-wact="decline" data-id="'+esc(w.id)+'">DECLINE</button></span>';
     } else { el.style.display='none'; return; }
   } else if(w && w.status==='locked'){
+    // gs-217/218: FT-N set with a running score; JOIN shows on BOTH rails once a lobby exists; once the
+    // match is being fought (host reports session-active) the rail flips to 🔴 IN GAME and drops JOIN.
     const jl=wgrJoinLink(w);
-    h=rail+'<span class="wgr-line">🪙 '+(w.stake*2)+' in the machine — <b>'+esc(w.challenger_name||'?')+'</b> vs <b>'+esc(w.acceptor_name||'?')+'</b> · next result decides it.</span>'+
-      '<span class="wgr-acts">'+((jl&&w.acceptor===sid)?'<button class="tny-btn gold sm" data-wact="join" data-link="'+esc(jl)+'">🎮 JOIN THE LOBBY</button>':'')+'</span>';
+    const sc=' · <b class="num">'+(w.cw||0)+'–'+(w.aw||0)+'</b> FT'+(w.ft||2);
+    if(w.live){
+      h=rail+'<span class="wgr-line"><span class="wgr-livedot"></span><b>IN GAME</b> — 🪙 '+(w.stake*2)+' on the line · <b>'+esc(w.challenger_name||'?')+'</b>'+sc+' <b>'+esc(w.acceptor_name||'?')+'</b> · first to '+(w.ft||2)+' takes it</span>';
+    } else {
+      const noLob=!jl?(w.challenger===sid?' <span class="wgr-warn">⚠ open a lobby in-game — your taker is waiting</span>':' <span class="wgr-warn">waiting for the lobby to open…</span>'):'';
+      h=rail+'<span class="wgr-line">🪙 '+(w.stake*2)+' in the machine — <b>'+esc(w.challenger_name||'?')+'</b> vs <b>'+esc(w.acceptor_name||'?')+'</b>'+sc+noLob+'</span>'+
+        '<span class="wgr-acts">'+(jl?'<button class="tny-btn gold sm" data-wact="join" data-link="'+esc(jl)+'">🎮 '+(w.challenger===sid?'MY LOBBY':'JOIN THE LOBBY')+'</button>':'')+'</span>';
+    }
   } else if(w && w.status==='settled' && !stale){
     const won=w.winner===sid;
     h=rail+(won?'<span class="wgr-line"><b class="wgr-big">🪙 +'+(w.stake*2)+' — purse claimed</b></span>'
@@ -3623,7 +3648,7 @@ function wgrRender(){
       h=rail+'<span class="wgr-line dim">Put quarters on a set — winner takes the pot.</span>'+
         '<span class="wgr-acts"><button class="tny-btn sm" data-wact="up">🪙 QUARTER UP ▸</button></span>';
     } else {
-      h=rail+'<span class="wgr-line dim">Pick your stake — anyone on the marquee can attempt it.</span>'+
+      h=rail+'<span class="wgr-line dim">Pick your stake — FT2 for the pot · anyone on the marquee can attempt it.</span>'+
         '<span class="wgr-echo">'+(MY_COINS!=null?('you have 🪙 '+MY_COINS):'')+'</span>'+
         '<span class="wgr-acts">'+[1,2,4,8].map(v=>'<button class="tny-btn sm wgr-stake'+(WGR.stake===v?' on':'')+'" data-wact="stake" data-v="'+v+'">🪙 '+v+'</button>').join('')+
         '<button class="tny-btn gold sm" data-wact="put">PUT IT UP ▸</button></span>';
@@ -3631,6 +3656,7 @@ function wgrRender(){
   }
   el.innerHTML=h; el.style.display='flex';
   el.classList.toggle('locked', !!(w&&w.status==='locked'));
+  el.classList.toggle('ingame', !!(w&&w.status==='locked'&&w.live));
   el.classList.toggle('win', !!(w&&w.status==='settled'&&w.winner===sid&&!stale));
 }
 function mqRender(){
@@ -3641,7 +3667,7 @@ function mqRender(){
   list.innerHTML=rows.map(w=>{
     const mine=w.challenger===sid;
     return '<div class="mq-row"><span class="mq-nm lb-click" data-sid="'+esc(w.challenger)+'" data-nm="'+esc(w.challenger_name||'Player')+'">'+esc(w.challenger_name||'Player')+'</span>'+
-      '<span class="mq-stake">🪙 '+w.stake+' up · pot 🪙 '+(w.stake*2)+'</span>'+
+      '<span class="mq-stake">'+(w.has_lobby?'🎮 ':'')+'🪙 '+w.stake+' up · FT'+(w.ft||2)+' · pot 🪙 '+(w.stake*2)+'</span>'+
       (mine?'<button class="tny-btn ghost sm" data-wact="cancel">CANCEL</button>'
            :'<button class="tny-btn sm" data-wact="match" data-id="'+esc(w.id)+'">⚔ ATTEMPT</button>')+'</div>';
   }).join('');
@@ -5239,6 +5265,9 @@ function stApply(){ if(stCid==null||!stPal) return null;
 async function boot(){
   console.log('%c MetaSync v0.1.33 (beta) (beta: auto-records anonymized match state to improve the app. click the version in the header to see the changelog; a live pill shows up-to-date vs update-available; "What\'s New" pops after you update. Earlier: renamed to MetaSync. Fixed the library palette swatches (the strict CSP was blocking inline colors - now allowed via dangerousDisableAssetCspModification style-src). Updates now ship via GitHub Releases with nobd.net as fallback. Includes the same-character mirror fix + the "🪞 mirror · your side" tag when a mirror is detected and split. MIRROR FIX - in a same-character mirror your skin no longer bleeds onto the opponent. paint_live now side-gates mirror characters (each fighter has its own DatPal), and same-variant collisions (byte-identical palette, detected via the cl+0x6 color field / the 6 select-button variants) are withheld from the signature hook. Different variants keep round-start hook painting.) ','background:#00c853;color:#00160a;font-weight:800;padding:3px 8px;border-radius:4px');
   loadBaked();
+  // gs-217 🪙: Match is the DEFAULT tab (switchTab never fires for it on load) — arm the marquee + the
+  // banner balance once identity is up; wgrPoll safely no-ops until mySteam resolves, then fills in.
+  setTimeout(()=>{ coinsRefresh(); const pm=$('#p-match'); if(pm&&pm.classList.contains('on')) wgrEnter(); }, 3000);
   try{ const d=await(await fetch('idle_frames.json')).json(); idleData=d; }catch(e){}
   try{ const chars=await(await fetch('skins/characters.json')).json(); for(const c of chars){ dirById[c.char_id]=c.dir; nameById[c.char_id]=c.name; charByDir[c.dir]=c.char_id; } }catch(e){}
   // restore saved skins → activeSkins only (persisted palettes auto-apply in-match); the "You" card stays empty
