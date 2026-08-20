@@ -18,10 +18,33 @@ mod config;
 #[allow(dead_code)] // apply_update / safe_to_apply are wired but not invoked until T2 enables auto-apply.
 mod updater;
 
+// The ported game-state reader + match reporting (T2). #[allow(dead_code)] because the verbatim RE port
+// carries several helpers the app's webview commands used that the tray doesn't call (e.g. read_self_name,
+// auth_get) — clippy nits on verbatim code are expected and intentionally left; see mem.rs for the same rule.
+#[allow(dead_code)]
+mod reader;
+
 mod autostart;
 mod tray;
 
-use std::time::Duration;
+// Cross-platform runtime data dir — ported verbatim from src-tauri/src/lib.rs. On WINDOWS this MUST stay
+// exactly C:\g so the agent shares the app's records.json / mvc_session.txt / anchors / trace + reads the same
+// steam_self.txt fallback (continuity with an existing MetaSync install). The reader module refers to this as
+// `crate::runtime_dir()`, exactly as sync.rs referred to it — so those call sites are byte-identical.
+pub(crate) fn runtime_dir() -> std::path::PathBuf {
+    #[cfg(windows)]
+    {
+        std::path::PathBuf::from("C:\\g")
+    }
+    #[cfg(not(windows))]
+    {
+        let base = std::env::var_os("XDG_DATA_HOME")
+            .map(std::path::PathBuf::from)
+            .or_else(|| std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join(".local/share")))
+            .unwrap_or_else(std::env::temp_dir);
+        base.join("mvc-live-skins")
+    }
+}
 
 fn main() {
     // One-shot update check on startup: log the result, DO NOT auto-apply yet (T2 gates apply on safe_to_apply
@@ -37,23 +60,13 @@ fn main() {
         })
         .ok();
 
-    // Placeholder background worker. In T2 this becomes the memory-reader loop that uses `mem::Proc`
-    // (open the game process, sig-scan, read palettes/lobby/match state, report to the server). For the
-    // scaffold it just sleeps, with a light `find_game_pid` probe so the ported primitive is exercised.
-    std::thread::Builder::new()
-        .name("reader".into())
-        .spawn(|| {
-            loop {
-                // TODO(T2): reader loop here.
-                //   let pid = mem::find_game_pid()?;              // detect MvC2
-                //   let proc = mem::Proc::open_rw(pid)?;          // mem::Proc — the ported Win32 primitive
-                //   let base = mem::exe_base(pid);                // module base for exe-relative reads
-                //   ... sig-scan + palette read/write + match detection (port of sync.rs in T2) ...
-                let _game_running = mem::find_game_pid().is_some();
-                std::thread::sleep(Duration::from_secs(5));
-            }
-        })
-        .ok();
+    // The real reader (T2), ported verbatim from the Tauri app's start_reader. Spawns its own threads:
+    //   • the main detect/read/score/report loop (game detection → fighter-array read → per-set scoring →
+    //     POST /result, plus the tray-driven presence heartbeat + live-match broadcast),
+    //   • the fast per-frame gamestate-capture thread (~3ms, frame-dedup'd), and
+    //   • the gamestate uploader (drains the spool between matches).
+    // It also updates reader::AgentStatus, which the tray reads for its live status line. Returns immediately.
+    reader::start_reader();
 
     // Run the tray event loop on the main thread. Diverges — returns only when the user picks Quit, which
     // exits the process (and with it the background threads).

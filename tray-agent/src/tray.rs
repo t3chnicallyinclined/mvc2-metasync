@@ -10,8 +10,9 @@
 // loop's own user-event channel via set_event_handler → EventLoopProxy, and build the TrayIcon on
 // StartCause::Init (some platforms require the tray to be created after the loop is running).
 
-use crate::{autostart, config};
+use crate::{autostart, config, reader};
 use muda::{CheckMenuItem, Menu, MenuEvent, MenuId, MenuItem, PredefinedMenuItem};
+use std::time::{Duration, Instant};
 use tao::event::{Event, StartCause};
 use tao::event_loop::{ControlFlow, EventLoopBuilder};
 use tray_icon::{Icon, TrayIcon, TrayIconBuilder, TrayIconEvent};
@@ -61,14 +62,16 @@ struct MenuHandles {
     autostart_id: MenuId,
     quit_id: MenuId,
     autostart_item: CheckMenuItem,
+    // Disabled top item; its text is refreshed each second from reader::status_line() (T2 live status).
+    status_item: MenuItem,
 }
 
 /// Build the context menu and return it alongside the handles the event loop needs. The status line is a
-/// disabled MenuItem placeholder (T2 will update its text to live match/skin status).
+/// disabled MenuItem whose text the event loop refreshes from `reader::status_line()` on a 1s timer.
 fn build_menu() -> (Menu, MenuHandles) {
     let menu = Menu::new();
 
-    let status = MenuItem::new("MetaSync — starting…", false, None);
+    let status = MenuItem::new(reader::status_line(), false, None);
     let open = MenuItem::new("Open MetaSync", true, None);
     let sep = PredefinedMenuItem::separator();
     let autostart_item =
@@ -83,8 +86,18 @@ fn build_menu() -> (Menu, MenuHandles) {
         autostart_id: autostart_item.id().clone(),
         quit_id: quit.id().clone(),
         autostart_item,
+        status_item: status,
     };
     (menu, handles)
+}
+
+/// Pull the current status from the reader and paint it onto the status menu item + the tray tooltip.
+fn refresh_status(handles: &MenuHandles, tray: &Option<TrayIcon>) {
+    let line = reader::status_line();
+    handles.status_item.set_text(&line);
+    if let Some(t) = tray {
+        let _ = t.set_tooltip(Some(&line));
+    }
 }
 
 /// Build the event loop, wire tray/menu event routing, and run it. Diverges: returns only when the process
@@ -109,7 +122,9 @@ pub fn run() -> ! {
     let mut menu = Some(menu);
 
     event_loop.run(move |event, _target, control_flow| {
-        *control_flow = ControlFlow::Wait;
+        // Wake at least once a second so the status line + tooltip track the reader's live AgentStatus,
+        // even when there are no window/menu events to process.
+        *control_flow = ControlFlow::WaitUntil(Instant::now() + Duration::from_secs(1));
 
         match event {
             Event::NewEvents(StartCause::Init) => {
@@ -129,6 +144,12 @@ pub fn run() -> ! {
                         *control_flow = ControlFlow::Exit;
                     }
                 }
+                refresh_status(&handles, &tray);
+            }
+
+            // 1s timer tick (from WaitUntil above) — refresh the status line/tooltip from the reader.
+            Event::NewEvents(StartCause::ResumeTimeReached { .. }) => {
+                refresh_status(&handles, &tray);
             }
 
             Event::UserEvent(UserEvent::Menu(ev)) => {

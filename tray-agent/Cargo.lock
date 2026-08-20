@@ -1021,6 +1021,7 @@ dependencies = [
 name = "metasync-agent"
 version = "0.1.0"
 dependencies = [
+ "flate2",
  "libc",
  "minisign-verify",
  "muda",

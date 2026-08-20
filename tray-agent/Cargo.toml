@@ -21,11 +21,15 @@ tao = "0.36"
 open = "5"
 
 # Self-updater skeleton (T1): fetch the manifest + signed binary, verify the minisign signature, swap the exe.
+# Also the reader's HTTP client (T2): result / heartbeat / live-match / register + gamestate uploads.
 ureq = { version = "2", features = ["json", "tls"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 minisign-verify = "0.2"
 self-replace = "1"
+
+# T2: gzip the per-frame gamestate recording before upload (spool_gamestate), ported verbatim from the app.
+flate2 = "1"
 
 # Windows-only: process-memory + toolhelp APIs used by mem.rs (ported verbatim from src-tauri). Same version
 # + feature set as the shipped app so the proven RE compiles byte-for-byte. Autostart uses winreg (below),
@@ -37,6 +41,8 @@ windows = { version = "0.58", features = [
   "Win32_System_Memory",
   "Win32_System_Diagnostics_Debug",
   "Win32_System_Diagnostics_ToolHelp",
+  # T2: HKCU reads for the local Steam identity (ActiveUser account id + persona) — reg_dword / reg_string.
+  "Win32_System_Registry",
 ] }
 # HKCU\...\Run autostart key — far simpler than the raw windows-crate registry API.
 winreg = "0.55"
