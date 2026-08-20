@@ -890,6 +890,18 @@ try{document.documentElement.setAttribute('data-theme', localStorage.getItem('me
   .mast-desc{display:none;}
   .masthead .rail-lbl{white-space:nowrap;}
   .masthead .lb-period{margin:0 0 0 auto; position:relative; align-self:center;}
+  /* gs-217 GAME MODES: the board-scope switch (Ranked/Lobby/Tournament) lives in the ARENA BAR's middle
+     gap, next to the Live Sync chip. Segmented pill; shown only on the Rankings tab (it only drives the
+     leaderboard). margin-left:auto pushes it to the right of the gap so it sits beside the right cluster. */
+  .arena-scope{display:none; margin-left:auto; align-items:center; gap:3px; padding:3px; border:1px solid var(--line);
+    border-radius:999px; background:var(--panel-2); position:relative;}
+  body.tab-ranks .arena-scope{display:flex;}
+  .arena-scope button{border:0; background:transparent; border-radius:999px; padding:5px 12px; font-size:12px;
+    font-weight:700; color:var(--dim); white-space:nowrap; cursor:pointer; transition:.15s;}
+  .arena-scope button>.clbl{margin-left:3px;}
+  .arena-scope button:hover{color:var(--ink);}
+  .arena-scope button.on{background:var(--gold); color:var(--gold-ink,#241700);}
+  @media(max-width:900px){ .arena-scope button>.clbl{display:none;} }
   .mast-rail{position:relative; display:flex; align-items:center; padding:6px 10px; border-top:1px solid #1c2130; background:rgba(13,16,23,.6);}
   .mast-rail #lbTabs{display:flex !important; flex-wrap:nowrap; gap:3px; flex:1; min-width:0; border-left:0; padding-left:0; overflow:hidden;}
   /* gs-201: ONE row, always — inactive channels collapse to their icon (name on hover), like the page tabs */
@@ -1307,6 +1319,13 @@ try{document.documentElement.setAttribute('data-theme', localStorage.getItem('me
       <button data-t="library" id="libChip" title="Your skin library &amp; vault"><span class="ico">🗂</span><span class="lbl">Library</span></button>
     </div>
     <i class="nav-seam"></i>
+    <!-- gs-217 GAME MODES: board-scope switch — Ranked (ratings + titles) vs Lobby vs Tournament (pure
+         records). Sits in the arena bar's middle gap by Live Sync; visible only on the Rankings tab. -->
+    <div class="arena-scope" id="lbScope" title="Which games feed the boards — Ranked carries the ratings &amp; titles; Lobby and Tournament are pure records">
+      <button data-ls="ranked" class="on">⚔️<span class="clbl">Ranked</span></button>
+      <button data-ls="lobby">🎮<span class="clbl">Lobby</span></button>
+      <button data-ls="tourney">🏆<span class="clbl">Tournament</span></button>
+    </div>
     <!-- gs-200: the Rankings channel rail moved into the MASTHEAD (see #lbMastRail) — the bar stays pure nav -->
     <div class="right">
       <span class="chip" id="cSync" role="button" tabindex="0" title="Live Sync — leaderboards, ranked stats, matchup intel &amp; skin sync. Click to toggle."><span class="knob"></span><b id="cSyncTxt">Offline</b></span>
@@ -5315,6 +5334,7 @@ $('#btnReset').onclick=async()=>{ activeSkins={}; myTeam=[]; for(let i=localStor
 
 // ── Leaderboard (Ranks tab) — global Hall of Fame from the skinsync server ──
 let lbTab='rating', lbPeriod='all', lbLoading=false, lbCache=null, lbSearch='';   // gs-108: ranked ladder is the front page
+let lbScope='ranked';   // gs-217 GAME MODES: board scope — ranked (default) | lobby | tourney
 const LB_PERIOD_LABEL={all:'all-time',day:'today',week:'this week',month:'this month'};
 const LB_STAT_LABEL={streak:'streak',wins:'wins',ocv:'OCVs',perfect:'perfects',comeback:'comebacks',combo:'max combo',damage:'dmg dealt',chip:'chip dealt',deficit:'deficit',rating:'ELO'};
 // What each leaderboard stat means + which match data decides it (shown under the tabs).
@@ -5691,7 +5711,10 @@ function paintMasthead(tab){
   if(mast) mast.style.setProperty('--lb-acc', m[2]);
   if(d) d.textContent=info?info.d:'';
 }
-function lbCycle(dir){ const i=LB_CHAN.indexOf(lbTab); if(i<0) return; renderLeaderboard(LB_CHAN[(i+dir+LB_CHAN.length)%LB_CHAN.length]); }
+function lbCycle(dir){ const i=LB_CHAN.indexOf(lbTab); if(i<0) return;
+  // gs-217: under a Lobby/Tournament scope, skip the ranked-only channels (rating ladder + tier list)
+  let n=i; do{ n=(n+dir+LB_CHAN.length)%LB_CHAN.length; }while(lbScope!=='ranked'&&(LB_CHAN[n]==='rating'||LB_CHAN[n]==='tierlist')&&n!==i);
+  renderLeaderboard(LB_CHAN[n]); }
 document.addEventListener('keydown',e=>{
   if(!document.body.classList.contains('tab-ranks')) return;
   const tag=(e.target&&e.target.tagName)||''; if(tag==='INPUT'||tag==='TEXTAREA') return;
@@ -5699,8 +5722,15 @@ document.addEventListener('keydown',e=>{
 });
 async function renderLeaderboard(tab){
   lbTab=tab||lbTab;
+  // gs-217 GAME MODES: scoped boards (Lobby / Tournament) are pure records — the rating ladder and the
+  // team tier list are RANKED-ONLY surfaces, so under a scope those tabs hide and fall back to Wins.
+  const lbScoped=lbScope!=='ranked';
+  if(lbScoped&&(lbTab==='rating'||lbTab==='tierlist')) lbTab='wins';
+  $$('#lbScope button').forEach(b=>b.classList.toggle('on',b.dataset.ls===lbScope));
+  $$('#lbTabs button').forEach(b=>{ if(b.dataset.lt==='rating'||b.dataset.lt==='tierlist') b.style.display=lbScoped?'none':''; });
   $$('#lbTabs button').forEach(b=>b.classList.toggle('on',b.dataset.lt===lbTab));
   paintMasthead(lbTab);
+  if(lbScoped){ const g=$('#lbMastGhost'); if(g) g.textContent=(lbScope==='lobby'?'LOBBY':'TOURNAMENT'); }
   // Ranked (ELO) is cumulative skill → always all-time; grey out the period switch for it (and the tier list).
   const ranked=lbTab==='rating'||lbTab==='tierlist';
   if(ranked) lbPeriod='all';
@@ -5730,36 +5760,44 @@ async function renderLeaderboard(tab){
   }
   // gs-108: Valorant/Rivals broadcast board — podium plates (rating tab), columnar rows, pinned YOU row.
   try{
-    const key=lbTab+'|'+lbPeriod;
+    const key=lbScope+'|'+lbTab+'|'+lbPeriod;
     let players;
     if(lbCache && lbCache.key===key && (Date.now()-lbCache.ts)<15000){ players=lbCache.players; }
-    else { const res=await invoke('leaderboard',{tab:lbTab,period:lbPeriod,limit:50}); players=(res&&res.players)||[]; lbCache={key,players,ts:Date.now()}; }
+    else { const res=await invoke('leaderboard',{tab:lbTab,period:lbPeriod,limit:50,scope:lbScope});
+      // version-skew guard: a pre-scope server echoes no `scope` and would hand RANKED data to a scoped
+      // view — show the honest empty state instead of the wrong board until the server update lands.
+      players=(lbScoped && (!res||res.scope!==lbScope)) ? [] : ((res&&res.players)||[]);
+      lbCache={key,players,ts:Date.now()}; }
     const mine=(mySteam&&mySteam.steamid)?String(mySteam.steamid):null;
     const q=(lbSearch||'').trim().toLowerCase();
     const shown=q?players.filter(p=>String(p.name||'').toLowerCase().includes(q)):players;
-    if(!shown.length){ list.innerHTML=`<div class="lb-empty">${q?('NO PLAYERS MATCH "'+esc(lbSearch)+'"'):('NO RANKINGS '+(lbPeriod==='all'?'YET':'FOR '+(LB_PERIOD_LABEL[lbPeriod]||'').toUpperCase())+' — WIN A MATCH TO GET ON THE BOARD')}</div>`; return; }
+    if(!shown.length){ list.innerHTML=`<div class="lb-empty">${q?('NO PLAYERS MATCH "'+esc(lbSearch)+'"'):(lbScoped?('NO '+(lbScope==='lobby'?'LOBBY':'TOURNAMENT')+' GAMES RECORDED '+(lbPeriod==='all'?'YET':(LB_PERIOD_LABEL[lbPeriod]||'').toUpperCase())+' — THEY LOG AUTOMATICALLY AS THEY HAPPEN'):('NO RANKINGS '+(lbPeriod==='all'?'YET':'FOR '+(LB_PERIOD_LABEL[lbPeriod]||'').toUpperCase())+' — WIN A MATCH TO GET ON THE BOARD'))}</div>`; return; }
     const lab=LB_STAT_LABEL[lbTab]||'';
     const gmOf=p=>(p.wins||0)+(p.losses||0);
     const wrOf=p=>{const g=gmOf(p);return g?Math.round(100*(p.wins||0)/g):0;};
     const wrCol=w=>w>=60?'#4ade80':(w>=45?'#a3e635':'#fb923c');
     const vb=p=>{const cw=(p.confirmed_wins==null)?null:Number(p.confirmed_wins);return (lbTab==='wins'&&cw!=null&&cw<(Number(p.stat)||0))?` <span class="lb-verified" title="${cw} of ${p.stat} wins verified by both-player agreement or match replay">✓${cw}</span>`:'';};
-    const rowH=(p,pos)=>{const isMe=mine&&String(p.steamid)===mine;const r=rankOf(p.rating,gmOf(p));const w=wrOf(p);
+    const rowH=(p,pos)=>{const isMe=mine&&String(p.steamid)===mine;const w=wrOf(p);
+      // gs-217: rating + tier title are RANKED artifacts — scoped rows keep the column for alignment but empty
+      const tierCell=lbScoped?'<div class="bd-tier"></div>':(()=>{const r=rankOf(p.rating,gmOf(p));return `<div class="bd-tier">${rkBadgeR(r,p.rating,16)}<span class="rk-${r.s}">${r.n}</span></div>`;})();
       return `<div class="bd-row${isMe?' me':''}"><div class="bd-rank">${pos==null?'—':pos}</div>`
       +`<div class="bd-name lb-click" data-sid="${esc(p.steamid)}" data-nm="${esc(p.name||'Player')}">${avatarImg(p.avatar,20)}${p.cc?flagEmoji(p.cc)+' ':''}<span>${esc(p.name||'Player')}${isMe?'<span class="me-tag">YOU</span>':''}</span></div>`
-      +`<div class="bd-tier">${rkBadgeR(r,p.rating,16)}<span class="rk-${r.s}">${r.n}</span></div>`
+      +tierCell
       +`<div class="bd-num">${lbTab==='rating'?(p.rating||1000):(p.stat||0)}${vb(p)}</div>`
       +`<div class="bd-num dim">${p.wins||0} – ${p.losses||0}</div>`
       +`<div class="bd-num" style="color:${wrCol(w)}">${w}%</div></div>`;};
-    const head=`<div class="bd-head"><span style="text-align:center">#</span><span>Player</span><span>Tier</span><span style="text-align:right">${lbTab==='rating'?'Rating':esc(lab||'Stat')}</span><span style="text-align:right">W – L</span><span style="text-align:right">Win %</span></div>`;
+    const head=`<div class="bd-head"><span style="text-align:center">#</span><span>Player</span><span>${lbScoped?'':'Tier'}</span><span style="text-align:right">${lbTab==='rating'?'Rating':esc(lab||'Stat')}</span><span style="text-align:right">W – L</span><span style="text-align:right">Win %</span></div>`;
     let html='', rows=shown, start=1;
     // gs-200: EVERY player board gets its podium moment — free, from the fetch already in hand.
     if(!q && shown.length>=3){
-      const pod=(p,cls,crown)=>{const r=rankOf(p.rating,gmOf(p));const a=RK_PLATE[r.s]||RK_PLATE.civilian;
+      const pod=(p,cls,crown)=>{
+        // gs-217: no tier plate accents / badge on scoped podiums — rating + title live on Ranked only
+        const r=lbScoped?null:rankOf(p.rating,gmOf(p));const a=r?(RK_PLATE[r.s]||RK_PLATE.civilian):RK_PLATE.civilian;
         return `<div class="pod ${cls} lb-click" style="--pa:${a[0]};--pb:${a[1]}" data-sid="${esc(p.steamid)}" data-nm="${esc(p.name||'Player')}">`
         +`<span class="mono" style="font-size:${crown?'16px':'12px'};font-weight:800">${crown?'👑':'#'+(cls==='c2'?2:3)}</span>`
         +(p.avatar?`<img class="pav" src="${esc(p.avatar)}" loading="lazy" referrerpolicy="no-referrer">`:'')
         +`<b class="pnm">${p.cc?flagEmoji(p.cc)+' ':''}${esc(p.name||'Player')}</b>`
-        +`<span class="bd-tier">${rkBadgeR(r,p.rating,crown?20:16)}<span class="rk-${r.s}">${r.n}</span></span>`
+        +(r?`<span class="bd-tier">${rkBadgeR(r,p.rating,crown?20:16)}<span class="rk-${r.s}">${r.n}</span></span>`:'')
         +`<b class="prt">${lbTab==='rating'?(p.rating||1000):(p.stat||0)}</b>`
         +(lbTab!=='rating'?`<span class="rail-lbl" style="color:var(--lb-acc,#e8b93c)">${LB_UNIT[lbTab]||''}</span>`:'')
         +`<span class="pwl">${p.wins||0}W · ${p.losses||0}L · ${wrOf(p)}%</span></div>`;};
@@ -5785,7 +5823,8 @@ async function renderLeaderboard(tab){
       galLine=`<div class="bd-cut" style="color:#ff7ae0"><i></i><span>🪐 GALACTUS · 1500 — UNCLAIMED</span><i></i></div>`;
     html+=`<div class="board">${head}${galLine}${bodyRows}</div>`;
     const onBoard=mine&&shown.some(p=>String(p.steamid)===mine);
-    if(mine && !onBoard && !q) html+=`<div class="board" id="lbMeRow" style="margin-top:8px"></div>`;
+    // gs-217: no pinned-YOU row on scoped boards — the profile has no per-mode best-stat fields to fill it from
+    if(mine && !onBoard && !q && !lbScoped) html+=`<div class="board" id="lbMeRow" style="margin-top:8px"></div>`;
     if(lbTab==='rating') html+=`<div style="padding:8px 4px 0;font-size:11.5px;color:var(--faint)">Play ${RANK_MIN_GAMES} games to get ranked — Civilians don't appear on this board.</div>`;
     list.innerHTML=html;
     // pinned YOU row: you're below the top 50 (or unplaced) — show your own line under the board
@@ -5812,6 +5851,11 @@ $('#lbTabs')?.addEventListener('click',e=>{ const b=e.target.closest('button'); 
   renderLeaderboard(b.dataset.lt); });
 document.addEventListener('click',e=>{ if(!e.target.closest('.lb-more')){ const m=$('#lbMenu'); if(m) m.style.display='none'; } });
 $('#lbPeriod')?.addEventListener('click',e=>{ const b=e.target.closest('button'); if(!b) return; lbPeriod=b.dataset.lp; renderLeaderboard(); });
+// gs-217 GAME MODES: board scope switch — Ranked (rating/titles) · Lobby · Tournament (pure records)
+$('#lbScope')?.addEventListener('click',e=>{ const b=e.target.closest('button'); if(!b||!b.dataset.ls) return;
+  if(lbScope===b.dataset.ls) return; lbScope=b.dataset.ls; lbCache=null;
+  if(lbScope!=='ranked'&&(lbTab==='rating'||lbTab==='tierlist')) lbTab='wins';
+  renderLeaderboard(); });
 $('#lbSearch')?.addEventListener('input',e=>{ lbSearch=e.target.value||''; renderLeaderboard(); });   // client-side filter over the cached top-50
 // (lbRefresh handled by the #lbTabs dispatcher — clears lbCache then re-renders, gs-110)
 
@@ -5879,15 +5923,29 @@ async function openProfile(sid,nm){
       const cbtn=rcContestCell(mk,winId,loseId);
       const tag=mcTag(m.confirmed);                                     // ✓ / ? unconfirmed (blank when absent)
       const e=(typeof m.elo==='number')?m.elo:0;
+      // gs-217 GAME MODES: type the row — 🏆 tournament / 🪙 money (server `mode`; ranked = no chip). Typed
+      // games don't move ELO (policy v1), so a 0 delta on them renders as '·' instead of a misleading +0.
+      const modeChip=m.mode==='tourney'?'<span title="Tournament match — on the record, not ranked (no ELO)">🏆</span> '
+                    :(m.mode==='money'?'<span title="Money match — on the record, not ranked (no ELO)">🪙</span> ':'');
+      const eTxt=(modeChip&&!e)?'·':((e>0?'+':'')+e);
       return `<div class="pfx-fight ${m.won?'w':'l'}">
         <b class="fw">${m.won?'W':'L'}</b>
         <div class="fmid"><b class="fo lb-click" data-sid="${esc(m.opp_id||'')}" data-nm="${esc(m.opp||'')}">${esc(m.opp||'?')}</b>
           <span class="ft">${esc(teamStr(m.my_team))} <i>vs</i> ${esc(teamStr(m.opp_team))}</span></div>
-        <span class="ffl">${tag?tag+' ':''}${m.combo?('<svg class="pfx-mic" style="color:var(--gold)"><use href="#ic-target"/></svg>'+m.combo):''}${m.ocv?' <svg class="pfx-mic" style="color:#ff7ae0"><use href="#ic-burst"/></svg>':''}${m.perfect?' <svg class="pfx-mic" style="color:#9fd4ef"><use href="#ic-gem"/></svg>':''}${m.comeback?' <svg class="pfx-mic" style="color:#4ade80"><use href="#ic-loop"/></svg>':''}${cbtn?(' '+cbtn):''}${(m.session||m.session_id)?` <a class="ses-open" data-ses="${esc(String(m.session||m.session_id))}" title="View this set's full breakdown">SET #${esc(String(m.session||m.session_id).slice(-4))}</a>`:''}</span>
-        <b class="fe" style="color:${e>=0?'#4ade80':'#f87171'}">${e>0?'+':''}${e}</b>
+        <span class="ffl">${modeChip}${tag?tag+' ':''}${m.combo?('<svg class="pfx-mic" style="color:var(--gold)"><use href="#ic-target"/></svg>'+m.combo):''}${m.ocv?' <svg class="pfx-mic" style="color:#ff7ae0"><use href="#ic-burst"/></svg>':''}${m.perfect?' <svg class="pfx-mic" style="color:#9fd4ef"><use href="#ic-gem"/></svg>':''}${m.comeback?' <svg class="pfx-mic" style="color:#4ade80"><use href="#ic-loop"/></svg>':''}${cbtn?(' '+cbtn):''}${(m.session||m.session_id)?` <a class="ses-open" data-ses="${esc(String(m.session||m.session_id))}" title="View this set's full breakdown">SET #${esc(String(m.session||m.session_id).slice(-4))}</a>`:''}</span>
+        <b class="fe" style="color:${e>=0?'#4ade80':'#f87171'}">${eTxt}</b>
       </div>`;
     }).join('');
     const isMe = mySteam && String(mySteam.steamid)===String(sid);
+    // gs-217 GAME MODES: per-mode records under the micro-stats. Tournament + money are public (typed,
+    // not ranked — their ranking rules come later); the casual-lobby tally is privacy-gated: the server
+    // only includes `lobby` for the owner or when the owner opted it public. Owner gets the 🔒/🔓 toggle.
+    const _tr=p.tourney||{}, _mr=p.money||{}, _lr=p.lobby;
+    const modeRecs=[
+      (_tr.wins||_tr.losses)?`<span title="Tournament games — on the record, ranking rules coming">🏆 <b>${_tr.wins||0}–${_tr.losses||0}</b> tournament</span>`:'',
+      (_mr.wins||_mr.losses)?`<span title="Money matches — on the record, ranking rules coming">🪙 <b>${_mr.wins||0}–${_mr.losses||0}</b> money</span>`:'',
+      _lr?`<span title="Casual lobby games — never ranked${isMe?'; only you can see this unless you make it public':''}">🎮 <b>${_lr.wins||0}–${_lr.losses||0}</b> lobby${isMe?` <span id="pfLobbyVis" class="pfx-edit" title="Lobby games never rank either way — this only controls whether OTHERS see the tally on your profile.">${_lr.public?'🔓 public':'🔒 private'}</span>`:''}</span>`:''
+    ].filter(Boolean).join('');
     // gs-109: FIGHTER CARD — plate hero (tier-accented), big rating, stat tiles, rail-labeled tables
     const r=rankOf(p.rating||1000,gp), acc=RK_PLATE[r.s]||RK_PLATE.civilian;
     const loc=[p.city,p.region].filter(Boolean).join(', ')||p.country||'';
@@ -5920,6 +5978,7 @@ async function openProfile(sid,nm){
         <span><svg class="pfx-mic" style="color:#9fd4ef"><use href="#ic-gem"/></svg> <b>${p.perfects||0}</b> perfects</span>
         <span><svg class="pfx-mic" style="color:#4ade80"><use href="#ic-loop"/></svg> <b>${p.comebacks||0}</b> comebacks</span>
       </div>
+      ${modeRecs?`<div class="pfx-micro" style="margin-top:4px">${modeRecs}</div>`:''}
       ${badges?`<div style="margin:10px 0 0;display:flex;gap:8px;flex-wrap:wrap">${badges}</div>`:''}
       <span class="rail-lbl" style="display:block;margin:16px 2px 7px">Head-to-head <i style="font-style:normal;letter-spacing:0;text-transform:none;font-weight:400">· tap a card for their profile</i></span>
       ${vs?`<div class="pfx-h2h">${vs}</div>`:'<div class="lb-empty" style="padding:12px">— no games yet</div>'}
@@ -5927,7 +5986,14 @@ async function openProfile(sid,nm){
       ${teams?`<div class="pfx-teamlist">${teams}</div>`:'<div class="lb-empty" style="padding:12px">—</div>'}
       <span class="rail-lbl" style="display:block;margin:16px 2px 7px">Recent fights</span>
       ${recent?`<div class="pfx-fights">${recent}</div>`:'<div class="lb-empty" style="padding:12px">—</div>'}`;
-    if(isMe){ const rb=$('#pfRep'); if(rb) rb.onclick=(e)=>{ e.stopPropagation(); showLocationEditor(sid,p); }; }
+    if(isMe){ const rb=$('#pfRep'); if(rb) rb.onclick=(e)=>{ e.stopPropagation(); showLocationEditor(sid,p); };
+      // gs-217: the lobby-record privacy toggle (owner only). Flips server-side, then updates in place.
+      const lb=$('#pfLobbyVis'); if(lb) lb.onclick=async(ev)=>{ ev.stopPropagation();
+        const want=!(p.lobby&&p.lobby.public);
+        try{ await invoke('lobby_visibility',{public:want}); if(p.lobby) p.lobby.public=want;
+          lb.textContent=want?'🔓 public':'🔒 private';
+          toast(want?'Lobby record is now visible on your public profile':'Lobby record is now private — only you see it');
+        }catch(err){ toast('⚠ could not update: '+err); } }; }
     pfLiveSid=String(sid);                                    // push deltas patch #pfLiveSlot while this card is open
   }catch(e){ body.innerHTML='<div class="lb-empty" id="pfRetry" style="cursor:pointer">PROFILE UNAVAILABLE — tap to retry</div>'; const rb=$('#pfRetry'); if(rb) rb.onclick=()=>openProfile(sid,nm); }
 }
