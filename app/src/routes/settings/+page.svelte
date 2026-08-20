@@ -1,13 +1,15 @@
 <script lang="ts">
+	import { onMount } from 'svelte';
 	import { base } from '$app/paths';
 	import { auth } from '$lib/stores/auth.svelte';
+	import { wallet } from '$lib/stores/wallet.svelte';
 	import { pwa } from '$lib/stores/pwa.svelte';
 	import { theme, type ThemeChoice } from '$lib/stores/theme.svelte';
 	import { APP_VERSION } from '$lib/config';
 	import Avatar from '$lib/components/Avatar.svelte';
 	import RankBadge from '$lib/components/RankBadge.svelte';
 	import { rankOf, gamesOf } from '$lib/ranks';
-	import { flagEmoji } from '$lib/format';
+	import { flagEmoji, timeAgo } from '$lib/format';
 
 	const me = $derived(auth.me);
 	const gp = $derived(me ? gamesOf({ wins: me.wins, losses: me.losses }) : 0);
@@ -18,6 +20,26 @@
 		{ id: 'light', label: 'Light' },
 		{ id: 'auto', label: 'Auto' }
 	];
+
+	// 🪙 wallet: the balance is loaded app-wide by WalletChip; make sure it's fresh when this page opens.
+	onMount(() => {
+		if (auth.steamid) void wallet.load(auth.steamid);
+	});
+	const bal = $derived(wallet.balance);
+	const recent = $derived(wallet.recent.slice(0, 6));
+	// Human labels for the ledger flow codes (1 genesis … 9 match-refund).
+	const LEDGER_LABEL: Record<string, string> = {
+		genesis: 'Starting quarters',
+		entry: 'Tournament entry',
+		refund: 'Tournament refund',
+		payout: 'Tournament payout',
+		grant: 'Grant',
+		'match-stake': 'Match stake',
+		'match-settle': 'Match won',
+		'match-fee': 'House fee',
+		'match-refund': 'Match refund'
+	};
+	const ledgerLabel = (kind?: string) => LEDGER_LABEL[kind ?? ''] ?? (kind || 'Adjustment');
 </script>
 
 <svelte:head><title>Settings · MetaSync</title></svelte:head>
@@ -48,6 +70,34 @@
 		</div>
 	{/if}
 </div>
+
+<!-- Wallet (🪙 quarters) — signed-in only -->
+{#if auth.authed}
+	<div class="rail sec-hd">Wallet</div>
+	<div class="card">
+		<div class="wallet-hd">
+			<div class="wl">
+				<span class="wlab">Quarters</span>
+				<span class="wsub">Play money — everyone starts with 🪙 {wallet.genesis}. No purchase, no cash-out.</span>
+			</div>
+			<span class="wbal">🪙 {bal ?? '—'}</span>
+		</div>
+		{#if recent.length}
+			<ul class="ledger">
+				{#each recent as tx, i (tx.ts ?? i)}
+					{@const d = tx.delta ?? 0}
+					<li class="lrow">
+						<span class="lk">{ledgerLabel(tx.kind)}</span>
+						{#if tx.ts}<span class="lt">{timeAgo(tx.ts)}</span>{/if}
+						<span class="ld" class:pos={d > 0} class:neg={d < 0}>{d > 0 ? '+' : d < 0 ? '−' : ''}🪙 {Math.abs(d || tx.amount || 0)}</span>
+					</li>
+				{/each}
+			</ul>
+		{:else}
+			<div class="wempty">No quarter activity yet — put one up on the Match tab.</div>
+		{/if}
+	</div>
+{/if}
 
 <!-- Appearance -->
 <div class="rail sec-hd">Appearance</div>
@@ -168,6 +218,82 @@
 		gap: 12px;
 		flex-wrap: wrap;
 		font-size: 13px;
+		color: var(--dim);
+	}
+
+	/* ── wallet ── */
+	.wallet-hd {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: 12px;
+	}
+	.wl {
+		display: flex;
+		flex-direction: column;
+		gap: 2px;
+		min-width: 0;
+	}
+	.wlab {
+		font-size: 14px;
+		font-weight: 800;
+		color: var(--ink);
+	}
+	.wsub {
+		font-size: 11.5px;
+		color: var(--dim);
+	}
+	.wbal {
+		flex: none;
+		font-size: 20px;
+		font-weight: 900;
+		font-style: italic;
+		color: var(--gold);
+		font-variant-numeric: tabular-nums;
+	}
+	.ledger {
+		list-style: none;
+		margin: 12px 0 0;
+		padding: 10px 0 0;
+		border-top: 1px solid color-mix(in srgb, var(--line) 60%, transparent);
+	}
+	.lrow {
+		display: grid;
+		grid-template-columns: minmax(0, 1fr) auto auto;
+		align-items: center;
+		gap: 10px;
+		padding: 6px 0;
+		font-size: 12.5px;
+	}
+	.lk {
+		font-weight: 700;
+		color: var(--ink);
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+		min-width: 0;
+	}
+	.lt {
+		font-size: 11px;
+		color: var(--faint);
+		font-variant-numeric: tabular-nums;
+		white-space: nowrap;
+	}
+	.ld {
+		font-weight: 800;
+		color: var(--dim);
+		font-variant-numeric: tabular-nums;
+		white-space: nowrap;
+	}
+	.ld.pos {
+		color: var(--good);
+	}
+	.ld.neg {
+		color: var(--live);
+	}
+	.wempty {
+		margin-top: 10px;
+		font-size: 12px;
 		color: var(--dim);
 	}
 	.row {

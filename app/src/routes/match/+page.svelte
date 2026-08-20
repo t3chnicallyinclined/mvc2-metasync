@@ -2,23 +2,45 @@
 	import { onMount } from 'svelte';
 	import { base } from '$app/paths';
 	import { matchfeed } from '$lib/stores/matchfeed.svelte';
+	import { wager } from '$lib/stores/wager.svelte';
 	import { auth } from '$lib/stores/auth.svelte';
 	import { timeAgo } from '$lib/format';
 	import Avatar from '$lib/components/Avatar.svelte';
+	import WagerRail from '$lib/components/WagerRail.svelte';
+	import Marquee from '$lib/components/Marquee.svelte';
 
-	// Live match center — push-only off the app-wide `matches` SSE channel (no snapshot fetch). onMount
-	// opens the stream and pauses it while the tab is hidden (CPU discipline — mirrors /ranks).
+	// Live match center + 🪙 quarter-match surfaces — all push off the app-wide `matches` SSE channel (no
+	// snapshot fetch for the feed; a seed fetch for the wager rail/marquee). onMount opens the streams and
+	// pauses them while the tab is hidden (CPU discipline — mirrors /ranks).
 	onMount(() => {
 		matchfeed.connect();
+		wager.connect(auth.steamid);
+		void wager.loadOpen();
+		if (auth.steamid) void wager.loadMine(auth.steamid);
 		const onVis = () => {
-			if (document.hidden) matchfeed.disconnect();
-			else matchfeed.connect();
+			if (document.hidden) {
+				matchfeed.disconnect();
+				wager.disconnect();
+			} else {
+				matchfeed.connect();
+				wager.connect(auth.steamid);
+				void wager.loadOpen();
+				if (auth.steamid) void wager.loadMine(auth.steamid);
+			}
 		};
 		document.addEventListener('visibilitychange', onVis);
 		return () => {
 			document.removeEventListener('visibilitychange', onVis);
 			matchfeed.disconnect();
+			wager.disconnect();
 		};
+	});
+
+	// keep the rail bound to the signed-in user (covers a sign-in/out while this tab is open).
+	$effect(() => {
+		const sid = auth.steamid;
+		if (sid) void wager.loadMine(sid);
+		else wager.mine = null;
 	});
 
 	const nowPlaying = $derived(matchfeed.nowPlaying);
@@ -44,6 +66,10 @@
 	<div class="seam" aria-hidden="true"></div>
 	<p class="mdesc">The live match center — games in progress and results as they land, pushed the moment they happen. Leave it open and watch the scene play out.</p>
 </section>
+
+<!-- 🪙 Quarter Match: your wager rail + the open-challenge marquee (live off the same `matches` channel) -->
+<WagerRail />
+<Marquee />
 
 <!-- 🟢 Now Playing -->
 <section class="sec">

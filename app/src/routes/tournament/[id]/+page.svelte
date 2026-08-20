@@ -54,6 +54,7 @@
 	const place = $derived(placeLabel(doc));
 	const ft = $derived(ftLabel(doc?.ft_winners, doc?.ft_losers, doc?.ft_grands));
 	const cost = $derived(entryCost(doc?.entry_fee_cents, doc?.entry_coins));
+	const stakeCoins = $derived(doc?.entry_coins ?? 0); // 🪙 QUARTERS stake to enter (0 = free)
 	const when = $derived(whenLabel(doc?.starts_ms));
 	const to = $derived(doc?.to_steamid ? players[doc.to_steamid] : undefined);
 
@@ -359,6 +360,9 @@
 						<span class="reg-title">Enter this tournament</span>
 						<span class="reg-sub">Team is optional — leave as “Any” to decide later.</span>
 					</div>
+					{#if stakeCoins > 0}
+						<div class="reg-stake">🪙 {stakeCoins} to enter — staked at register; the champion sweeps the pot.</div>
+					{/if}
 					<div class="picker">
 						{#each [0, 1, 2] as slot (slot)}
 							<label class="pk">
@@ -373,7 +377,7 @@
 						{/each}
 					</div>
 					<button type="button" class="btn primary wide" disabled={busy} onclick={doRegister}>
-						{busy ? 'Registering…' : 'Register'}
+						{busy ? 'Registering…' : stakeCoins > 0 ? `Register · 🪙 ${stakeCoins}` : 'Register'}
 					</button>
 				</div>
 			{/if}
@@ -709,6 +713,16 @@
 	.reg-sub {
 		font-size: 11.5px;
 		color: var(--dim);
+	}
+	.reg-stake {
+		margin-bottom: 12px;
+		padding: 8px 12px;
+		border: 1px solid color-mix(in srgb, var(--gold) 30%, var(--line));
+		border-radius: 9px;
+		background: var(--gold-soft);
+		font-size: 12.5px;
+		font-weight: 700;
+		color: var(--gold);
 	}
 	.picker {
 		display: grid;

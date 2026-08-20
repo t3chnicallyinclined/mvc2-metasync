@@ -9,6 +9,7 @@
 	import Avatar from '$lib/components/Avatar.svelte';
 	import StatTile from '$lib/components/StatTile.svelte';
 	import MatchRow from '$lib/components/MatchRow.svelte';
+	import QuarterUpForm from '$lib/components/QuarterUpForm.svelte';
 	import { rankOf, gamesOf, winrateOf, winrateColor, RK_PLATE } from '$lib/ranks';
 	import { flagEmoji } from '$lib/format';
 
@@ -77,6 +78,12 @@
 	let ownerBusy = $state(false);
 	let ownerMsg = $state<string | null>(null);
 
+	// ── 🪙 quarter-up: challenge THIS player (signed-in, not your own profile, a real 17-digit id) ──
+	const canChallenge = $derived(
+		auth.authed && !!auth.steamid && auth.steamid !== sid && found && /^\d{17}$/.test(sid)
+	);
+	let showChallenge = $state(false);
+
 	async function toggleLobby() {
 		if (ownerBusy) return;
 		ownerBusy = true;
@@ -129,6 +136,22 @@
 		<div class="live">
 			<span class="dot" aria-hidden="true"></span>
 			<span>🟢 In a match now — vs <b>{cur.opp_name || 'opponent'}</b></span>
+		</div>
+	{/if}
+
+	{#if canChallenge}
+		<div class="challenge">
+			{#if !showChallenge}
+				<button type="button" class="ch-open" onclick={() => (showChallenge = true)}>
+					🪙 Challenge {p.name || 'this player'} for quarters ▸
+				</button>
+			{:else}
+				<div class="ch-hd">
+					<span class="ch-title">🪙 Challenge {p.name || 'this player'}</span>
+					<button type="button" class="ch-x" aria-label="Close" onclick={() => (showChallenge = false)}>×</button>
+				</div>
+				<QuarterUpForm opp={sid} oppName={p.name || 'them'} />
+			{/if}
 		</div>
 	{/if}
 
@@ -362,6 +385,63 @@
 		100% {
 			box-shadow: 0 0 0 7px transparent;
 		}
+	}
+
+	/* ── 🪙 challenge this player ── */
+	.challenge {
+		margin: 0 0 12px;
+		padding: 12px 14px;
+		border: 1px solid color-mix(in srgb, var(--gold) 26%, var(--line));
+		border-radius: 12px;
+		background: linear-gradient(120deg, var(--gold-soft), transparent 72%), var(--panel);
+	}
+	.ch-open {
+		font: inherit;
+		font-size: 13px;
+		font-weight: 800;
+		color: var(--gold);
+		background: transparent;
+		border: none;
+		padding: 0;
+		cursor: pointer;
+		text-align: left;
+		min-height: 24px;
+	}
+	.ch-open:hover {
+		filter: brightness(1.1);
+	}
+	.ch-hd {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: 10px;
+		margin-bottom: 10px;
+	}
+	.ch-title {
+		font-size: 13.5px;
+		font-weight: 800;
+		color: var(--ink);
+		min-width: 0;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+	.ch-x {
+		font: inherit;
+		font-size: 18px;
+		line-height: 1;
+		color: var(--faint);
+		background: transparent;
+		border: 1px solid var(--line);
+		border-radius: 8px;
+		width: 32px;
+		height: 32px;
+		flex: none;
+		cursor: pointer;
+	}
+	.ch-x:hover {
+		color: var(--ink);
+		border-color: var(--gold-soft);
 	}
 
 	.tiles {
