@@ -2982,6 +2982,13 @@ let _updHideT=null;
 // so it can be updated without shipping a new build. This bundled copy is the offline FALLBACK — keep it
 // roughly current, but the remote is authoritative.
 let CHANGELOG = [
+  { v:'0.2.5', t:'Leaderboards by mode + cleaner matches', items:[
+    'Leaderboards now split by mode — a Ranked / Lobby / Tournament switch up top by Live Sync. Ranked carries the ratings and rank titles; Lobby and Tournament are pure records.',
+    'Only ranked matches move your rating and rank — lobby, tournament, and money matches are tracked separately, so casual games never touch your ladder.',
+    'Your profile shows per-mode records with a private/public toggle for your casual-lobby record, and recent fights are tagged 🏆 tournament / 🪙 money.',
+    'Quarter Match polish: first-to-2 sets with a live running score, join links on both sides, and a 🔴 IN GAME state once the set starts.',
+    'More reliable lobby detection on Steam Deck / Linux (Proton) hosts.',
+  ]},
   { v:'0.2.4', t:'🪙 QUARTERS — put your quarter up', items:[
     'Play quarters are live: everyone starts with 🪙 20 (pure play money — nothing to buy, nothing to cash out).',
     'QUARTER MATCH: put quarters on a casual set from the Match tab — the machine holds the pot, the winner takes it, and a set that never finishes refunds both sides automatically.',
