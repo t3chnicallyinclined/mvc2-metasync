@@ -230,6 +230,20 @@
 	</div>
 </div>
 
+<!-- Admin — site operators only (auth.me.admin flows from the owner-view /profile). Non-admins never see it. -->
+{#if auth.me?.admin}
+	<div class="rail sec-hd">Admin</div>
+	<div class="card">
+		<div class="row">
+			<div class="rowlabel">
+				<b>Site admin</b>
+				<span class="sub">Operator telemetry — installs, fleet versions, and who’s online.</span>
+			</div>
+			<a class="btn ghost" href="{base}/admin">Open admin dashboard</a>
+		</div>
+	</div>
+{/if}
+
 <!-- About -->
 <div class="rail sec-hd">About</div>
 <div class="card about">
@@ -424,6 +438,12 @@
 	.btn.steam:hover {
 		border-color: #66c0f4;
 		color: #fff;
+	}
+	a.btn {
+		text-decoration: none;
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
 	}
 	.btn.ghost {
 		color: var(--dim);

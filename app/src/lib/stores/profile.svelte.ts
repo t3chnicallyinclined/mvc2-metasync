@@ -80,6 +80,9 @@ export interface Profile {
 	tourney?: ModeRecord;
 	money?: ModeRecord;
 	lobby?: ModeRecord | null;
+	// Owner view only: the server stamps `admin:true` in GET /profile when the caller's OWN SteamID is on
+	// the operator allowlist (Bearer required; false/absent for everyone else). Gates the /admin dashboard.
+	admin?: boolean;
 }
 
 type MatchFrame = SseFrame & {
