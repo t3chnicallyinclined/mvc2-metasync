@@ -24,7 +24,22 @@ fails CI on drift).
 
 ---
 
-## 2. Current shipped state (0.2.6 — LIVE)
+## 2a. 0.2.7 — SHIPPED (Phase B + Spectate), 2026-08-20
+
+Live across server + PWA + Windows tray (Tauri app frozen at 0.2.6). What shipped:
+- **Phase B live set score**: reader reports `session_id` + caller-relative `my_wins`/`opp_wins` + a
+  `steam://joinlobby` link on `/match/live`; server stores them on `ActiveMatch` (per-SteamID `wins` that
+  converge), exposes them in `now_playing`, and fires a `match_live` bus delta on score change; PWA shows a
+  live score pill on Now Playing cards.
+- **Working Spectate**: the live banner's Spectate is a real join link for custom/tournament lobbies (empty
+  → disabled for ranked). Live cards open the **SessionModal**, which silently re-polls the set every 5s.
+- **Deploy specifics that worked**: server built on VPS **`--features tb`** (plain build silently drops the
+  money ledger — always include it); PWA must be **rebuilt after a version bump** before deploy (first pass
+  shipped a stale 0.2.6 bundle); tray release = non-latest GitHub `v0.2.7` (keeps v0.2.6 "latest" so the
+  frozen Tauri app's GitHub fallback still serves 0.2.6) + `agent-latest.json` → 0.2.7. Served exe sha256
+  verified == signed exe.
+
+## 2. Prior shipped state (0.2.6 — LIVE)
 
 Released for **Windows + Linux**. Highlights:
 
@@ -101,8 +116,9 @@ XRANGE gap-fill) → nginx `/skinsync/rt/` → PWA `getChannel('matches')`. Chan
 ## 5. In-flight follow-ups (the "finish the follow-ups" list)
 
 Ordered. Each has its exact next step so you can resume cold.
+**✅ A (Phase B) and B (Spectate) SHIPPED in 0.2.7 — see §2a. Remaining: C (rank reconcile) + §7.7 (0.3.0).**
 
-### A. Phase B — live session data (needs a **0.2.7 reader** release) — *IN PROGRESS, do this first*
+### A. Phase B — live session data (needs a **0.2.7 reader** release) — ✅ DONE (0.2.7)
 Goal: now-playing cards show the running set score live; SessionModal live-updates.
 - **Reader** (`tray-agent/src/reader.rs`): `report_live_match` currently sends `{opp, my_chars, opp_chars}`.
   Extend it to also send `session_id` + running set score (`p1`/`p2` wins) + lobby `join_link`. A sibling
@@ -140,16 +156,21 @@ Goal: now-playing cards show the running set score live; SessionModal live-updat
 
 ## 7. Next actions (start here)
 
-1. **Phase B reader** — extend `report_live_match` (session_id + set score + join_link). §5.A.
-2. **Server `handle_match_live` + `ActiveMatch`** — accept/store/expose those. §5.A.
-3. **PWA live set score + SessionModal live poll**. §5.A.
-4. **Cut 0.2.7 tray release** (Windows first; auto-update validates). §5.A.
-5. **Spectate wiring** once join_link flows. §5.B.
-6. **Rank reconcile** (cosmetic sweep). §5.C.
+1. ✅ **Phase B reader** — DONE (0.2.7). §5.A / §2a.
+2. ✅ **Server `handle_match_live` + `ActiveMatch`** — DONE (0.2.7).
+3. ✅ **PWA live set score + SessionModal live poll** — DONE (0.2.7).
+4. ✅ **Cut 0.2.7 tray release** — DONE (non-latest GitHub v0.2.7 + agent-latest.json). Auto-update pending
+   the user's next tray check (they were on 0.2.6).
+5. ✅ **Spectate wiring** — DONE (0.2.7); real join link on lobby/tourney live cards.
+6. **Rank reconcile** (cosmetic sweep) — NEXT. §5.C. Server `elo::rank_tier` scheme vs client Marvel ladder.
 7. **Bazzite/Linux tray cutover → 0.3.0** (the big one): per-platform tray manifest (cfg-gate
    `UPDATE_MANIFEST` → `agent-latest-linux.json`), sign/publish Linux tray binary, bootstrap+test on
    Bazzite, installer/migration to retire the Tauri app. Detail: `docs/LINUX-PORT-WORKSTREAM.md`.
 8. **Debt sweep** when convenient: JSONL ring migration (§6), off-thread backfill (§6).
+
+**Live-test 0.2.7 (do with the user):** open the tray menu → it should offer "Update to 0.2.7" (game closed
+to apply). After update, in a live match the web app's Now Playing card should show the running score; a
+custom-lobby match should show a working Spectate button + a live-refreshing SessionModal.
 
 ## 8. Detail docs (the map's territory)
 - `docs/WHATS-NEXT.md` — PWA forward plan + Phase 3 command protocol (skin-apply push).
