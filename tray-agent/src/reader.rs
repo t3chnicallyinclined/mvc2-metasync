@@ -699,7 +699,7 @@ fn read_my_lobby_inner() -> Option<serde_json::Value> {
 }
 
 pub fn sync_heartbeat(id: String, name: String) -> Result<serde_json::Value, String> {
-    auth_post(&format!("{}/heartbeat", SKINSYNC)).send_json(serde_json::json!({ "id": id, "name": name }))
+    auth_post(&format!("{}/heartbeat", SKINSYNC)).send_json(serde_json::json!({ "id": id, "name": name, "ver": env!("CARGO_PKG_VERSION"), "platform": if cfg!(windows) { "windows" } else { "linux" }, "client": "tray" }))
         .map_err(|e| e.to_string())?
         .into_json::<serde_json::Value>().map_err(|e| e.to_string())
 }
