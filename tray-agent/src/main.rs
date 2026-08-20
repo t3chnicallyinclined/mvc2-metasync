@@ -117,10 +117,17 @@ fn main() {
     // starts, so a user who turned skins off stays off across restarts without a first paint slipping through.
     painter::SKINS_ENABLED.store(prefs::load_apply_skins(), std::sync::atomic::Ordering::Relaxed);
 
-    // "Start with Windows" is ON by default (the set-it-and-forget-it model): the FIRST time the agent runs,
-    // register the Run-key autostart. After that the user's tray toggle owns it — we never re-enable behind them.
-    if prefs::take_first_run() {
-        let _ = autostart::enable();
+    // "Start with Windows" is ON by DEFAULT: until the user makes an explicit choice in the tray, every launch
+    // re-asserts the Run-key autostart (which also self-heals a stale path after a move/reinstall/auto-update).
+    // Once they've toggled it, honor that choice forever — an explicit OFF is never re-enabled behind their back.
+    match prefs::autostart_choice() {
+        None => {
+            let _ = autostart::enable();
+        }
+        Some(true) => {
+            let _ = autostart::enable();
+        } // keep it fresh (repairs a stale path)
+        Some(false) => {} // user opted out — leave it disabled
     }
 
     // The skin painter (T3), ported verbatim from the app's paint_live / paint_signatures. Spawns one sibling

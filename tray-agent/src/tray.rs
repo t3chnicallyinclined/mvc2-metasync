@@ -322,6 +322,9 @@ pub fn run() -> ! {
                     if let Err(e) = res {
                         eprintln!("[tray] autostart toggle failed: {e}");
                         handles.autostart_item.set_checked(!want);
+                    } else {
+                        // record the explicit choice so the launch path honors it (and stops re-asserting the default).
+                        prefs::save_autostart_choice(want);
                     }
                 }
             }
