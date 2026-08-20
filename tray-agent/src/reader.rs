@@ -41,12 +41,12 @@ const STEAMID_HI: u32 = 0x0110_0001; // universe=public, type=individual, instan
 //    OFF_COMBO 0x1ca, OFF_INPUT 0x4fc, and the MATCH_PTR/MATCH_ARR pointer chain.
 
 // ── (1) per-fighter slot offsets (relative to cl = base + slot*STRIDE) ──
-const STRIDE: usize = 0x738;          // fighter-slot stride; even slot = P1, odd = P2
+pub(crate) const STRIDE: usize = 0x738;          // fighter-slot stride; even slot = P1, odd = P2
 const OFF_COLOR:  usize = 0x6;        // palette/button-colour index
-const OFF_DATPAL: usize = 0x4c;       // → this fighter's 16-colour ARGB4444 palette pointer (working-buffer range)
+pub(crate) const OFF_DATPAL: usize = 0x4c;       // → this fighter's 16-colour ARGB4444 palette pointer (working-buffer range)
 // Effect-safe paint window: skin ONLY the 6 base button-color groups [0, 0x600) in the DatPal block; PRESERVE
 // [0x600, …) — the shared Status-Effects block + Extras (grenade/armor/lightning). 6 groups × 0x100 = 0x600.
-const PAL_BASE_REGION: usize = 0x600;
+pub(crate) const PAL_BASE_REGION: usize = 0x600;
 const OFF_COMBO:  usize = 0x1ca;      // combo this fighter is DEALING (confirmed correct)
 const OFF_HITSTUN: usize = 0x1d1;     // hitstun flag (u8): 0xFF = in hitstun/real hit, 0 = neutral-or-blocking.
                                       // ⚠ WAS 0x909 (= 0x1d1 + STRIDE) → read the NEXT slot's flag (same >stride
@@ -57,7 +57,7 @@ const OFF_HEALTH: usize = 0x40c;      // health (u32, full=144). ⚠ WAS 0xb44 (
 const OFF_REDHP:  usize = 0x410;      // recoverable (red) health (u16) = health+4. ⚠ WAS 0xb48 (old >stride bug).
 const OFF_ASSIST: usize = 0x4e9;      // assist type: alpha=0 beta=1 gamma=2 (confirmed live 2026-08-11; DC +0x4C9 does NOT map)
 const OFF_INPUT:  usize = 0x4fc;      // per-fighter input register (CPS2-decoded pad state for that side)
-const OFF_CHARID: usize = 0x554;      // CPS2 unit id (char_id)
+pub(crate) const OFF_CHARID: usize = 0x554;      // CPS2 unit id (char_id)
 const OFF_POS_X:  usize = 0x61c;      // fighter world X (f32)
 const OFF_POS_Y:  usize = 0x620;      // fighter world Y (f32)
 const OFF_XVEL:   usize = 0x644;      // x velocity (f32)
@@ -108,10 +108,10 @@ const LOBBY_OPP_GAP:     usize = 0x148;     // opp SteamID addr = (addr holding 
 const LOBBY_OPP_NAME:    usize = 0x184;     // opp persona addr  = (addr holding OUR id) + this  (= opp id addr + 0x3c)
 
 // ── (4) limits / ranges ──
-const WB_LO: u32 = 0x1000_0000;       // working-buffer pointer range LO (each fighter's own DAT region)
-const WB_HI: u32 = 0x1420_0000;       // working-buffer pointer range HI
+pub(crate) const WB_LO: u32 = 0x1000_0000;       // working-buffer pointer range LO (each fighter's own DAT region)
+pub(crate) const WB_HI: u32 = 0x1420_0000;       // working-buffer pointer range HI
 const HP_FULL: u16 = 144;             // full health
-const MAX_CID: u8 = 0x3A;             // Servbot = highest CPS2 unit id (58)
+pub(crate) const MAX_CID: u8 = 0x3A;             // Servbot = highest CPS2 unit id (58)
 
 // ── client registration (B): a per-install token the server mints, bound to the local SteamID. Stored in
 //    %LOCALAPPDATA%\MetaSync\auth.json and attached (Bearer) to every write request. The SteamID is read
@@ -779,7 +779,7 @@ struct GSlot { player: u8, pos: u8, char_id: u8, color: u8, health: u16, combo: 
 // The fighter's live 16-colour palette (ARGB4444 LE at the DatPal target) → the hook's RGBA sig format
 // (RRGGBBAA per colour, index0 transparent) — the SAME expansion the ROM decoder + capture_live use, so a
 // sig built here matches the on-screen texture the hook watches. All-zero pal → empty (no live palette).
-fn pal_sig(pal: &[u8; 32]) -> String {
+pub(crate) fn pal_sig(pal: &[u8; 32]) -> String {
     if pal.iter().all(|&b| b == 0) { return String::new(); }
     let mut s = String::with_capacity(128);
     for i in 0..16 {
@@ -802,9 +802,9 @@ struct GameSt { in_match: u8, match_state: u8, stage: u8, timer: u32, frame: u32
 // (All MvC2 memory offsets — STRIDE / OFF_* / MET_* / exe globals / the anchor — live in the ONE table
 //  near the top of this file. The array BASE is VOLATILE per match; see find_array / pointer_follow_array.)
 
-unsafe fn rpm_u8(h: &mem::Proc, a: usize) -> Option<u8> { read_at(h, a, 1).filter(|b| b.len() >= 1).map(|b| b[0]) }
+pub(crate) unsafe fn rpm_u8(h: &mem::Proc, a: usize) -> Option<u8> { read_at(h, a, 1).filter(|b| b.len() >= 1).map(|b| b[0]) }
 unsafe fn rpm_u16(h: &mem::Proc, a: usize) -> Option<u16> { read_at(h, a, 2).filter(|b| b.len() >= 2).map(|b| b[0] as u16 | ((b[1] as u16) << 8)) }
-unsafe fn rpm_u32(h: &mem::Proc, a: usize) -> Option<u32> { read_at(h, a, 4).filter(|b| b.len() >= 4).map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]])) }
+pub(crate) unsafe fn rpm_u32(h: &mem::Proc, a: usize) -> Option<u32> { read_at(h, a, 4).filter(|b| b.len() >= 4).map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]])) }
 
 // ── Tier-3 set-score read (read-only RPM, ADDITIVE observation) ──────────────────────────────────────
 // Deref *(exe_base+SET_SCORE_PTR_OFF) → the set-score block, validate the pointer, then read the game's own
@@ -1291,12 +1291,12 @@ fn start_gamestate_uploader() {
     });
 }
 
-fn is_wb(v: u32) -> bool { v >= WB_LO && v < WB_HI }
+pub(crate) fn is_wb(v: u32) -> bool { v >= WB_LO && v < WB_HI }
 
 // Cheap re-validation of a cached base: >=5 of the 6 slots have a working-buffer DatPal pointer at
 // cl+0x4c. That single fixed-offset pointer is the array's strongest cheap fingerprint (16k loose
 // clusters exist, but only the real 6-run keeps a WB pointer at exactly +0x4c across every slot).
-unsafe fn array_valid(h: &mem::Proc, base: usize) -> bool {
+pub(crate) unsafe fn array_valid(h: &mem::Proc, base: usize) -> bool {
     if base == 0 { return false; }
     // >=5 WB DatPals AND no garbage health (>144). The health clause is essential: without it a STALE savestate
     // copy that still holds WB DatPals but reads garbage health passes validation, PINS ram_base, and
@@ -1336,7 +1336,7 @@ unsafe fn flycast_base(h: &mem::Proc) -> usize {
 // out; that was the "not applied right away / keeps un-applying" bug). Reject only the between-games
 // [0,1,2,3,4,5] template. Health at this fixed offset is savestate-noisy — fine for painting; live
 // health/score come from the find_array copy. O(1), no scan.
-unsafe fn anchor_array(h: &mem::Proc) -> Option<usize> {
+pub(crate) unsafe fn anchor_array(h: &mem::Proc) -> Option<usize> {
     let fb = flycast_base(h);
     if fb == 0 { return None; }
     let cand = fb + ARRAY_OFF;
@@ -2123,7 +2123,7 @@ fn trace_cycle(prev: &mut String, src: &str, state: &str, roster: &[Found], opp:
     if line != *prev { *prev = line.clone(); trace(&line); }
 }
 
-unsafe fn read_at(h: &mem::Proc, addr: usize, len: usize) -> Option<Vec<u8>> {
+pub(crate) unsafe fn read_at(h: &mem::Proc, addr: usize, len: usize) -> Option<Vec<u8>> {
     h.read(addr, len)
 }
 
@@ -2713,6 +2713,30 @@ pub struct AgentStatus {
 pub fn agent_status() -> &'static Mutex<AgentStatus> {
     static A: OnceLock<Mutex<AgentStatus>> = OnceLock::new();
     A.get_or_init(|| Mutex::new(AgentStatus::default()))
+}
+
+// ── T3 painter view ── the skin painter (painter.rs) runs as a SIBLING thread and coordinates through the
+// SAME internal `Snapshot` the reader publishes each cycle (paint_slots / ram_base / side / scene / state).
+// This is the decoupled replacement for the webview reading `st.paint_slots` and driving paint_live /
+// paint_signatures from JS: the reader owns detection + the located array, the painter owns the writes.
+// paint_view() is a tiny O(1) clone so the painter never holds the reader's lock while it does its (slower)
+// RPM palette writes. It exposes ONLY what the painter's resolution needs — no game-memory access leaks out.
+#[derive(Clone, Default)]
+pub(crate) struct PaintView {
+    pub state: String,                    // game_off | menu | select | match
+    pub scene: i32,                       // 5 = fighting (game_state+0x8)
+    pub paint_slots: Vec<(u8, u8, u32)>,  // (player, char_id, datpal) — exact per-fighter render-palette pointers
+    pub ram_base: usize,                  // located fighter array (0 = none) → paint_live resolves live DatPals off it
+    pub local_side: u8,                   // 0=unknown 1=P1 2=P2 (auto-detected)
+    pub side_confirmed: bool,             // side trustworthy → mirror split + opponent skins may layer per-side
+    pub in_session: bool,                 // live netplay pairing present this cycle
+}
+pub(crate) fn paint_view() -> PaintView {
+    let s = snapshot().lock().unwrap();
+    PaintView {
+        state: s.state.clone(), scene: s.scene, paint_slots: s.paint_slots.clone(),
+        ram_base: s.ram_base, local_side: s.local_side, side_confirmed: s.side_confirmed, in_session: s.in_session,
+    }
 }
 
 /// One-line tray status derived from AgentStatus (the string tray.rs puts on its disabled status item +

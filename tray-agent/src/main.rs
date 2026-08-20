@@ -24,6 +24,13 @@ mod updater;
 #[allow(dead_code)]
 mod reader;
 
+// The ported skin painter (T3): writes skin palettes into the game's render palette out-of-process via RPM,
+// write-last-wins, driven by the reader's paint_slots + ram_base (verbatim paint RE from sync.rs; only the
+// webview trigger is replaced with a reader-driven local-first apply). #[allow(dead_code)] for the same reason
+// as reader — the verbatim port carries helpers the tray's single call path doesn't all exercise.
+#[allow(dead_code)]
+mod painter;
+
 mod autostart;
 mod tray;
 
@@ -74,6 +81,12 @@ fn main() {
     //   • the gamestate uploader (drains the spool between matches).
     // It also updates reader::AgentStatus, which the tray reads for its live status line. Returns immediately.
     reader::start_reader();
+
+    // The skin painter (T3), ported verbatim from the app's paint_live / paint_signatures. Spawns one sibling
+    // thread that reads the reader's PaintView (paint_slots + ram_base + side + state) each tick and auto-applies
+    // the user's LOCAL skins (runtime_dir()/skins.json) via RPM — per-side paint_live + the array-free base layer.
+    // Local-first: no webview, no phone yet (the live "change a skin from your phone" push is T5). Returns immediately.
+    painter::start_painter();
 
     // Run the tray event loop on the main thread. Diverges — returns only when the user picks Quit, which
     // exits the process (and with it the background threads).
