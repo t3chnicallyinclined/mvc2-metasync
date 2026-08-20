@@ -57,6 +57,12 @@ export interface NowPlaying {
 	names: Record<string, string>;
 	/** ranked ELO per sid (when the feed carries it) — drives the rank badge on the live card. */
 	ratings: Record<string, number>;
+	/** live set score per sid — wins so far in the current set (Phase B); 0 until the first game lands. */
+	wins: Record<string, number>;
+	/** the current set's id — opens a live SessionModal (game-by-game). "" until known. */
+	session_id?: string;
+	/** steam://joinlobby link for a shareable custom lobby — drives Spectate; "" for ranked/no lobby. */
+	join_link?: string;
 	/** match origin, when the feed tags it (match_start deltas may omit it). */
 	mode?: string;
 	since: number;
@@ -67,6 +73,8 @@ type MatchFrame = SseFrame & {
 	names?: Record<string, string>;
 	ratings?: unknown;
 	ranks?: unknown;
+	wins?: unknown;
+	join_link?: unknown;
 	winner?: unknown;
 	loser?: unknown;
 	winner_name?: unknown;
@@ -114,6 +122,18 @@ function toRatings(x: unknown): Record<string, number> {
 		for (const [k, v] of Object.entries(x as Record<string, unknown>)) {
 			const n = toRating(v);
 			if (n !== undefined) out[k] = n;
+		}
+	}
+	return out;
+}
+
+/** Coerce a payload sid→wins map into a clean non-negative-int record (0 is a valid score, kept). */
+function toWins(x: unknown): Record<string, number> {
+	const out: Record<string, number> = {};
+	if (x && typeof x === 'object') {
+		for (const [k, v] of Object.entries(x as Record<string, unknown>)) {
+			const n = Number(v);
+			if (Number.isFinite(n) && n >= 0) out[k] = Math.round(n);
 		}
 	}
 	return out;
@@ -207,6 +227,7 @@ export class MatchFeedStore {
 		const type = String(d.type ?? '');
 		if (type === 'connected') return; // handshake only
 		if (type === 'match_start') this.#onStart(d);
+		else if (type === 'match_live') this.#onLive(d); // Phase B: set-score advanced mid-match
 		else if (type === 'match_end') this.#onEnd(d);
 		else if (type === 'match_result') this.#onResult(d);
 	}
@@ -218,19 +239,45 @@ export class MatchFeedStore {
 		const key = pairKey(a, b);
 		const names = d.names && typeof d.names === 'object' ? { ...d.names } : {};
 		const ratings = toRatings(d.ratings);
+		const wins = toWins(d.wins);
 		const mode = typeof d.mode === 'string' && d.mode ? d.mode : undefined;
+		const session_id = typeof d.session_id === 'string' && d.session_id ? d.session_id : undefined;
+		const join_link = typeof d.join_link === 'string' && d.join_link ? d.join_link : undefined;
 		const existing = this.nowPlaying.find((p) => p.key === key);
 		if (existing) {
-			// same pair re-announced — refresh names/ratings, keep it where it is (and its since).
+			// same pair re-announced — refresh names/ratings/score, keep it where it is (and its since).
 			this.nowPlaying = this.nowPlaying.map((p) =>
 				p.key === key
-					? { ...p, names: { ...p.names, ...names }, ratings: { ...p.ratings, ...ratings }, mode: mode ?? p.mode }
+					? {
+							...p,
+							names: { ...p.names, ...names },
+							ratings: { ...p.ratings, ...ratings },
+							wins: { ...p.wins, ...wins },
+							// keep a good session/link sticky if a later announce omits it
+							session_id: session_id ?? p.session_id,
+							join_link: join_link ?? p.join_link,
+							mode: mode ?? p.mode
+						}
 					: p
 			);
 			return;
 		}
-		const row: NowPlaying = { key, a, b, names, ratings, mode, since: Date.now() };
+		const row: NowPlaying = { key, a, b, names, ratings, wins, session_id, join_link, mode, since: Date.now() };
 		this.nowPlaying = [row, ...this.nowPlaying].slice(0, NOWPLAYING_CAP);
+	}
+
+	/** Phase B live delta — the set score advanced. Update the matching Now Playing card in place (score +
+	 * session id). No-op if we're not already tracking the pair (a start we missed → the next snapshot seeds it). */
+	#onLive(d: MatchFrame) {
+		const players = Array.isArray(d.players) ? d.players.map(String).filter(Boolean) : [];
+		if (players.length < 2) return;
+		const key = pairKey(players[0], players[1]);
+		const wins = toWins(d.wins);
+		const session_id = typeof d.session_id === 'string' && d.session_id ? d.session_id : undefined;
+		if (!this.nowPlaying.some((p) => p.key === key)) return;
+		this.nowPlaying = this.nowPlaying.map((p) =>
+			p.key === key ? { ...p, wins: { ...p.wins, ...wins }, session_id: session_id ?? p.session_id } : p
+		);
 	}
 
 	#onEnd(d: MatchFrame) {

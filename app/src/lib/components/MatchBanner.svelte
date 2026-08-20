@@ -8,12 +8,15 @@
 	//   [marker] · [playerA vs playerB — each badge+name+rating] · [teams] · | · [right cluster] · [end]
 	// result → gold W winner marker, winner in --ink / loser dimmed, flair chips + rating swing, whole
 	//          row opens the set modal (a decorative › hints it); loser/winner links stopPropagation.
-	// live   → 🔴 LIVE marker, both players neutral, a (stubbed) Spectate button reserved for later.
+	// live   → 🔴 LIVE marker, both players neutral, a live set score, and a Spectate button (a real Steam
+	//          join link when the match is a shareable lobby, else a disabled stub).
 	interface BannerPlayer {
 		sid: string;
 		name: string;
 		rating?: number;
 		team?: number[];
+		/** live wins-so-far this set (live variant only); pair present → the score pill renders. */
+		wins?: number;
 	}
 	let {
 		variant,
@@ -29,6 +32,7 @@
 		combo = 0,
 		verified = false,
 		sessionId,
+		joinLink = '',
 		mine = false,
 		onOpen
 	}: {
@@ -45,6 +49,8 @@
 		combo?: number;
 		verified?: boolean;
 		sessionId?: string;
+		/** steam://joinlobby link — when present on a live card, Spectate becomes a real link. */
+		joinLink?: string;
 		mine?: boolean;
 		onOpen?: (id: string) => void;
 	} = $props();
@@ -57,7 +63,11 @@
 	const lTeam = $derived(teamAbbr(left.team));
 	const rTeam = $derived(teamAbbr(right.team));
 	const modeTag = $derived(mode && mode !== 'ranked' ? mode : '');
-	const clickable = $derived(variant === 'result' && !!sessionId);
+	// both variants open the set modal when they carry a session id (live → the live game-by-game view).
+	const clickable = $derived(!!sessionId);
+	// live set score — render the pill once either side has a win recorded (0–0 pre-game stays hidden).
+	const hasScore = $derived(variant === 'live' && ((left.wins ?? 0) > 0 || (right.wins ?? 0) > 0));
+	const canSpectate = $derived(variant === 'live' && joinLink.startsWith('steam://joinlobby/'));
 
 	function open() {
 		if (sessionId && onOpen) onOpen(sessionId);
@@ -103,6 +113,11 @@
 		/>
 		{#if verified}<span class="seal" title="Verified (both agree + replay)">✓✓</span>{/if}
 		{#if modeTag}<span class="mode m-{modeTag}" title="Game mode">{MODE_TAG[modeTag] ?? modeTag}</span>{/if}
+		{#if hasScore}
+			<span class="score" title="Set score (live)">
+				<b>{left.wins ?? 0}</b><i aria-hidden="true">–</i><b>{right.wins ?? 0}</b>
+			</span>
+		{/if}
 	</span>
 
 	{#if lTeam || rTeam}
@@ -126,9 +141,20 @@
 			{#if when}<span class="ago">{when}</span>{/if}
 		</span>
 		{#if sessionId}<span class="disc" aria-hidden="true">›</span>{/if}
+	{:else if canSpectate}
+		<!-- real Steam spectate: opens the game's join-lobby handler (custom/tournament lobbies only) -->
+		<a
+			class="spectate live-link"
+			href={joinLink}
+			title="Spectate this match in-game (opens Steam)"
+			aria-label="Spectate this match"
+			onclick={stop}
+		>
+			<span class="tri" aria-hidden="true">▶</span><span class="slbl">Spectate</span>
+		</a>
 	{:else}
-		<!-- reserved: wired to a Steam join link later; stubbed/disabled for now -->
-		<button class="spectate" disabled title="Spectate — coming soon" aria-label="Spectate (coming soon)">
+		<!-- ranked / no shareable lobby → nothing to join; keep the affordance visible but disabled -->
+		<button class="spectate" disabled title="Spectate unavailable (ranked match)" aria-label="Spectate unavailable">
 			<span class="tri" aria-hidden="true">▶</span><span class="slbl">Spectate</span>
 		</button>
 	{/if}
@@ -222,6 +248,28 @@
 		font-size: 10px;
 		font-weight: 800;
 		color: var(--good);
+	}
+	/* live set score — a compact scoreboard pill (2 – 1) beside the players */
+	.score {
+		flex: none;
+		display: inline-flex;
+		align-items: center;
+		gap: 3px;
+		padding: 1px 7px;
+		border-radius: 6px;
+		background: color-mix(in srgb, var(--live) 12%, transparent);
+		border: 1px solid color-mix(in srgb, var(--live) 30%, var(--line));
+		font-variant-numeric: tabular-nums;
+	}
+	.score b {
+		font-size: 12px;
+		font-weight: 900;
+		color: var(--ink);
+	}
+	.score i {
+		font-style: normal;
+		font-size: 10px;
+		color: var(--faint);
 	}
 	.mode {
 		flex: none;
@@ -364,6 +412,22 @@
 	.spectate .tri {
 		font-size: 8px;
 		color: var(--live);
+	}
+	/* enabled Spectate (real join link) — solid, tappable, live accent */
+	.spectate.live-link {
+		text-decoration: none;
+		color: var(--ink);
+		background: color-mix(in srgb, var(--live) 14%, var(--panel-2));
+		border-color: color-mix(in srgb, var(--live) 40%, var(--line));
+		cursor: pointer;
+		opacity: 1;
+	}
+	.spectate.live-link:hover {
+		background: color-mix(in srgb, var(--live) 22%, var(--panel-2));
+	}
+	.spectate.live-link:focus-visible {
+		outline: none;
+		box-shadow: 0 0 0 2px color-mix(in srgb, var(--live) 50%, transparent);
 	}
 
 	/* signed-in user's rows get a subtle gold rail (mirrors BoardRow.me) */

@@ -71,11 +71,13 @@
 	});
 	const pageResults = $derived(results.slice(page * PER_PAGE, page * PER_PAGE + PER_PAGE));
 
-	// ── Session ("set") modal — a result row opens the game-by-game set view for its session_id. ──
+	// ── Session ("set") modal — a result OR live row opens the game-by-game set view for its session_id. ──
 	let openSession = $state<string | null>(null);
 	function openSet(id: string) {
 		openSession = id;
 	}
+	// live when the open session belongs to a Now Playing pair → the modal keeps refreshing the set as it plays.
+	const openIsLive = $derived(!!openSession && nowPlaying.some((p) => p.session_id === openSession));
 
 	const isRanked = (m?: string) => m === 'ranked';
 	// A missing/short display name falls back to a shortened steamid rather than a raw 17-digit wall.
@@ -113,10 +115,13 @@
 			{#each nowPlaying as p (p.key)}
 				<MatchBanner
 					variant="live"
-					left={{ sid: p.a, name: nameFor(p.a, p.names), rating: p.ratings?.[p.a] }}
-					right={{ sid: p.b, name: nameFor(p.b, p.names), rating: p.ratings?.[p.b] }}
+					left={{ sid: p.a, name: nameFor(p.a, p.names), rating: p.ratings?.[p.a], wins: p.wins?.[p.a] }}
+					right={{ sid: p.b, name: nameFor(p.b, p.names), rating: p.ratings?.[p.b], wins: p.wins?.[p.b] }}
 					mode={p.mode ?? ''}
+					sessionId={p.session_id}
+					joinLink={p.join_link ?? ''}
 					mine={involvesMe(p.a, p.b)}
+					onOpen={openSet}
 				/>
 			{/each}
 		</div>
@@ -186,7 +191,7 @@
 </section>
 
 {#if openSession}
-	<SessionModal sessionId={openSession} onClose={() => (openSession = null)} />
+	<SessionModal sessionId={openSession} live={openIsLive} onClose={() => (openSession = null)} />
 {/if}
 
 <style>

@@ -6,16 +6,18 @@
 	import { flagEmoji, timeAgo } from '$lib/format';
 	import Avatar from './Avatar.svelte';
 
-	// The SET modal — a game-by-game view of one match session. Opened with a session_id from a result
-	// card. Fetches GET /skinsync/session?id=<id> once and renders the two players + running set score
-	// (counted across games) + a Game 1..N list in the SAME arena language as the result cards.
-	// Recorded-set view only: an in-progress set (1 game) degrades gracefully, and a 🔴 LIVE state +
-	// live set score is stubbed for a later 0.2.7 reader push (NO polling here). Types are local.
+	// The SET modal — a game-by-game view of one match session. Opened with a session_id from a result OR
+	// a Now Playing card. Fetches GET /skinsync/session?id=<id> and renders the two players + running set
+	// score (counted across games) + a Game 1..N list in the SAME arena language as the result cards.
+	// When `live` (the set belongs to an in-progress match), it SILENTLY re-polls the endpoint every few
+	// seconds so new games appear as they finish — the 🔴 LIVE badge is on and driven. Types are local.
 	let {
 		sessionId,
 		onClose,
-		live = false // reserved: a 0.2.7 reader push will flip this on for an in-progress set.
+		live = false // on when the open set belongs to a Now Playing pair → silent live polling below.
 	}: { sessionId: string; onClose: () => void; live?: boolean } = $props();
+
+	const LIVE_POLL_MS = 5000; // silent refresh cadence while a live set is open
 
 	interface SessionGame {
 		winner: string;
@@ -117,33 +119,46 @@
 
 	const inProgress = $derived(!!data && games.length <= 1);
 
-	// ── fetch on open (and whenever the id changes) ──
-	$effect(() => {
+	// Fetch the set. `silent` (a live re-poll) keeps the current view on screen — no spinner, no data
+	// clear, and a transient failure keeps last-good rather than flashing an error over live content.
+	async function fetchSession(silent: boolean): Promise<void> {
 		const id = sessionId;
 		if (!id) return;
 		const myReq = ++reqId;
-		loading = true;
-		error = null;
-		data = null;
-		fetch(api(`/skinsync/session?id=${encodeURIComponent(id)}`), {
-			headers: { accept: 'application/json' }
-		})
-			.then(async (res) => {
-				if (!res.ok) throw new Error(`session ${res.status}`);
-				return (await res.json()) as SessionResp;
-			})
-			.then((j) => {
-				if (myReq !== reqId) return;
-				if (!j || j.ok === false) throw new Error('That set could not be found.');
-				data = j;
-			})
-			.catch((e: unknown) => {
-				if (myReq !== reqId) return;
-				error = e instanceof Error ? e.message : 'error';
-			})
-			.finally(() => {
-				if (myReq === reqId) loading = false;
+		if (!silent) {
+			loading = true;
+			error = null;
+			data = null;
+		}
+		try {
+			const res = await fetch(api(`/skinsync/session?id=${encodeURIComponent(id)}`), {
+				headers: { accept: 'application/json' }
 			});
+			if (!res.ok) throw new Error(`session ${res.status}`);
+			const j = (await res.json()) as SessionResp;
+			if (myReq !== reqId) return;
+			if (!j || j.ok === false) throw new Error('That set could not be found.');
+			data = j;
+			error = null;
+		} catch (e: unknown) {
+			if (myReq !== reqId) return;
+			if (!silent) error = e instanceof Error ? e.message : 'error'; // silent poll: keep last-good
+		} finally {
+			if (myReq === reqId && !silent) loading = false;
+		}
+	}
+
+	// ── full fetch on open (and whenever the id changes) ──
+	$effect(() => {
+		void sessionId; // track the id so a change re-fetches
+		void fetchSession(false);
+	});
+
+	// ── live: silently re-poll while the set is in progress; cleaned up when it closes or live turns off ──
+	$effect(() => {
+		if (!live) return;
+		const iv = setInterval(() => void fetchSession(true), LIVE_POLL_MS);
+		return () => clearInterval(iv);
 	});
 
 	// ── focus management + body scroll lock (mount → move focus in, cleanup → restore) ──
@@ -211,7 +226,7 @@
 			<div class="dhd-l">
 				<span class="rail">Set</span>
 				{#if live}
-					<!-- reserved for the 0.2.7 reader push (in-progress live set) — not driven yet -->
+					<!-- in-progress set: the body silently re-polls so new games land as they finish -->
 					<span class="pill live"><span class="dot" aria-hidden="true"></span>LIVE</span>
 				{/if}
 			</div>
