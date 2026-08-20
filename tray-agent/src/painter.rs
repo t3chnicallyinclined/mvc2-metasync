@@ -32,6 +32,7 @@
 // frontend RETIRED in favour of paint_live (buildPaintTargets → paint_live), so it is never on the active loop.
 
 use std::collections::{HashMap, HashSet};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -511,7 +512,19 @@ struct PainterState {
     last_base: Instant,              // throttle for the heavy base-layer scan
 }
 
+// ── TRAY control flag (drives the "Apply my skins" toggle; see tray.rs) ────────────────────────────────
+/// "Apply my skins" (tray, PERSISTED to runtime_dir()/prefs.json, default ON). While false the painter writes
+/// NOTHING (painter_tick returns before any RPM). main.rs restores the persisted value into this flag BEFORE
+/// start_painter(); the tray flips it (and re-persists) live. Detection/reporting are unaffected.
+pub(crate) static SKINS_ENABLED: AtomicBool = AtomicBool::new(true);
+
 fn painter_tick(st: &mut PainterState) {
+    // "Apply my skins" off → paint nothing this tick (no reload/regen, no RPM). When re-enabled the next tick
+    // resumes normally (the skins.json fingerprint check re-picks up any change made while disabled).
+    if !SKINS_ENABLED.load(Ordering::Relaxed) {
+        return;
+    }
+
     // 1) reload the local store on change → regen skins.dat + drop learned recipes (a changed skin invalidates them).
     let fp = skins_fingerprint();
     if fp != st.skin_fp {

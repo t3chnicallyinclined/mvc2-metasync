@@ -1,17 +1,31 @@
 // Tray shell — the agent's only UI. No window: a tray icon + a native context menu, pumped by a tao event
-// loop. Menu:
-//   • status line (disabled)   — "MetaSync — starting…" placeholder (T2 will make it live)
-//   • "Open MetaSync"          — opens the web app (config::WEB_APP) in the default browser
+// loop. Production menu:
+//   • "MetaSync Agent · v{VERSION}"  (disabled header)
+//   • "🎮 {status}"                  (disabled; reader::status_line(), refreshed on the 1s timer)
+//   • "Signed in as {name}"          (disabled; reader::signed_in_name(), "Steam not detected" when none)
 //   • ── separator ──
-//   • "Start with Windows" (✓) — checkable; toggles the HKCU Run-key autostart (autostart.rs)
-//   • "Quit"                   — exits the event loop cleanly (process ends)
+//   • "Open MetaSync"                — opens the web app (config::WEB_APP) in the default browser
+//   • "Apply my skins" (✓)          — checkable, PERSISTED pref; gates the painter (painter::SKINS_ENABLED)
+//   • "Pause reporting" (✓)          — checkable, session-only; gates the reader's reports (reader::PAUSED)
+//   • ── separator ──
+//   • "Check for updates"            — runs updater::check_for_update on a thread; result reflected in the text
+//   • "Open logs folder"            — opens runtime_dir() in Explorer
+//   • "Start with Windows" (✓)       — checkable; toggles the HKCU Run-key autostart (autostart.rs)
+//   • ── separator ──
+//   • "Quit"                         — exits the event loop cleanly (process ends)
 //
 // Integration pattern (canonical for tao + tray-icon on Windows): route tray + menu events through the event
 // loop's own user-event channel via set_event_handler → EventLoopProxy, and build the TrayIcon on
 // StartCause::Init (some platforms require the tray to be created after the loop is running).
+//
+// NOTE on the "Check for updates" text update: muda's MenuItem is Rc<RefCell<…>>-backed (NOT Send), so the item
+// handle can't cross into the worker thread. The check runs on a background thread and posts its result string
+// back through the EventLoopProxy (UserEvent::UpdateResult); the loop — on the main thread, which owns the item —
+// applies set_text. This is the proxy path the task allowed, and here it's also the only sound one.
 
-use crate::{autostart, config, reader};
+use crate::{autostart, config, painter, prefs, reader, updater};
 use muda::{CheckMenuItem, Menu, MenuEvent, MenuId, MenuItem, PredefinedMenuItem};
+use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 use tao::event::{Event, StartCause};
 use tao::event_loop::{ControlFlow, EventLoopBuilder};
@@ -20,8 +34,11 @@ use tray_icon::{Icon, TrayIcon, TrayIconBuilder, TrayIconEvent};
 /// Events funneled into the tao loop from the tray + menu global handlers.
 enum UserEvent {
     Menu(MenuEvent),
-    #[allow(dead_code)] // tray-click handling is a T2 concern; kept wired so the channel exists now.
+    #[allow(dead_code)] // tray-click handling is a later concern; kept wired so the channel exists now.
     Tray(TrayIconEvent),
+    /// The finished "Check for updates" result string, posted back from the worker thread so the main thread
+    /// (which owns the Rc-backed menu item) can set its text.
+    UpdateResult(String),
 }
 
 /// Draw a 32×32 gold square with a dark border and a simple "M" — an in-code RGBA icon so the agent needs no
@@ -58,43 +75,101 @@ fn build_icon() -> Option<Icon> {
 
 /// Handles to the menu items whose IDs we react to / whose state we mutate.
 struct MenuHandles {
+    // Clickable / checkable item IDs (matched against incoming MenuEvents).
     open_id: MenuId,
+    apply_skins_id: MenuId,
+    pause_id: MenuId,
+    updates_id: MenuId,
+    logs_id: MenuId,
     autostart_id: MenuId,
     quit_id: MenuId,
+    // Item handles whose state/text we mutate at runtime.
+    apply_skins_item: CheckMenuItem,
+    pause_item: CheckMenuItem,
     autostart_item: CheckMenuItem,
-    // Disabled top item; its text is refreshed each second from reader::status_line() (T2 live status).
+    updates_item: MenuItem,
+    // Disabled rows refreshed each second from the reader.
     status_item: MenuItem,
+    signed_item: MenuItem,
 }
 
-/// Build the context menu and return it alongside the handles the event loop needs. The status line is a
-/// disabled MenuItem whose text the event loop refreshes from `reader::status_line()` on a 1s timer.
+/// "Signed in as {name}" / "Steam not detected" — the identity row text, sourced from the reader.
+fn signed_in_text() -> String {
+    match reader::signed_in_name() {
+        Some(n) => format!("Signed in as {}", n),
+        None => "Steam not detected".into(),
+    }
+}
+
+/// Build the context menu and return it alongside the handles the event loop needs. The status + "signed in"
+/// rows are disabled MenuItems whose text the event loop refreshes from the reader on a 1s timer.
 fn build_menu() -> (Menu, MenuHandles) {
     let menu = Menu::new();
 
+    let header = MenuItem::new(format!("MetaSync Agent · v{}", config::VERSION), false, None);
     let status = MenuItem::new(reader::status_line(), false, None);
+    let signed = MenuItem::new(signed_in_text(), false, None);
+    let sep1 = PredefinedMenuItem::separator();
+
     let open = MenuItem::new("Open MetaSync", true, None);
-    let sep = PredefinedMenuItem::separator();
-    let autostart_item =
-        CheckMenuItem::new("Start with Windows", true, autostart::is_enabled(), None);
+    // Initial check states read the flags main.rs already restored (skins) / the process default (pause).
+    let apply_skins = CheckMenuItem::new(
+        "Apply my skins",
+        true,
+        painter::SKINS_ENABLED.load(Ordering::Relaxed),
+        None,
+    );
+    let pause = CheckMenuItem::new("Pause reporting", true, reader::PAUSED.load(Ordering::Relaxed), None);
+    let sep2 = PredefinedMenuItem::separator();
+
+    let updates = MenuItem::new("Check for updates", true, None);
+    let logs = MenuItem::new("Open logs folder", true, None);
+    let autostart_item = CheckMenuItem::new("Start with Windows", true, autostart::is_enabled(), None);
+    let sep3 = PredefinedMenuItem::separator();
+
     let quit = MenuItem::new("Quit", true, None);
 
-    // append_items keeps the ordering explicit; ignore the (infallible-in-practice) result.
-    let _ = menu.append_items(&[&status, &open, &sep, &autostart_item, &quit]);
+    // append_items keeps the ordering explicit; ignore the (infallible-in-practice) result. The menu holds an
+    // Rc clone of each item, so the un-kept locals (header/separators) stay alive after this fn returns.
+    let _ = menu.append_items(&[
+        &header,
+        &status,
+        &signed,
+        &sep1,
+        &open,
+        &apply_skins,
+        &pause,
+        &sep2,
+        &updates,
+        &logs,
+        &autostart_item,
+        &sep3,
+        &quit,
+    ]);
 
     let handles = MenuHandles {
         open_id: open.id().clone(),
+        apply_skins_id: apply_skins.id().clone(),
+        pause_id: pause.id().clone(),
+        updates_id: updates.id().clone(),
+        logs_id: logs.id().clone(),
         autostart_id: autostart_item.id().clone(),
         quit_id: quit.id().clone(),
+        apply_skins_item: apply_skins,
+        pause_item: pause,
         autostart_item,
+        updates_item: updates,
         status_item: status,
+        signed_item: signed,
     };
     (menu, handles)
 }
 
-/// Pull the current status from the reader and paint it onto the status menu item + the tray tooltip.
-fn refresh_status(handles: &MenuHandles, tray: &Option<TrayIcon>) {
+/// Pull the current status + identity from the reader and paint them onto the disabled rows + the tray tooltip.
+fn refresh_dynamic(handles: &MenuHandles, tray: &Option<TrayIcon>) {
     let line = reader::status_line();
     handles.status_item.set_text(&line);
+    handles.signed_item.set_text(signed_in_text());
     if let Some(t) = tray {
         let _ = t.set_tooltip(Some(&line));
     }
@@ -114,6 +189,8 @@ pub fn run() -> ! {
     TrayIconEvent::set_event_handler(Some(move |e| {
         let _ = proxy.send_event(UserEvent::Tray(e));
     }));
+    // A third proxy, cloned into each "Check for updates" worker so it can post its result back to the loop.
+    let update_proxy = event_loop.create_proxy();
 
     // Built on Init and held for the whole run (dropping a TrayIcon removes it from the tray).
     let mut tray: Option<TrayIcon> = None;
@@ -122,7 +199,7 @@ pub fn run() -> ! {
     let mut menu = Some(menu);
 
     event_loop.run(move |event, _target, control_flow| {
-        // Wake at least once a second so the status line + tooltip track the reader's live AgentStatus,
+        // Wake at least once a second so the status + identity rows + tooltip track the reader's live state,
         // even when there are no window/menu events to process.
         *control_flow = ControlFlow::WaitUntil(Instant::now() + Duration::from_secs(1));
 
@@ -144,12 +221,12 @@ pub fn run() -> ! {
                         *control_flow = ControlFlow::Exit;
                     }
                 }
-                refresh_status(&handles, &tray);
+                refresh_dynamic(&handles, &tray);
             }
 
-            // 1s timer tick (from WaitUntil above) — refresh the status line/tooltip from the reader.
+            // 1s timer tick (from WaitUntil above) — refresh the status + identity rows from the reader.
             Event::NewEvents(StartCause::ResumeTimeReached { .. }) => {
-                refresh_status(&handles, &tray);
+                refresh_dynamic(&handles, &tray);
             }
 
             Event::UserEvent(UserEvent::Menu(ev)) => {
@@ -160,6 +237,31 @@ pub fn run() -> ! {
                 } else if ev.id == handles.open_id {
                     if let Err(e) = open::that_detached(config::WEB_APP) {
                         eprintln!("[tray] failed to open {}: {e}", config::WEB_APP);
+                    }
+                } else if ev.id == handles.apply_skins_id {
+                    // muda already flipped the check state; mirror it into the painter's gate + persist the pref.
+                    let on = handles.apply_skins_item.is_checked();
+                    painter::SKINS_ENABLED.store(on, Ordering::Relaxed);
+                    prefs::save_apply_skins(on);
+                } else if ev.id == handles.pause_id {
+                    // Session-only: mirror the check state into the reader's report gate (not persisted).
+                    let paused = handles.pause_item.is_checked();
+                    reader::PAUSED.store(paused, Ordering::Relaxed);
+                } else if ev.id == handles.updates_id {
+                    // Immediate feedback, then check off-thread. The result comes back via UpdateResult (the
+                    // menu item is Rc-backed → can't cross the thread boundary). Never auto-applies here.
+                    handles.updates_item.set_text("Checking…");
+                    let p = update_proxy.clone();
+                    std::thread::spawn(move || {
+                        let msg = match updater::check_for_update(config::VERSION) {
+                            Some(u) => format!("Update available: v{}", u.version),
+                            None => format!("Up to date (v{})", config::VERSION),
+                        };
+                        let _ = p.send_event(UserEvent::UpdateResult(msg));
+                    });
+                } else if ev.id == handles.logs_id {
+                    if let Err(e) = open::that(crate::runtime_dir()) {
+                        eprintln!("[tray] failed to open logs folder: {e}");
                     }
                 } else if ev.id == handles.autostart_id {
                     // muda already toggled the check state for us; reconcile the registry to match, and if the
@@ -177,8 +279,13 @@ pub fn run() -> ! {
                 }
             }
 
+            // "Check for updates" finished on its worker thread → reflect the result in the item text.
+            Event::UserEvent(UserEvent::UpdateResult(text)) => {
+                handles.updates_item.set_text(&text);
+            }
+
             Event::UserEvent(UserEvent::Tray(_ev)) => {
-                // TODO(T2): left-click could open the web app; right-click already shows the menu natively.
+                // Left-click could open the web app; right-click already shows the menu natively.
             }
 
             _ => {}

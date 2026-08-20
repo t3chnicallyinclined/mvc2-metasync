@@ -32,6 +32,8 @@ mod reader;
 mod painter;
 
 mod autostart;
+// Persisted tray preferences (prefs.json) — currently just the "Apply my skins" toggle restored below.
+mod prefs;
 mod tray;
 
 // Runtime data dir. The reader's call sites (`crate::runtime_dir()`) stay byte-identical to sync.rs; only the
@@ -81,6 +83,10 @@ fn main() {
     //   • the gamestate uploader (drains the spool between matches).
     // It also updates reader::AgentStatus, which the tray reads for its live status line. Returns immediately.
     reader::start_reader();
+
+    // Restore the persisted "Apply my skins" preference (default ON) into the painter's gate BEFORE the painter
+    // starts, so a user who turned skins off stays off across restarts without a first paint slipping through.
+    painter::SKINS_ENABLED.store(prefs::load_apply_skins(), std::sync::atomic::Ordering::Relaxed);
 
     // The skin painter (T3), ported verbatim from the app's paint_live / paint_signatures. Spawns one sibling
     // thread that reads the reader's PaintView (paint_slots + ram_base + side + state) each tick and auto-applies

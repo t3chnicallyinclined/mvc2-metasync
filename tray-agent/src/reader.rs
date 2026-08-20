@@ -14,6 +14,7 @@
 // intact because the two threads coordinate through it (ram_base, side_confirmed). It is NOT the tray's view;
 // the tray reads `AgentStatus`. Everything between the two ─── rulers is a faithful copy of sync.rs.
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock};
 // Cross-platform process-memory layer (Windows: Win32 APIs; Linux: /proc + process_vm_*). Ported verbatim in
 // T1 (src/mem.rs). ALL game-memory reads/region-walks + pid/module-base lookups go through this.
@@ -1896,6 +1897,9 @@ fn report_result_server(reporter: String, winner: String, winner_name: String, l
                         session_id: String, match_index: u32, set_end: Option<(u8, u8)>, origin: String) {
     std::thread::spawn(move || {
         use std::sync::atomic::Ordering::SeqCst;
+        // ── TRAY: "Pause reporting" gate. While PAUSED we send NOTHING for this finished game — neither the
+        // /result POST nor the per-frame recording upload below. Local scoring/H2H already ran in on_game_win.
+        if PAUSED.load(Ordering::Relaxed) { return; }
         // gs-105 frame-derived per-match stats from the recording (BOTH teams — hp/red_hp state is global, and hp
         // 0..144 is roster-comparable per the MvC2 spec). Non-zero only when a recording exists (share-gameplay on).
         // Keyed to the WINNER's side so the server attributes w*→winner, l*→loser (symmetric, no dedup issue):
@@ -2303,7 +2307,9 @@ pub fn start_reader() {
         loop {
             // ── TRAY: presence heartbeat (was the webview's sync_heartbeat on a 60s timer). Runs regardless of
             // game state (presence = "any open app"). Spawned so a slow POST never stalls the reader cycle.
-            if last_hb.elapsed().as_secs() >= 55 {
+            // Gated by "Pause reporting" (tray): while PAUSED we send no presence at all (last_hb is left un-reset
+            // so an unpause fires the heartbeat immediately).
+            if !PAUSED.load(Ordering::Relaxed) && last_hb.elapsed().as_secs() >= 55 {
                 last_hb = std::time::Instant::now();
                 let (id, name) = self_ident();
                 if id != 0 {
@@ -2620,7 +2626,9 @@ pub fn start_reader() {
             // real 17-digit opponent, POST /match/live so peers see "🟢 Now Playing". ~20s keepalive per opponent
             // (server TTL 60s); a NEW opponent reports immediately. my_chars / opp_chars come from the live fighter
             // slots split by the authoritative side (side_for_stats). Spawned so the POST never stalls the cycle.
-            if state == "match" {
+            // Gated by "Pause reporting" (tray): while PAUSED we broadcast no live match (live_rep_* left un-updated
+            // so an unpause reports the current match immediately).
+            if !PAUSED.load(Ordering::Relaxed) && state == "match" {
                 if let Some((oid, _)) = opp.as_ref() {
                     if oid.len() == 17 && oid.bytes().all(|b| b.is_ascii_digit())
                         && (oid.as_str() != live_rep_opp.as_str() || live_rep_last.elapsed().as_secs() >= 20) {
@@ -2713,6 +2721,29 @@ pub struct AgentStatus {
 pub fn agent_status() -> &'static Mutex<AgentStatus> {
     static A: OnceLock<Mutex<AgentStatus>> = OnceLock::new();
     A.get_or_init(|| Mutex::new(AgentStatus::default()))
+}
+
+// ── TRAY control flag (drives the production tray menu; see tray.rs) ───────────────────────────────────
+/// "Pause reporting" (tray, session-only, default OFF): while true the reader SKIPS every server-reporting
+/// path — the presence heartbeat, the live-match broadcast, and the /result game report (+ its recording
+/// upload). NOT persisted — every launch starts reporting-on. Set by the tray; read at the three gated report
+/// sites in start_reader() and at report_result_server(). Detection/scoring/painting are unaffected.
+pub(crate) static PAUSED: AtomicBool = AtomicBool::new(false);
+
+/// The Steam persona the reader identified (Steam registry / loginusers.vdf, via `self_ident`) for the tray's
+/// "Signed in as {name}" row. `None` when no Steam identity is resolvable yet OR the persona is unknown — the
+/// tray renders that as "Steam not detected". Cheap after the first resolve (self_ident caches its result).
+pub(crate) fn signed_in_name() -> Option<String> {
+    let (id, name) = self_ident();
+    if id == 0 {
+        return None;
+    }
+    let name = name.trim();
+    if name.is_empty() {
+        None
+    } else {
+        Some(name.to_string())
+    }
 }
 
 // ── T3 painter view ── the skin painter (painter.rs) runs as a SIBLING thread and coordinates through the
