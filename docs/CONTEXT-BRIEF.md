@@ -24,6 +24,24 @@ fails CI on drift).
 
 ---
 
+## 2x. 0.2.9 — SHIPPED (Phase 3 web skin picker, the tray-only unlock), 2026-08-20
+
+The web is now the skin picker; the tray applies. This is what makes tray-only viable (the last real reason
+the Tauri desktop UI existed).
+- **Server** (`skinsync`): new dedicated **loadout store** — `loadouts.json` = `steamid → Vec<CharSkin{cid,
+  colors}>` in the **agent-native palette shape** (16 × 0xRRGGBB), so web-writes and tray-reads match with no
+  parsing. `GET/POST/DELETE /skinsync/loadout` (all bound to the caller's token SteamID). `set_char_skin`
+  upserts + persists + publishes to a private **`cmd.<steamid>`** channel (scaffolding for the SSE push).
+- **Agent** (0.2.9): `reader::fetch_loadout` (auth GET) + a `loadout-sync` poll thread mirror the loadout into
+  the painter's in-memory map, **merged OVER local `skins.json` (web wins per char)**. Palette-only → the
+  `paint_live` path; **zero per-tick file I/O**. Applies on the next match within ~6s.
+- **Web** (`/app/skins`, linked from Settings → Skins): a per-character **16-swatch palette editor** (portrait
+  grid → editor → Save/Reset). Stock palettes bundled from `idle_frames bank0` (`$lib/stockPalettes.ts`).
+- **Deliberately v1**: agent **polls** (no SSE yet) so it needed no `cmd.*` authz or SSE client. Enrichments:
+  (a) live SSE push over `cmd.<steamid>` **with push-gateway authz** (only your bearer may subscribe to your
+  own channel — the security-sensitive bit); (b) a **community skin-library browser** (needs the skin catalog
+  — palettes + names — ported to the server, like the portraits were).
+
 ## 2y. 0.2.8+ follow-up — SHIPPED (real character portraits + teams on the feed), 2026-08-20
 
 PWA + server redeploy (no version bump — folded into the 0.2.8 the user is testing; no tray change).
@@ -200,11 +218,15 @@ Goal: now-playing cards show the running set score live; SessionModal live-updat
 4. ✅ **Cut 0.2.7 tray release** — DONE (non-latest GitHub v0.2.7 + agent-latest.json). Auto-update pending
    the user's next tray check (they were on 0.2.6).
 5. ✅ **Spectate wiring** — DONE (0.2.7); real join link on lobby/tourney live cards.
-6. **Rank reconcile** (cosmetic sweep) — NEXT. §5.C. Server `elo::rank_tier` scheme vs client Marvel ladder.
-7. **Bazzite/Linux tray cutover → 0.3.0** (the big one): per-platform tray manifest (cfg-gate
-   `UPDATE_MANIFEST` → `agent-latest-linux.json`), sign/publish Linux tray binary, bootstrap+test on
-   Bazzite, installer/migration to retire the Tauri app. Detail: `docs/LINUX-PORT-WORKSTREAM.md`.
-8. **Debt sweep** when convenient: JSONL ring migration (§6), off-thread backfill (§6).
+6. ✅ **Rank reconcile** — NO-OP (schemes already match). §6.
+7. ✅ **Follow-up debt** — matches eviction + off-thread backfill DONE. §6.
+8. ✅ **Phase 3 web skin picker** — v1 DONE (0.2.9). §2x. This unlocks tray-only.
+9. **Phase 3 enrichments** (optional, before/after cutover): SSE live-push over `cmd.<steamid>` + push-gateway
+   authz; community skin-library browser (catalog port).
+10. **Bazzite/Linux tray cutover → 0.3.0** (the big one, NEXT MAJOR): per-platform tray manifest (cfg-gate
+    `UPDATE_MANIFEST` → `agent-latest-linux.json`), sign/publish Linux tray binary, bootstrap+test on
+    Bazzite, installer/migration to retire the Tauri app. Detail: `docs/LINUX-PORT-WORKSTREAM.md`.
+    **With Phase 3 shipped, the tray now has full skin management without the Tauri UI — cutover is unblocked.**
 
 **Live-test 0.2.7 (do with the user):** open the tray menu → it should offer "Update to 0.2.7" (game closed
 to apply). After update, in a live match the web app's Now Playing card should show the running score; a
