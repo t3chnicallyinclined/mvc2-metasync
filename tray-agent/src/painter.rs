@@ -537,6 +537,25 @@ fn loadout_differs(cur: &HashMap<u8, LocalSkin>, next: &HashMap<u8, LocalSkin>) 
     next.iter().any(|(cid, ls)| cur.get(cid).map(|o| o.colors != ls.colors).unwrap_or(true))
 }
 
+/// Apply ONE live cmd-channel skin push (SSE, instant path): upsert the char's palette — or remove it when
+/// `colors` is empty (a revert-to-stock) — into the in-memory web loadout, and bump LOADOUT_VER so the
+/// painter re-merges + repaints on its next tick. The 6s poll is the reconciling fallback; this is instant.
+pub(crate) fn apply_cmd_skin(cid: u8, colors: Vec<u32>) {
+    let mut cur = server_loadout().lock().unwrap();
+    let changed = if colors.len() >= 16 {
+        let ls = LocalSkin { colors, sigs: Vec::new(), author: "web".into(), name: "loadout".into() };
+        let differ = cur.get(&cid).map(|o| o.colors != ls.colors).unwrap_or(true);
+        cur.insert(cid, ls);
+        differ
+    } else {
+        cur.remove(&cid).is_some()
+    };
+    drop(cur);
+    if changed {
+        LOADOUT_VER.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
 /// Poll our web loadout every few seconds and publish changes (bumps LOADOUT_VER so the painter re-merges).
 /// Runs regardless of a game being open — a change made on the web while idle is ready by the next match.
 pub(crate) fn start_loadout_sync() {

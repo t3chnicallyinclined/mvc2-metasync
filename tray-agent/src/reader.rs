@@ -202,6 +202,81 @@ pub fn fetch_loadout() -> Option<Vec<(u8, Vec<u32>)>> {
     Some(out)
 }
 
+/// Phase 3 LIVE push: subscribe to our PRIVATE `cmd.<steamid>` SSE channel (push-gateway, owner-gated) and
+/// apply skin pushes INSTANTLY — no waiting for the 6s poll. Reconnects with backoff; a no-op until we hold a
+/// token + 17-digit SteamID. The loadout poll stays the reconciling fallback if this ever drops.
+pub fn start_cmd_subscribe() {
+    let _ = std::thread::Builder::new().name("cmd-sse".into()).spawn(|| loop {
+        match (auth_steamid_stored(), auth_token()) {
+            (Some(sid), Some(_)) if sid.len() == 17 => cmd_sse_once(&sid), // blocks until the stream drops
+            _ => {}
+        }
+        std::thread::sleep(std::time::Duration::from_secs(8)); // backoff / wait for auth
+    });
+}
+
+/// One SSE connection to `cmd.<sid>`: connect (bounded), then read the event stream to EOF, applying each
+/// skin push. Returns on any error / stream close so the caller reconnects. Connect-timeout only (no read
+/// timeout) so the long-lived stream stays open — the gateway's keep-alives keep bytes flowing.
+fn cmd_sse_once(sid: &str) {
+    let url = format!("{}/rt/stream/cmd.{}", SKINSYNC, sid);
+    let agent = ureq::builder().timeout_connect(std::time::Duration::from_secs(10)).build();
+    let mut req = agent.get(&url).set("Accept", "text/event-stream");
+    if let Some(t) = auth_token() {
+        req = req.set("Authorization", &format!("Bearer {}", t)); // owner-bound; the gateway 403s a mismatch
+    }
+    let resp = match req.call() {
+        Ok(r) => r,
+        Err(_) => return,
+    };
+    use std::io::BufRead;
+    let mut buf = std::io::BufReader::new(resp.into_reader());
+    let mut line = String::new();
+    let mut data = String::new();
+    loop {
+        line.clear();
+        match buf.read_line(&mut line) {
+            Ok(0) | Err(_) => return, // stream closed / error → reconnect
+            Ok(_) => {}
+        }
+        let l = line.trim_end_matches(['\r', '\n']);
+        if l.is_empty() {
+            if !data.is_empty() {
+                handle_cmd_event(&data);
+                data.clear();
+            }
+        } else if let Some(d) = l.strip_prefix("data:") {
+            if !data.is_empty() {
+                data.push('\n');
+            }
+            data.push_str(d.strip_prefix(' ').unwrap_or(d));
+        }
+        // event:/id:/retry: and ':' keep-alive comment lines are ignored
+    }
+}
+
+/// Handle one decoded SSE `data:` payload from the cmd channel. Only `{"type":"skin",cid,colors}` acts (an
+/// empty `colors` reverts that char to stock); everything else (e.g. the initial `connected`) is ignored.
+fn handle_cmd_event(data: &str) {
+    let v: serde_json::Value = match serde_json::from_str(data) {
+        Ok(v) => v,
+        Err(_) => return,
+    };
+    if v.get("type").and_then(|t| t.as_str()) != Some("skin") {
+        return;
+    }
+    let cid = match v.get("cid").and_then(|x| x.as_u64()) {
+        Some(c) if c <= 255 => c as u8,
+        _ => return,
+    };
+    let colors: Vec<u32> = v
+        .get("colors")
+        .and_then(|x| x.as_array())
+        .map(|a| a.iter().filter_map(|x| x.as_u64()).map(|n| (n & 0xFF_FFFF) as u32).collect())
+        .unwrap_or_default();
+    crate::painter::apply_cmd_skin(cid, colors);
+}
+
 // ---- team detection via per-character DAT signatures (see detect_state below) ----
 // Each fighter's decompressed DAT carries a unique 64-byte gfx1 chunk. When a character is
 // loaded for a match the game copies its DAT into a "working buffer" in the 0x10000000-0x14000000

@@ -139,6 +139,9 @@ fn main() {
     // Phase 3: poll our web-set loadout (the /app skin picker) in the background and mirror it into the
     // painter's in-memory store — a skin picked on the web applies on the next match with no local files.
     painter::start_loadout_sync();
+    // Phase 3 live push: subscribe to our private cmd.<steamid> SSE channel so a web skin change applies
+    // INSTANTLY (the poll above is the reconciling fallback).
+    reader::start_cmd_subscribe();
 
     // Run the tray event loop on the main thread. Diverges — returns only when the user picks Quit, which
     // exits the process (and with it the background threads).
