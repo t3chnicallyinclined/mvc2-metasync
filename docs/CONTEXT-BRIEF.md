@@ -41,6 +41,15 @@ the Tauri desktop UI existed).
   (a) live SSE push over `cmd.<steamid>` **with push-gateway authz** (only your bearer may subscribe to your
   own channel — the security-sensitive bit); (b) a **community skin-library browser** (needs the skin catalog
   — palettes + names — ported to the server, like the portraits were).
+- **📝 FUTURE (noted 2026-08-20, deprioritized by user — not urgent):** the picker should be **Tauri-parity**:
+  show the **live ANIMATED sprite** and **recolor it live** as you drag the swatches (right now it's a static
+  portrait + swatch strip). Approach the user endorsed: we own the data — **unpack + store the idle-animation
+  frames (palette-INDEXED px, not baked RGB) + palettes on the server as reference** (same way the desktop app
+  does it; `idle_frames.json` already has `frames[].px` indices + `bank0`), then the web renders it on a canvas
+  and applies the edited 16-colour palette **client-side** (indexed sprite → swap palette = instant recolor,
+  exactly what the game does). The static portraits I shipped bake RGB, so they can't recolor — the live
+  preview needs the **indices** shipped to the web + a small canvas animator. Park until after the technical
+  work below.
 
 ## 2y. 0.2.8+ follow-up — SHIPPED (real character portraits + teams on the feed), 2026-08-20
 
