@@ -137,7 +137,31 @@ pub fn safe_to_apply() -> bool {
 /// arg tells the new process to wait briefly for us to exit + release the single-instance mutex before it claims it.
 pub fn restart() -> ! {
     if let Ok(exe) = std::env::current_exe() {
-        let _ = std::process::Command::new(exe).arg("--updated").spawn();
+        let mut cmd = std::process::Command::new(exe);
+        cmd.arg("--updated");
+        // The relaunched agent MUST outlive this process. On Windows a plain spawn already survives; on Linux the
+        // child stays in our session + process group, so when we exit(0) the freshly-spawned agent gets torn down
+        // with us (SIGHUP on session-leader exit) → the "updated but never reopened" bug. Detach it into its OWN
+        // session with null stdio so it's a fully independent daemon; the environment (DISPLAY/DBUS/…) is still
+        // inherited, so the new tray re-attaches to the running desktop session.
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::CommandExt;
+            cmd.stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null());
+            unsafe {
+                cmd.pre_exec(|| {
+                    // setsid() (async-signal-safe) → new session, no controlling terminal, detached from the
+                    // exiting parent so the relaunched agent keeps running.
+                    if libc::setsid() == -1 {
+                        return Err(std::io::Error::last_os_error());
+                    }
+                    Ok(())
+                });
+            }
+        }
+        let _ = cmd.spawn();
     }
     std::process::exit(0);
 }
