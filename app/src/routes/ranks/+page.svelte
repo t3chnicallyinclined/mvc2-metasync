@@ -1,10 +1,11 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import { leaderboard } from '$lib/stores/leaderboard.svelte';
-	import { regions } from '$lib/stores/regions.svelte';
+	import { regions, type Region } from '$lib/stores/regions.svelte';
 	import { TABS, PERIODS, SCOPES, MAST, STAT_DESC, PERIOD_LABEL, podiumOn, buildBoardItems } from '$lib/boards';
 	import Board from '$lib/components/Board.svelte';
 	import RegionRow from '$lib/components/RegionRow.svelte';
+	import RegionModal from '$lib/components/RegionModal.svelte';
 	import PodiumPlate from '$lib/components/PodiumPlate.svelte';
 	import RankBadge from '$lib/components/RankBadge.svelte';
 	import Avatar from '$lib/components/Avatar.svelte';
@@ -77,6 +78,7 @@
 	}
 	const regionList = $derived(regions.regions);
 	const regionCold = $derived(regions.loading && regionList.length === 0);
+	let openRegion = $state<Region | null>(null); // region drill-in (players + stats) modal
 	// Masthead adapts to the active mode (green REGIONS/REPRESENT vs the stat masthead).
 	const heroTitle = $derived(regionView ? 'REGIONS' : mast[0]);
 	const heroGhost = $derived(regionView ? 'REPRESENT' : ghost);
@@ -181,7 +183,7 @@
 			</div>
 			<div class="rbd-body">
 				{#each regionList as rg, i (rg.name + '|' + (rg.region ?? '') + '|' + (rg.cc ?? ''))}
-					<RegionRow region={rg} pos={i + 1} />
+					<RegionRow region={rg} pos={i + 1} onOpen={(r) => (openRegion = r)} />
 				{/each}
 			</div>
 		</div>
@@ -236,6 +238,10 @@
 	{#if tab === 'rating'}
 		<p class="foot">Play 5 games to get ranked — Civilians don’t appear on this board.</p>
 	{/if}
+{/if}
+
+{#if openRegion}
+	<RegionModal region={openRegion} onClose={() => (openRegion = null)} />
 {/if}
 
 <style>

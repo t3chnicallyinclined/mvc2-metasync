@@ -5,7 +5,29 @@
 	import { tierOf, RK_TEXT } from '$lib/ranks';
 	import type { Region } from '$lib/stores/regions.svelte';
 
-	let { region, pos }: { region: Region; pos: number } = $props();
+	let {
+		region,
+		pos,
+		onOpen
+	}: { region: Region; pos: number; onOpen?: (r: Region) => void } = $props();
+
+	const clickable = $derived(!!onOpen);
+	const stop = (e: Event) => e.stopPropagation(); // the top-player link navigates without opening the drill-in
+	function open() {
+		onOpen?.(region);
+	}
+	function onKey(e: KeyboardEvent) {
+		if (e.currentTarget !== e.target) return;
+		if (e.key === 'Enter' || e.key === ' ') {
+			e.preventDefault();
+			open();
+		}
+	}
+	const rootAttrs = $derived(
+		clickable
+			? { role: 'button', tabindex: 0, 'aria-label': `${region.name} — view players`, onclick: open, onkeydown: onKey }
+			: {}
+	);
 
 	const wins = $derived(region.wins ?? 0);
 	const losses = $derived(region.losses ?? 0);
@@ -19,7 +41,7 @@
 	const sub = $derived([region.region, region.country].filter(Boolean).join(' · '));
 </script>
 
-<div class="rg">
+<div class="rg" class:clickable {...rootAttrs}>
 	<div class="lead">
 		<span class="place">{pos}</span>
 		<span class="flag">{flagEmoji(region.cc)}</span>
@@ -37,7 +59,7 @@
 
 	{#if top}
 		{#if topHref}
-			<a class="top" href={topHref} title="{top.name} — {top.wins ?? 0} wins">
+			<a class="top" href={topHref} title="{top.name} — {top.wins ?? 0} wins" onclick={stop}>
 				<span class="crown" aria-hidden="true">👑</span>
 				<Avatar url={top.avatar} size={22} alt={top.name} />
 				<span class="tn">{top.name || 'Player'}</span>
@@ -65,6 +87,16 @@
 	}
 	.rg:last-child {
 		border-bottom: none;
+	}
+	.rg.clickable {
+		cursor: pointer;
+	}
+	.rg.clickable:hover {
+		background: color-mix(in srgb, var(--panel-2) 60%, transparent);
+	}
+	.rg.clickable:focus-visible {
+		outline: none;
+		box-shadow: inset 0 0 0 1.5px var(--gold-soft);
 	}
 	.lead {
 		display: flex;
