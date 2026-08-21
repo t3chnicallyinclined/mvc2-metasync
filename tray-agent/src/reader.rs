@@ -35,8 +35,8 @@ const STEAMID_HI: u32 = 0x0110_0001; // universe=public, type=individual, instan
 // The Steam MvC2 build's runtime struct differs from Demul: 6 fighter slots at STRIDE 0x738, order
 // P1C1,P2C1,P1C2,P2C2,P1C3,P2C3 (even slot = P1, odd = P2 → side is the slot-index parity). Each slot
 // starts with a cluster of ~16 working-buffer pointers; per-fighter fields are relative to that slot start
-// `cl` = base + slot*STRIDE. The array BASE is VOLATILE per match (auto-found by fingerprint / pointer-follow
-// — see find_array / pointer_follow_array). Battle-globals + meter are relative to the array base `ram`;
+// `cl` = base + slot*STRIDE. The array BASE is VOLATILE per match (located by pointer-follow
+// — see pointer_follow_array). Battle-globals + meter are relative to the array base `ram`;
 // kcode / localPlayerNum / the match-block pointer are relative to the game module (exe) base.
 // ⚠ CONFIRMED-CORRECT — do NOT change: STRIDE 0x738, OFF_HEALTH 0x40c, OFF_REDHP 0x410, OFF_CHARID 0x554,
 //    OFF_COMBO 0x1ca, OFF_INPUT 0x4fc, and the MATCH_PTR/MATCH_ARR pointer chain.
@@ -109,25 +109,6 @@ const LOBBY_OPP_GAP:     usize = 0x148;     // opp SteamID addr = (addr holding 
 const LOBBY_OPP_NAME:    usize = 0x184;     // opp persona addr  = (addr holding OUR id) + this  (= opp id addr + 0x3c)
 
 // ── (4) limits / ranges ──
-// working-buffer pointer window — a fighter's DatPal (cl+0x4c) MUST fall in [WB_LO,WB_HI) for is_wb() to accept it
-// (array_valid / read_fighters palette read / find_array predicate / painter.rs paint_signatures scan).
-// ⚠ PLATFORM-SPLIT (Linux value added 2026-08-21, live-proven on the Bazzite box, game pid 0x1f0cc5): on WINDOWS
-// the per-match DAT copies sit in a ~66MB band at 0x10000000-0x14200000. Under PROTON/WINE the game's whole low
-// guest heap is ONE big rw-p reservation (live: [0x02ce2000,0x2f3f0000], 711MB) and the working buffers ROAM
-// within it — the SAME launch was observed with DatPals at 0x07xxxxxx (mvc_anchors work-span) AND 0x0Cxxxxxx (live)
-// — so the narrow Windows band matches 0/6 DatPals → is_wb fails every slot → array_valid=false → pointer_follow
-// rejects a VALID array → permanent "no gamestate", NO match scoring/stats, skins never paint. The Linux window
-// brackets that whole reservation and is IDENTICAL to the sig-scan cold window (rpm_occurrences 0x0200_0000..
-// 0x4000_0000), which has read rosters correctly across every relaunch in the trace log → proven cross-relaunch-
-// robust for exactly these pointers. A narrow Linux band would break between matches (the WB roams). Windows UNCHANGED.
-#[cfg(windows)]
-pub(crate) const WB_LO: u32 = 0x1000_0000;       // working-buffer pointer range LO (each fighter's own DAT region)
-#[cfg(windows)]
-pub(crate) const WB_HI: u32 = 0x1420_0000;       // working-buffer pointer range HI
-#[cfg(unix)]
-pub(crate) const WB_LO: u32 = 0x0200_0000;       // Proton: = sig-scan cold-window LO; low edge of the guest heap
-#[cfg(unix)]
-pub(crate) const WB_HI: u32 = 0x4000_0000;       // Proton: = sig-scan cold-window HI + region cap; brackets [0x02ce2000,0x2f3f0000]
 const HP_FULL: u16 = 144;             // full health
 pub(crate) const MAX_CID: u8 = 0x3A;             // Servbot = highest CPS2 unit id (58)
 
@@ -878,7 +859,7 @@ struct Snapshot {
                                          //   "we're in an online match" signal (true at loading/select, before fighters load)
     paint_slots: Vec<(u8, u8, u32)>,     // (player, char_id, datpal) — exact render-palette pointers for painting,
                                          //   NOT liveness-gated, so skins paint at match start via the pointer (no scan)
-    ram_base: usize,                     // ★ the reader's CURRENTLY-LOCATED fighter array (anchor OR find_array). The
+    ram_base: usize,                     // ★ the reader's CURRENTLY-LOCATED fighter array (anchor OR pointer-follow). The
                                          //   array is NOT always at the anchor — it relocates per match — so paint_live
                                          //   uses THIS (the real located base) to resolve live DatPals, not just the anchor.
     session_id: String,                  // current ranked set's id ("" = none) — surfaced to the UI for the session chip
@@ -900,22 +881,6 @@ fn snapshot() -> &'static Mutex<Snapshot> {
 #[derive(Clone)]
 struct GSlot { player: u8, pos: u8, char_id: u8, color: u8, health: u16, combo: u16, datpal: u32, pal: [u8; 32], addr: usize }
 
-// The fighter's live 16-colour palette (ARGB4444 LE at the DatPal target) → the hook's RGBA sig format
-// (RRGGBBAA per colour, index0 transparent) — the SAME expansion the ROM decoder + capture_live use, so a
-// sig built here matches the on-screen texture the hook watches. All-zero pal → empty (no live palette).
-pub(crate) fn pal_sig(pal: &[u8; 32]) -> String {
-    if pal.iter().all(|&b| b == 0) { return String::new(); }
-    let mut s = String::with_capacity(128);
-    for i in 0..16 {
-        if i == 0 { s.push_str("00000000"); continue; }
-        let v = (pal[i * 2] as u16) | ((pal[i * 2 + 1] as u16) << 8);
-        let r = (((v >> 8) & 0xF) * 17) as u8;
-        let g = (((v >> 4) & 0xF) * 17) as u8;
-        let b = ((v & 0xF) * 17) as u8;
-        s.push_str(&format!("{:02x}{:02x}{:02x}ff", r, g, b));
-    }
-    s
-}
 #[derive(Clone)]
 struct GameSt { in_match: u8, match_state: u8, stage: u8, timer: u32, frame: u32, ram: usize, slots: Vec<GSlot>, meter1: u8, meter2: u8,
                 // ── battle-globals (gs-99): the game's own ground-truth match/round state ──
@@ -924,7 +889,7 @@ struct GameSt { in_match: u8, match_state: u8, stage: u8, timer: u32, frame: u32
 
 // ── App-side player-array reader (RPM, READ-ONLY) — the REVERSED Steam-build layout ──
 // (All MvC2 memory offsets — STRIDE / OFF_* / MET_* / exe globals / the anchor — live in the ONE table
-//  near the top of this file. The array BASE is VOLATILE per match; see find_array / pointer_follow_array.)
+//  near the top of this file. The array BASE is VOLATILE per match; see pointer_follow_array.)
 
 pub(crate) unsafe fn rpm_u8(h: &mem::Proc, a: usize) -> Option<u8> { read_at(h, a, 1).filter(|b| b.len() >= 1).map(|b| b[0]) }
 unsafe fn rpm_u16(h: &mem::Proc, a: usize) -> Option<u16> { read_at(h, a, 2).filter(|b| b.len() >= 2).map(|b| b[0] as u16 | ((b[1] as u16) << 8)) }
@@ -1150,7 +1115,7 @@ fn start_gamestate_capture() {
             let h = &proc;
             let exe_base = game_exe_base(pid);   // for the local pad (kcode) recorded per frame → offline side-attribution
             // wait for a live match with BOTH teams alive (a fresh game start, not a mid-KO/loading copy).
-            // Prefer the base the MAIN reader already located via find_array (struct-layout scan → the LIVE copy,
+            // Prefer the base the MAIN reader already located via pointer-follow (deterministic O(1) → the LIVE copy,
             // not a rollback savestate). anchor_array is only a fallback for the brief window before the reader
             // locks on — using it as the primary source is why the capture recorded ZERO frames (it kept landing
             // on rejected savestate copies).
@@ -1415,18 +1380,21 @@ fn start_gamestate_uploader() {
     });
 }
 
-pub(crate) fn is_wb(v: u32) -> bool { v >= WB_LO && v < WB_HI }
-
-// Cheap re-validation of a cached base: >=5 of the 6 slots have a working-buffer DatPal pointer at
-// cl+0x4c. That single fixed-offset pointer is the array's strongest cheap fingerprint (16k loose
-// clusters exist, but only the real 6-run keeps a WB pointer at exactly +0x4c across every slot).
+// Cheap re-validation of a located base — ADDRESS-AGNOSTIC (ONE path, Windows == Linux; no working-buffer
+// address band). Fingerprint: >=5 of the 6 slots carry BOTH a non-null DatPal pointer @cl+0x4c AND a valid
+// char_id (<=MAX_CID) @cl+0x554, and NO slot reads an impossible health (>144). This accepts the real array
+// identically on Windows (real DatPals are non-null there too) AND on Proton/Wine (where the working buffer
+// roams a lower, per-launch address range that the old hardcoded Windows band rejected — the is_wb bug).
+// This is only ever called on a POINTER-FOLLOWED candidate (blk+0x3f24 = the game's own live-block pointer),
+// so it's a cheap re-validation of a known-correct target, not a search filter. The health clause is essential:
+// without it a STALE savestate copy passes, PINS ram_base, and read_fighters then rejects it every cycle →
+// permanent "no gamestate".
 pub(crate) unsafe fn array_valid(h: &mem::Proc, base: usize) -> bool {
     if base == 0 { return false; }
-    // >=5 WB DatPals AND no garbage health (>144). The health clause is essential: without it a STALE savestate
-    // copy that still holds WB DatPals but reads garbage health passes validation, PINS ram_base, and
-    // read_fighters then rejects it every cycle (health>144) → permanent "no gamestate" while find_array never
-    // re-runs (ram_base != 0). Frozen copies with sane-but-stale health are handled separately by the liveness gate.
-    (0..6).filter(|&i| is_wb(rpm_u32(h, base + i * STRIDE + OFF_DATPAL).unwrap_or(0))).count() >= 5
+    (0..6).filter(|&i| {
+        rpm_u32(h, base + i * STRIDE + OFF_DATPAL).unwrap_or(0) != 0
+            && rpm_u8(h, base + i * STRIDE + OFF_CHARID).unwrap_or(255) <= MAX_CID
+    }).count() >= 5
         && !(0..6).any(|i| (rpm_u32(h, base + i * STRIDE + OFF_HEALTH).unwrap_or(0) & 0xffff) > HP_FULL as u32)
 }
 
@@ -1459,23 +1427,23 @@ unsafe fn flycast_base(h: &mem::Proc) -> usize {
 // frame → "any fighter 1..144" drops between frames → array unlatched → paint_slots emptied → skins blinked
 // out; that was the "not applied right away / keeps un-applying" bug). Reject only the between-games
 // [0,1,2,3,4,5] template. Health at this fixed offset is savestate-noisy — fine for painting; live
-// health/score come from the find_array copy. O(1), no scan.
+// health/score come from the pointer-followed live block. O(1), no scan.
 pub(crate) unsafe fn anchor_array(h: &mem::Proc) -> Option<usize> {
     let fb = flycast_base(h);
     if fb == 0 { return None; }
     let cand = fb + ARRAY_OFF;
     if !array_valid(h, cand) { return None; }
     // NEGATIVE GATE (live-capture-confirmed): reject a stale/half-written savestate copy at the fixed anchor
-    // (any health > 144) so we fall back to find_array's strong locator instead of trusting a garbage copy.
+    // (any health > 144) so we fall back to the pointer-follow locator instead of trusting a garbage copy.
     if (0..6).any(|i| (rpm_u32(h, cand + i * STRIDE + OFF_HEALTH).unwrap_or(0) & 0xffff) > HP_FULL as u32) { return None; }
     let live = (0..6).any(|i| { let hp = rpm_u32(h, cand + i * STRIDE + OFF_HEALTH).unwrap_or(0) & 0xffff; (1..=144).contains(&hp) });
     if !live { return None; }
     // MOTION GATE (capture-confirmed): the fixed anchor 0x10b33fc8 lands on a FROZEN savestate COPY (stuck at a
     // past frame — the whole bug). Only the live array's positions move frame-to-frame, so if the anchor is
-    // identical across a short gap it's a frozen copy → reject it and let find_array's liveness locate take over.
+    // identical across a short gap it's a frozen copy → reject it and let the pointer-follow's liveness gate take over.
     let pos = |c: usize| -> Vec<u8> { let mut v = Vec::new(); for i in 0..6 { if let Some(b) = read_at(h, c + i * STRIDE + OFF_POS_X, 0x40) { v.extend_from_slice(&b); } } v };
     let p1 = pos(cand); std::thread::sleep(std::time::Duration::from_millis(40)); let p2 = pos(cand);
-    if !p1.is_empty() && p1 == p2 { return None; } // frozen → fall through to find_array
+    if !p1.is_empty() && p1 == p2 { return None; } // frozen → return None (pointer-follow re-acquires next cycle)
     Some(cand)
 }
 // The roster straight off the anchored array — NO scan. Ordered P1(slots 0,2,4) then P2(slots 1,3,5) so
@@ -1495,142 +1463,9 @@ unsafe fn anchor_roster(h: &mem::Proc) -> Vec<Found> {
     out
 }
 
-// Heavy (~1.25GB scan) — run only when the cached base is stale/missing AND fighters are loaded, throttled.
-// Locates the array by the fighter-STRUCT LAYOUT (gs-89): for each 4-byte-aligned base, require >=5 of the 6
-// slots (base + i*0x738) to hold a WB DatPal @+0x4c AND a valid char_id @+0x554, with BOTH sides (even/odd
-// slots) carrying a living fighter (health 1..=144 @+0xb44). This is the invariant the external capture tool
-// uses — it finds the live array every time; the OLD pointer-density heuristic (>=14 WB pointers clustered per
-// slot) matched 0 real candidates in a live fight (find_array_replica confirmed). Returns the array base
-// (volatile — never cache across matches blindly).
-unsafe fn find_array(h: &mem::Proc) -> Option<usize> {
-    const STRIDE_W: usize = STRIDE / 4;      // 0x738 in words
-    const DP_W: usize  = OFF_DATPAL / 4;     // DatPal  @ +0x4c
-    const CID_W: usize = OFF_CHARID / 4;     // char_id @ +0x554
-    const HP_W: usize  = OFF_HEALTH / 4;     // health  @ +0xb44
-    let need = HP_W.max(CID_W).max(DP_W) + 5 * STRIDE_W + 2;  // furthest word indexed from a base (+2 margin).
-                                             // ⚠ MUST be the MAX field offset, not HP_W: once OFF_HEALTH moved to
-                                             // 0x40c (< char_id 0x554), char_id became the furthest field — using
-                                             // HP_W here indexed char_id past the buffer → OOB panic in find_array.
-    let mut raw: Vec<usize> = Vec::new();
-    for r in h.regions() {
-        let base = r.base; let size = r.size;
-        // include the ~512MB guest-RAM virtmem blocks (earlier scans wrongly capped at 256MB and missed them)
-        if !(r.readable && size >= 0x10000 && size <= 0x5000_0000) { continue; }
-        // Read in bounded CHUNKS: a whole-region read of a ~512MB..1.25GB block allocates that entire size at once
-        // (read_at does vec![0u8; len]); find_array now runs frequently, so repeated giant allocations are an
-        // OOM/abort hazard. 64MB base windows + a `tail` overlap (so a base near the window end can still index all
-        // 6 slots) bound the allocation to ~80MB regardless of region size.
-        const CHUNK: usize = 0x0400_0000;               // 64MB of base positions per read
-        let tail = (need + 2) * 4;                       // bytes past a base to reach slot 5's health (+margin)
-        let mut off = 0usize;
-        while off + need * 4 < size {
-            let rd = (CHUNK + tail).min(size - off);
-            let buf = match read_at(h, base + off, rd) { Some(v) if v.len() == rd => v, _ => { off += CHUNK; continue; } };
-            let words = buf.len() / 4;
-            if words <= need { off += CHUNK; continue; }
-            let word = |i: usize| -> u32 { u32::from_le_bytes([buf[i*4], buf[i*4+1], buf[i*4+2], buf[i*4+3]]) };
-            // one pass → a per-word predicate byte (bit0=DatPal-WB, bit1=char_id-valid, bit2=health-alive)
-            let pred: Vec<u8> = (0..words).map(|i| {
-                let v = word(i); let mut p = 0u8;
-                if is_wb(v) { p |= 1; }
-                if (v & 0xff) <= MAX_CID as u32 { p |= 2; }
-                let hp = v & 0xffff; if hp >= 1 && hp <= HP_FULL as u32 { p |= 4; }
-                p
-            }).collect();
-            // process only CHUNK-worth of bases; the tail overlap supplied their slots. Last chunk: all that fit.
-            let lim = (words - need).min(CHUNK / 4);
-            let slot_present = |b: usize| (pred[b + DP_W] & 1) != 0 && (pred[b + CID_W] & 2) != 0;
-            for b in 0..lim {
-                // cheap early-reject: if BOTH slot 0 and slot 1 are absent, >=2 slots are missing → can't reach 5/6.
-                if !slot_present(b) && !slot_present(b + STRIDE_W) { continue; }
-                let mut present = 0u32; let (mut ev, mut od) = (false, false);
-                for i in 0..6 {
-                    let so = b + i * STRIDE_W;
-                    if slot_present(so) {
-                        present += 1;
-                        if (pred[so + HP_W] & 4) != 0 { if i % 2 == 0 { ev = true; } else { od = true; } }
-                    }
-                }
-                if present >= 5 && ev && od { raw.push(base + off + b * 4); }
-            }
-            off += CHUNK;
-        }
-    }
-    if raw.is_empty() { return None; }
-    raw.sort(); raw.dedup();
-    // score + both-sides-alive (re-read live; the structured scan can match at a couple of neighbouring offsets).
-    // even slot = P1, odd = P2; a side is "alive" if any of its fighters has real health (1..=144).
-    let side_alive = |c: usize, par: usize| (0..6).filter(|&i| i % 2 == par)
-        .any(|i| { let hp = rpm_u32(h, c + i * STRIDE + OFF_HEALTH).unwrap_or(0) & 0xffff; (1..=144).contains(&hp) });
-    let mut cands: Vec<(usize, usize)> = Vec::new();
-    for &c in raw.iter() {
-        // ★ NEGATIVE GATE (live-capture-confirmed): reject any candidate with an impossible health (>144) —
-        // that's a stale/half-written savestate COPY (the live capture showed copies reading hp=11200/62807).
-        if (0..6).any(|i| (rpm_u32(h, c + i * STRIDE + OFF_HEALTH).unwrap_or(0) & 0xffff) > HP_FULL as u32) { continue; }
-        let score = (0..6).filter(|&i| {
-            let cl = c + i * STRIDE;
-            is_wb(rpm_u32(h, cl + OFF_DATPAL).unwrap_or(0)) && (rpm_u32(h, cl + OFF_HEALTH).unwrap_or(0xffff) & 0xffff) <= HP_FULL as u32
-        }).count();
-        // ★ require BOTH teams to have a LIVING fighter — a frozen post-KO copy reads one whole side at 0.
-        if score >= 5 && side_alive(c, 0) && side_alive(c, 1) { cands.push((c, score)); }
-    }
-    if cands.is_empty() { return None; }
-    cands.sort_by(|a, b| b.1.cmp(&a.1));
-
-    // ── FRAME-COUNTER live-copy selection (gs-97, the DEFINITIVE stale-read fix) ──
-    // The rollback netcode keeps ~14 full savestate COPIES of guest RAM, each with the fighter array at the SAME
-    // offset. The animation heuristic below can lock a re-simulating STALE copy and the reader then caches it for
-    // a WHOLE match → systematically wrong health → inverted W/L for every game of a set (the Rychu04 8↔2 flip).
-    // The LIVE copy is the one at the CURRENT frame: its frame counter is HIGHEST and ADVANCING; every savestate
-    // holds an OLDER frame. The counter sits at a FIXED offset from the array (both live in guest RAM at fixed
-    // guest offsets), so we locate that offset ONCE (cached) and then pick the candidate whose counter is highest
-    // among those still advancing. This is immune to how many copies exist or where ASLR put them.
-    static FC_REL: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
-    let mut fc_rel = FC_REL.load(std::sync::atomic::Ordering::Relaxed);
-    if fc_rel == 0 {
-        // find the per-frame counter near a candidate (any copy with an advancing counter works — the offset is
-        // shared across all copies). Try the top few by score so a frozen top candidate doesn't block discovery.
-        for &(c, _) in cands.iter().take(5) {
-            if let Some(fc) = hunt_frame_counter(h, c) { fc_rel = fc as i64 - c as i64; FC_REL.store(fc_rel, std::sync::atomic::Ordering::Relaxed); break; }
-        }
-    }
-    if fc_rel != 0 {
-        let fc_of = |c: usize| -> Option<u32> { rpm_u32(h, (c as i64 + fc_rel) as usize) };
-        let t0: Vec<Option<u32>> = cands.iter().map(|&(c, _)| fc_of(c)).collect();
-        std::thread::sleep(std::time::Duration::from_millis(120));
-        let mut best: Option<(u32, usize)> = None;   // (frame_counter, base) — highest ADVANCING = the live copy
-        for (i, &(c, _)) in cands.iter().enumerate() {
-            if let (Some(a), Some(b)) = (t0[i], fc_of(c)) {
-                if b > a && b != 0xffff_ffff && best.map_or(true, |(bb, _)| b > bb) { best = Some((b, c)); }
-            }
-        }
-        if let Some((_, c)) = best { return Some(c); }
-        // counter located but nothing advanced this instant (a lull between rounds) → fall through to animation.
-    }
-
-    // FALLBACK — animation probe (used until the frame counter is located, or in a lull): sample a wide per-fighter
-    // region (position/velocity 0x61c + action/anim 0x100) across ~180ms and take the MOST-changed candidate; None
-    // if nothing moved (never lock a frozen copy — the 0.1.25 best-effort-stale regression).
-    let anim = |c: usize| -> Vec<u8> {
-        let mut v = Vec::with_capacity(6 * 0x80);
-        for i in 0..6 {
-            if let Some(b) = read_at(h, c + i * STRIDE + OFF_POS_X, 0x40) { v.extend_from_slice(&b); }
-            if let Some(b) = read_at(h, c + i * STRIDE + 0x100, 0x40) { v.extend_from_slice(&b); }
-        }
-        v
-    };
-    let before: Vec<Vec<u8>> = cands.iter().map(|&(c, _)| anim(c)).collect();
-    std::thread::sleep(std::time::Duration::from_millis(180));
-    let mut best: Option<(usize, usize)> = None;   // (change_count, base)
-    for (i, &(c, _)) in cands.iter().enumerate() {
-        if before[i].is_empty() { continue; }
-        let after = anim(c);
-        if after.is_empty() { continue; }
-        let changed = before[i].iter().zip(after.iter()).filter(|(a, b)| a != b).count();
-        if changed > 0 && best.map_or(true, |(bc, _)| changed > bc) { best = Some((changed, c)); }
-    }
-    best.map(|(_, c)| c)
-}
+// (find_array — the ~1.25GB struct-layout scan locator — was REMOVED in the pointer-only refactor (gs-102).
+// The scene-gated pointer-follow (pointer_follow_fast / pointer_follow_array = *(exe+0xac6ef0)+0x3f24) is now
+// the SOLE array locator: deterministic, O(1), no working-buffer address band, ONE path on Windows and Proton.)
 
 // Cheap (~6 small reads/slot) — read the six fighters from a located base. side = slot parity (VALIDATED:
 // even=P1, odd=P2); pos = C1/C2/C3 by pair. in_match is derived (any present fighter with live health):
@@ -1651,7 +1486,7 @@ unsafe fn read_fighters(h: &mem::Proc, base: usize) -> Option<GameSt> {
         if health > 0 { any_live = true; }
         let dp = rpm_u32(h, cl + OFF_DATPAL).unwrap_or(0);
         let mut pal = [0u8; 32];  // the fighter's live 16-colour palette (ARGB4444) at the DatPal target
-        if is_wb(dp) { if let Some(v) = read_at(h, dp as usize, 32) { let n = v.len().min(32); pal[..n].copy_from_slice(&v[..n]); } }
+        if dp != 0 { if let Some(v) = read_at(h, dp as usize, 32) { let n = v.len().min(32); pal[..n].copy_from_slice(&v[..n]); } }
         slots.push(GSlot {
             player: if i % 2 == 0 { 1 } else { 2 },  // even slot = P1, odd = P2
             pos: (i as u8 / 2) + 1,                  // (0,1)→C1 (2,3)→C2 (4,5)→C3
@@ -1766,17 +1601,13 @@ fn read_gamestate_rpm(pid: u32, ram_base: &mut usize, last_find: &mut std::time:
     let h = &proc;
     let out = unsafe {
         if *ram_base != 0 && !array_valid(h, *ram_base) { *ram_base = 0; }       // volatile → dropped
-        // ANCHOR (gs-70): compute the array from flycast's reservation base + ARRAY_OFF when we don't already
-        // have a base. NOT primary — reverted from gs-71, which forced this static-anchor copy every cycle and
-        // regressed cross-round painting (at a round reload the anchor copy's DatPal pointers go null/stale while
-        // find_array's ANIMATING copy still tracks the live render). So: anchor to acquire O(1), then the
-        // liveness gate below hands off to find_array's animating copy if this one freezes.
-        // PRIMARY locator: the struct-layout scan. The fighter array is VOLATILE on this build — it RELOCATES
-        // every match (the external logger confirmed a different base per game: 0x15f5.., 0x1815.., 0x1625..), so
-        // the fixed anchor below CANNOT track it. Worse, running the anchor first STARVED the scan: the anchor set
-        // ram_base to a stale copy, so find_array (gated on ram_base==0) never ran → game 1 read garbage and
-        // games 2..N read nothing (the "1 of 10 recorded" bug). So scan FIRST, throttled so the ~1GB read doesn't
-        // thrash; once found, array_valid keeps it cached cheaply until the array relocates.
+        // (Historical: gs-70/71 tried a fixed flycast-reservation ANCHOR to acquire the array; it regressed
+        // cross-round painting because the anchor copy's DatPals go null/stale at a round reload. Superseded —
+        // this path now locates the array purely by the scene-gated pointer-follow below.)
+        // LOCATOR: the fighter array is VOLATILE on this build — it RELOCATES every match (the external logger
+        // confirmed a different base per game: 0x15f5.., 0x1815.., 0x1625..), so no fixed address can track it.
+        // It is located by the scene-gated pointer-follow below — deterministic O(1), NO struct-layout scan and
+        // NO throttle; once found, array_valid keeps it cached cheaply until the array relocates.
         // gs-101 OVERKILL LOCATOR: pointer-ONLY, scene-gated. scene==5 (fighting) GUARANTEES the block is live, so
         // we O(1) pointer-follow it (only when ram_base is missing) — NO struct-layout scan, NO liveness sleep, NO
         // 1200ms throttle. Between fights (fighting=false) we never even look: there is no live array, so ram_base
@@ -1798,11 +1629,11 @@ fn read_gamestate_rpm(pid: u32, ram_base: &mut usize, last_find: &mut std::time:
         // (traces show a different, sometimes HIGH, base per game — 0x7ff9..), so the fixed anchor points at
         // nothing or at a STALE savestate copy. BETWEEN matches (no live fight) that stale copy is exactly the
         // "scan brings in a random Ryu" bug + inverted W/L (the copy holds a previous round's dead team). So
-        // find_array (most-animating, None when nothing moves) is the SOLE locator: during a fight it returns the
+        // the scene-gated pointer-follow is the SOLE locator: during a fight it returns the
         // live copy; between fights it returns None → the reader shows no gamestate (correct) instead of stale data.
         let _ = hint;
         // read_fighters returns None on a garbage/empty base (health>144 or no valid fighter slots). Drop the base
-        // in that case so the NEXT cycle re-acquires (anchor → find_array) instead of pinning a dead base forever —
+        // in that case so the NEXT cycle re-acquires (pointer-follow) instead of pinning a dead base forever —
         // the second half of the "no gamestate" deadlock (a base array_valid accepts but read_fighters rejects).
         if *ram_base != 0 {
             match read_fighters(h, *ram_base) { Some(g) => Some(g), None => { *ram_base = 0; None } }
@@ -2485,8 +2316,8 @@ pub fn start_reader() {
         let mut last_active = std::time::Instant::now(); // last time fighters were loaded / in a match
         let mut prev_live_hash = 0u64; let mut frozen_cycles = 0u32; // liveness gate (drop frozen/stale match data)
         let mut prev_log = String::new();            // last trace line (log only on change)
-        let mut last_find = std::time::Instant::now() - std::time::Duration::from_secs(10); // find_array throttle
-        let mut live_seen: Option<std::time::Instant> = None; // last cycle we had a LIVE array read → keeps find_array re-acquiring through rollback flicker, and gates the deterministic side lock
+        let mut last_find = std::time::Instant::now() - std::time::Duration::from_secs(10); // vestigial throttle — unused now (array located by O(1) pointer-follow, not a scan)
+        let mut live_seen: Option<std::time::Instant> = None; // last cycle we had a LIVE array read → keeps the pointer-follow re-acquiring through rollback flicker, and gates the deterministic side lock
         let mut ram_base: usize = 0;                 // located player-array base (0 = not yet found; volatile per match)
         // ★ persisted anchors (keyed to the game pid): an app restart while the SAME game is running restores them
         // in the pid-change block below → skips ALL cold scans. Every restored value is validated downstream, so a
@@ -2669,10 +2500,10 @@ pub fn start_reader() {
             // attempted only when fighters are loaded (n>0) and throttled; once found, the volatile base is
             // re-validated & read cheaply.
             // allow_find is broadened PAST the flickering sig-scan roster: the fixed anchor lands on frozen/garbage
-            // savestate copies mid-rollback → anchor_roster empties (n=0) → the old `n>0` gate starved find_array
+            // savestate copies mid-rollback → anchor_roster empties (n=0) → the old `n>0` gate starved the locator
             // EXACTLY when it was needed (the "reads flash on/off, no wins recorded" bug). Once we've seen a live
-            // array recently (live_seen) OR pairing is up, keep letting find_array re-acquire the real live copy.
-            // The latch expires ~20s after the last live read so idle menus never thrash the ~1GB scan.
+            // array recently (live_seen) OR pairing is up, keep letting the pointer-follow re-acquire the real live copy.
+            // The latch expires ~20s after the last live read so idle menus never thrash the locator.
             // gs-101: the array locator is now pointer-ONLY + scene-gated INSIDE read_gamestate_rpm. Pass `fighting`
             // (scene==5) → it O(1) pointer-follows the live block; there is NO scan anywhere in the hot path now.
             let raw_game = read_gamestate_rpm(cur_pid, &mut ram_base, &mut last_find, fighting,
@@ -2695,16 +2526,16 @@ pub fn start_reader() {
                     let hh = game_liveness_hash(cur_pid, &g);
                     if hh != 0 && hh == prev_live_hash { frozen_cycles = frozen_cycles.saturating_add(1); }
                     else { frozen_cycles = 0; prev_live_hash = hh; }
-                    // ~1.2s byte-identical → not a live/current copy. Drop the base so the next find re-acquires a
-                    // LIVE one (find_array prefers an animating base, whose DatPals track the current round's
-                    // render). Restored from gs-70 — removing this (gs-71) pinned painting to the static anchor
-                    // copy and broke cross-round painting.
-                    if frozen_cycles >= 3 { ram_base = 0; None } else { Some(g) }
+                    // ~1.2s byte-identical → not a live/current copy: surface NO game this cycle, but KEEP the
+                    // cached ram_base. The pointer-follow locator re-validates it (array_valid) every cycle and
+                    // re-acquires on the next live frame — there is no "more-animating copy" to re-scan for, so the
+                    // old find_array-era `ram_base = 0` reflex just forced a needless re-follow. (gs-102: pointer-only.)
+                    if frozen_cycles >= 3 { None } else { Some(g) }
                 }
                 None => { frozen_cycles = 0; None }
             };
             // gs-91: the +0x554 char_id field reads a wrong value (0 = Ryu, sometimes another id) for some live
-            // fighters in the find_array copy, while the sig-scan roster carries the real 6 chars. The roster's
+            // fighters in the pointer-followed copy, while the sig-scan roster carries the real 6 chars. The roster's
             // ORDER is by address (not team parity), so we can't map it positionally — instead, treat the roster as
             // the authoritative SET: any game slot whose char_id isn't one of the real chars is a mis-read, and gets
             // the leftover real char no correctly-read slot accounted for. (Common case = one point-slot reading 0 →
@@ -2727,7 +2558,7 @@ pub fn start_reader() {
             // 6 slots have a valid DatPal AND exactly 6 banks are found; otherwise the +0x554 reads stand (safe).
             if let Some(g) = game.as_mut() {
                 if g.slots.iter().any(|s| s.char_id == 0) {
-                    let dps: Vec<u32> = g.slots.iter().map(|s| s.datpal).filter(|&d| is_wb(d)).collect();
+                    let dps: Vec<u32> = g.slots.iter().map(|s| s.datpal).filter(|&d| d != 0).collect();
                     if dps.len() == 6 {
                         let lo = (*dps.iter().min().unwrap() as usize).saturating_sub(0x160000);
                         let hi = (*dps.iter().max().unwrap() as usize) + 0x160000;
@@ -2747,7 +2578,7 @@ pub fn start_reader() {
                     }
                 }
             }
-            // live_seen latch: set on every LIVE array read → keeps find_array re-acquiring through rollback flicker
+            // live_seen latch: set on every LIVE array read → keeps the pointer-follow re-acquiring through rollback flicker
             // (allow_find above) and gates the deterministic side lock below.
             if game.is_some() { live_seen = Some(std::time::Instant::now()); }
 
@@ -2970,8 +2801,8 @@ pub(crate) fn signed_in_name() -> Option<String> {
 
 // ── T3 painter view ── the skin painter (painter.rs) runs as a SIBLING thread and coordinates through the
 // SAME internal `Snapshot` the reader publishes each cycle (paint_slots / ram_base / side / scene / state).
-// This is the decoupled replacement for the webview reading `st.paint_slots` and driving paint_live /
-// paint_signatures from JS: the reader owns detection + the located array, the painter owns the writes.
+// This is the decoupled replacement for the webview reading `st.paint_slots` and driving paint_live
+// from JS: the reader owns detection + the located array, the painter owns the writes.
 // paint_view() is a tiny O(1) clone so the painter never holds the reader's lock while it does its (slower)
 // RPM palette writes. It exposes ONLY what the painter's resolution needs — no game-memory access leaks out.
 #[derive(Clone, Default)]

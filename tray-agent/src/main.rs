@@ -132,7 +132,7 @@ fn main() {
 
     // The skin painter (T3), ported verbatim from the app's paint_live / paint_signatures. Spawns one sibling
     // thread that reads the reader's PaintView (paint_slots + ram_base + side + state) each tick and auto-applies
-    // the user's LOCAL skins (runtime_dir()/skins.json) via RPM — per-side paint_live + the array-free base layer.
+    // the user's LOCAL skins (runtime_dir()/skins.json) via RPM — per-side paint_live (array-located, address-agnostic).
     // Local-first: no webview, no phone yet (the live "change a skin from your phone" push is T5). Returns immediately.
     painter::start_painter();
 

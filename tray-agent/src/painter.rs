@@ -11,18 +11,18 @@
 //     the DERIVED effect rows (skin + learned stock delta) and PRESERVE the INDEPENDENT effect rows.
 //   • the effect-safe recipe learner — `classify_stock` / `get_or_learn_recipe` (sync.rs:3995 / 4034), the
 //     per-character copy/lum/tint recovered straight from the game's own stock block.
-//   • the ARRAY-FREE signature paint — `paint_signatures` (sync.rs:4325): read skins.dat's sig:replacement
-//     lines and WriteProcessMemory every matching palette row in the fixed working-buffer window. No array
-//     find, no side, no injection — the base layer that paints the instant fighters render.
-//   • the row codecs — skin_row / skin_row_delta / is_real_row / decode_row4 / row_nib / sig_nib / row_from_hex.
+//   • the row codecs — skin_row / skin_row_delta / is_real_row / decode_row4.
+//     (The ARRAY-FREE signature paint — paint_signatures + the row_nib/sig_nib/row_from_hex codecs — was REMOVED
+//     in the pointer-only refactor (gs-102): it scanned a fixed working-buffer ADDRESS band that, under Proton,
+//     the working buffer roams out of. Per-side paint_live (array-located, address-agnostic) is the only paint path.)
 //   • the skin resolution — `build_paint_targets` (web/index.html buildPaintTargets): mirror-safe, side-aware
 //     (your skins → your fighter; a same-char mirror splits per-side once the side locks; opponent skins layer
 //     onto their side once known). The mirror/side logic is byte-identical.
 //   • the local-store → skins.dat writer — sigs_lines / apply_multi (lib.rs:250 / 280).
 //
 // ONLY the TRIGGER changes (the decouple). The app drove painting from the webview: the user picked a skin and
-// a JS `setInterval` (paintTick 100ms / baseTick 1200ms) called the `#[tauri::command]` paint functions. There
-// is no webview here, so `start_painter()` runs the SAME two cadences on a sibling thread, reads the reader's
+// a JS `setInterval` called the `#[tauri::command]` paint functions. There is no webview here, so
+// `start_painter()` runs the per-side paint_live cadence on a sibling thread, reads the reader's
 // `PaintView` (paint_slots / ram_base / side / state) each tick, and auto-applies the user's LOCAL skins
 // (local-first) — see the trigger section at the bottom. The "change a skin from your phone" push path is T5;
 // its merge point is marked `TODO(T5)`.
@@ -34,14 +34,14 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use crate::mem;
 // Shared memory primitives + the MvC2 offset table, reused from the reader's verbatim RE (exposed pub(crate)
 // there — visibility only, no logic change) so the painter builds on the SAME anchor/offsets, never a copy.
 use crate::reader::{
-    self, anchor_array, array_valid, is_wb, pal_sig, read_at, rpm_u32, rpm_u8, MAX_CID, OFF_CHARID, OFF_DATPAL,
-    PAL_BASE_REGION, STRIDE, WB_HI, WB_LO,
+    self, anchor_array, array_valid, read_at, rpm_u32, rpm_u8, MAX_CID, OFF_CHARID, OFF_DATPAL,
+    PAL_BASE_REGION, STRIDE,
 };
 
 // Painter's own trace (copy of reader::trace) → the same suite_trace.log. Kept local so the painter is
@@ -190,7 +190,7 @@ fn paint_live(h: &mem::Proc, base: usize, targets: &[LiveTarget]) -> usize {
             Some(t) => t, None => continue,
         };
         let dp = unsafe { rpm_u32(h, cl + OFF_DATPAL) }.unwrap_or(0) as usize;
-        if dp == 0 || !is_wb(dp as u32) { continue; }
+        if dp == 0 { continue; }
         let row = skin_row(&tgt.colors);
         // PHASE 2: read the FULL block; skin the base costume palettes [0, 0x600); REGENERATE the DERIVED effect
         // rows (skin + their stock delta, so the body stays skinned through attacks); LEAVE the INDEPENDENT
@@ -235,101 +235,9 @@ fn paint_live_apply(h: &mem::Proc, ram_base: usize, targets: &[LiveTarget]) -> u
     paint_live(h, base, targets)
 }
 
-// ── APP-SIDE SIGNATURE PAINT (the "hook", without injection) — VERBATIM from sync.rs:4292+ ─────────────
-// The DC palettes flycast uploads live in the FIXED working-buffer window (WB_LO..WB_HI, never ASLR'd). Scan
-// that window for palette rows matching a saved skin's signature and WriteProcessMemory the skin straight in.
-// Detection-INDEPENDENT: no fighter-array find (works even when ram_base=0), no injection. Exact nibble match.
-fn row_nib(pal: &[u8; 32]) -> [u8; 45] {
-    let mut o = [0u8; 45];
-    for i in 1..16 {
-        let v = (pal[i * 2] as u16) | ((pal[i * 2 + 1] as u16) << 8);
-        o[(i - 1) * 3] = ((v >> 8) & 0xF) as u8;
-        o[(i - 1) * 3 + 1] = ((v >> 4) & 0xF) as u8;
-        o[(i - 1) * 3 + 2] = (v & 0xF) as u8;
-    }
-    o
-}
-fn hexhi(c: u8) -> Option<u8> { let d = (c as char).to_digit(16)? as u8; Some(d) }   // value of ONE hex digit
-fn sig_nib(hex: &str) -> Option<[u8; 45]> {
-    let b = hex.as_bytes(); if b.len() < 128 { return None; }
-    let mut o = [0u8; 45];
-    for i in 1..16 { for k in 0..3 { o[(i - 1) * 3 + k] = hexhi(b[i * 8 + k * 2])?; } }
-    Some(o)
-}
-fn hexbyte(hi: u8, lo: u8) -> Option<u8> { Some((hexhi(hi)? << 4) | hexhi(lo)?) }
-fn row_from_hex(hex: &str) -> Option<[u8; 32]> {
-    let b = hex.as_bytes(); if b.len() < 128 { return None; }
-    let mut row = [0u8; 32];
-    for i in 0..16 {
-        let o = i * 8;
-        let (r, g, bl, a) = (hexbyte(b[o], b[o + 1])?, hexbyte(b[o + 2], b[o + 3])?, hexbyte(b[o + 4], b[o + 5])?, hexbyte(b[o + 6], b[o + 7])?);
-        let v: u16 = (((a >> 4) as u16) << 12) | (((r >> 4) as u16) << 8) | (((g >> 4) as u16) << 4) | ((bl >> 4) as u16);
-        row[i * 2] = (v & 0xff) as u8; row[i * 2 + 1] = (v >> 8) as u8;
-    }
-    Some(row)
-}
-
-// The distinct on-screen palette sigs the last paint_signatures scan saw (the array-free capture source in the
-// app). Kept for verbatim fidelity; the tray has no capture_live consumer, so it is written-not-read here.
-fn last_wb_pals() -> &'static Mutex<Vec<String>> {
-    static P: OnceLock<Mutex<Vec<String>>> = OnceLock::new();
-    P.get_or_init(|| Mutex::new(Vec::new()))
-}
-
-/// Read skins.dat (the sig:replacement lines) and paint every matching palette row found in the fixed
-/// working-buffer window. No fighter-array find, no injection. VERBATIM from sync.rs:4325 — the only trigger
-/// change is that the caller supplies the already-opened proc `h` (was find_game_pid + open_rw inline).
-/// Returns rows painted.
-fn paint_signatures(h: &mem::Proc) -> usize {
-    let dat = std::fs::read_to_string(crate::runtime_dir().join("skins.dat")).unwrap_or_default();
-    // target: (nibble-key of the sig to match, 32-byte ARGB4444 skin row to write)
-    let mut targets: Vec<([u8; 45], [u8; 32])> = Vec::new();
-    for line in dat.lines() {
-        let line = line.trim();
-        if line.is_empty() || line.starts_with('#') { continue; }
-        if let Some((sig, rep)) = line.split_once(':') {
-            if let (Some(k), Some(row)) = (sig_nib(sig.trim()), row_from_hex(rep.trim())) { targets.push((k, row)); }
-        }
-    }
-    if targets.is_empty() { return 0; }
-    let mut painted = 0usize;
-    let mut pals: Vec<String> = Vec::new();                        // every distinct on-screen palette this scan sees
-    let mut seen: HashSet<String> = HashSet::new();
-    let (lo, hi) = (WB_LO as usize, WB_HI as usize);
-    for r in h.regions() {
-        let rbase = r.base; let rsize = r.size;
-        if r.readable && rbase < hi && rbase + rsize > lo {
-            let a = rbase.max(lo); let b = (rbase + rsize).min(hi);
-            let mut cbase = a;
-            while cbase < b {
-                let n = (b - cbase).min(0x80_0000);                 // 8 MB chunks → bounded memory
-                if let Some(buf) = unsafe { read_at(h, cbase, n) } {
-                    let mut i = 0usize;
-                    while i + 32 <= buf.len() {
-                        // cheap pre-reject: colour0 must be transparent (top nibble 0) — kills ~all non-palette rows.
-                        if (((buf[i + 1] as u16) << 8 | buf[i] as u16) >> 12) == 0 && is_real_row(&buf[i..i + 32]) {
-                            let mut r = [0u8; 32]; r.copy_from_slice(&buf[i..i + 32]);
-                            if pals.len() < 128 { let sig = pal_sig(&r); if seen.insert(sig.clone()) { pals.push(sig); } }
-                            let key = row_nib(&r);
-                            for (tk, trow) in &targets {
-                                if &key == tk {
-                                    if &r != trow {                 // skip if the skin is already applied
-                                        if h.write(cbase + i, trow) { painted += 1; }
-                                    }
-                                    break;
-                                }
-                            }
-                        }
-                        i += 0x10;                                  // 16-byte stride (palette rows are >=16-aligned)
-                    }
-                }
-                cbase += n;
-            }
-        }
-    }
-    if !pals.is_empty() { *last_wb_pals().lock().unwrap() = pals; }
-    painted
-}
+// (The APP-SIDE SIGNATURE PAINT — paint_signatures + its row_nib/sig_nib/hexhi/hexbyte/row_from_hex/last_wb_pals
+// helpers — was REMOVED in the pointer-only refactor (gs-102). It scanned the fixed working-buffer ADDRESS band,
+// which does not exist under Proton; per-side paint_live (array-located, address-agnostic) is the only paint path.)
 
 // ── local-store → skins.dat writer (VERBATIM from lib.rs sigs_lines:250 / apply_multi:280) ────────────
 fn lum(r: u8, g: u8, b: u8) -> f32 { 0.299 * r as f32 + 0.587 * g as f32 + 0.114 * b as f32 }
@@ -419,7 +327,7 @@ fn skins_fingerprint() -> String {
     }
 }
 
-/// Regenerate skins.dat from the local per-character store — the base-layer (paint_signatures) source. Mirrors
+/// Regenerate skins.dat from the local per-character store. LEGACY: paint_signatures (its only paint consumer) was removed in the pointer-only refactor, so no paint path reads skins.dat now. Mirrors
 /// the app's writeAll(mine) → apply_multi: every skin that carries BOTH stock sigs and a palette contributes its
 /// sig:replacement rows. Colours-only skins (no sigs) are paint_live-only (per-side) and add nothing here. The
 /// opponent layer (writeAll's `theirs`, from /peers) merges in the same way once a peer store is populated (T5).
@@ -495,22 +403,19 @@ fn build_paint_targets(view: &reader::PaintView, mine: &HashMap<u8, LocalSkin>) 
     out
 }
 
-// ── TRIGGER (reader-driven, local-first) — replaces the webview paintTick/baseTick setInterval loop ────
-// The app fired paintTick (100 ms) + baseTick (1200 ms) from JS whenever the user had skins + a match was up.
-// The tray has no webview, so this sibling thread runs the SAME two cadences off the reader's PaintView:
+// ── TRIGGER (reader-driven, local-first) — replaces the webview paintTick setInterval loop ────
+// The app fired paintTick (100 ms) from JS whenever the user had skins + a match was up. The tray has no
+// webview, so this sibling thread runs that cadence off the reader's PaintView:
 //   • fast (every tick ~100 ms): per-side paint_live of YOUR local skins onto YOUR fighters — the primary
-//     local-first apply. Needs paint_slots live (they are, at match start, via the reader's pointer-follow).
-//   • slow (~1200 ms): the array-free base layer (paint_signatures over skins.dat) — the robust fallback that
-//     paints even before the array/side locks, or for sig-only skins that carry no ready `colors`. Gated to run
-//     ONLY when per-side produced nothing this tick (mirrors gs-73: don't run the heavy WB scan while per-side
-//     already covers the fighters — that scan was the app's freeze).
+//     (and now ONLY) local-first apply. Needs paint_slots live (they are, at match start, via the reader's
+//     pointer-follow). The old array-free base layer (paint_signatures over skins.dat) was REMOVED in the
+//     pointer-only refactor, so there is no slow ~1200 ms baseTick anymore.
 // Painting is confined to select/match (never menus / app-start) and requires a fighter to actually be present.
 struct PainterState {
     skins: HashMap<u8, LocalSkin>,   // effective per-character store = local skins.json ∪ web loadout (web wins)
     skin_fp: String,                 // last skins.json fingerprint
     last_loadout_ver: u64,           // last web-loadout version merged (bumps when the web picker changes it)
     last_state: String,              // reader state, to detect new-match/select transitions (cache reset)
-    last_base: Instant,              // throttle for the heavy base-layer scan
 }
 
 // ── TRAY control flag (drives the "Apply my skins" toggle; see tray.rs) ────────────────────────────────
@@ -627,18 +532,11 @@ fn painter_tick(st: &mut PainterState) {
         // here when per-side is active (gs-73: the redundant WB scan was the freeze).
         let _rows = paint_live_apply(h, view.ram_base, &targets);
     }
-
-    // 6) BASE LAYER (slow, throttled): the array-free signature paint — the fallback when per-side covered
-    //    nothing this tick (no ready-colour skin matched an on-screen fighter, or the array hasn't locked yet).
-    if !per_side_active && st.last_base.elapsed() >= Duration::from_millis(1200) {
-        st.last_base = Instant::now();
-        let _painted = paint_signatures(h);
-    }
 }
 
 /// Start the reader-driven skin painter. Spawns one sibling thread that ticks ~10×/s, reads the reader's
-/// PaintView + the local skin store, and applies skins via RPM (per-side paint_live + the array-free base
-/// layer). Contains panics per-tick (one bad frame logs + continues, like the reader). Returns immediately.
+/// PaintView + the local skin store, and applies skins via RPM (per-side paint_live, array-located).
+/// Contains panics per-tick (one bad frame logs + continues, like the reader). Returns immediately.
 pub(crate) fn start_painter() {
     std::thread::Builder::new()
         .name("painter".into())
@@ -648,7 +546,6 @@ pub(crate) fn start_painter() {
                 skin_fp: String::new(),
                 last_loadout_ver: u64::MAX, // force a first merge even when the web loadout is empty (v0)
                 last_state: String::new(),
-                last_base: Instant::now() - Duration::from_secs(10),
             };
             trace("[painter] started (reader-driven local-first RPM paint)");
             loop {
