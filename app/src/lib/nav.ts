@@ -26,10 +26,12 @@ export const NAV: NavItem[] = [
 		live: false
 	},
 	{
-		id: 'library',
-		label: 'Library',
-		href: '/library',
-		d: 'M5 4 h6 v16 h-6 z M13 4 h6 v16 h-6 z',
-		live: false
+		// Skins — the web palette picker (Phase 3). A paint-droplet mark. (/library, the team tier list,
+		// stays a deep-linkable route but is off the primary nav.)
+		id: 'skins',
+		label: 'Skins',
+		href: '/skins',
+		d: 'M12 3 c4 5 6 8 6 11 a6 6 0 0 1 -12 0 c0 -3 2 -6 6 -11 z',
+		live: true
 	}
 ];
