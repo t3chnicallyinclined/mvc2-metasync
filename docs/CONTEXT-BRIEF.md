@@ -37,10 +37,14 @@ the Tauri desktop UI existed).
   `paint_live` path; **zero per-tick file I/O**. Applies on the next match within ~6s.
 - **Web** (`/app/skins`, linked from Settings → Skins): a per-character **16-swatch palette editor** (portrait
   grid → editor → Save/Reset). Stock palettes bundled from `idle_frames bank0` (`$lib/stockPalettes.ts`).
-- **Deliberately v1**: agent **polls** (no SSE yet) so it needed no `cmd.*` authz or SSE client. Enrichments:
-  (a) live SSE push over `cmd.<steamid>` **with push-gateway authz** (only your bearer may subscribe to your
-  own channel — the security-sensitive bit); (b) a **community skin-library browser** (needs the skin catalog
-  — palettes + names — ported to the server, like the portraits were).
+- ✅ **Live SSE push + `cmd.*` authz — DONE (0.2.10).** `GET /skinsync/whoami` (token→SteamID); the
+  push-gateway gates `cmd.<steamid>` to the owner (bearer must resolve to that SteamID via `/whoami`, else
+  **403, fail-closed**; public channels unchanged). The agent (`reader::start_cmd_subscribe`) streams the
+  owner-gated channel and applies each push via `painter::apply_cmd_skin` → **instant** apply (poll is now the
+  reconciling fallback). Verified: `cmd.*` 403s without a valid owner token.
+- **Remaining Phase 3 enrichment**: a **community skin-library browser** (pick a pre-made skin, not just a
+  custom palette) — needs the skin catalog (palettes + names) ported to the server, like the portraits were.
+  Plus the parked live-animated preview (§ future note above). Neither blocks the 0.3.0 cutover.
 - **📝 FUTURE (noted 2026-08-20, deprioritized by user — not urgent):** the picker should be **Tauri-parity**:
   show the **live ANIMATED sprite** and **recolor it live** as you drag the swatches (right now it's a static
   portrait + swatch strip). Approach the user endorsed: we own the data — **unpack + store the idle-animation
