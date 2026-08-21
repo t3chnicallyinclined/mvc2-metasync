@@ -32,7 +32,7 @@
 // frontend RETIRED in favour of paint_live (buildPaintTargets → paint_live), so it is never on the active loop.
 
 use std::collections::{HashMap, HashSet};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -506,8 +506,9 @@ fn build_paint_targets(view: &reader::PaintView, mine: &HashMap<u8, LocalSkin>) 
 //     already covers the fighters — that scan was the app's freeze).
 // Painting is confined to select/match (never menus / app-start) and requires a fighter to actually be present.
 struct PainterState {
-    skins: HashMap<u8, LocalSkin>,   // the loaded local per-character store (reloaded when skins.json changes)
+    skins: HashMap<u8, LocalSkin>,   // effective per-character store = local skins.json ∪ web loadout (web wins)
     skin_fp: String,                 // last skins.json fingerprint
+    last_loadout_ver: u64,           // last web-loadout version merged (bumps when the web picker changes it)
     last_state: String,              // reader state, to detect new-match/select transitions (cache reset)
     last_base: Instant,              // throttle for the heavy base-layer scan
 }
@@ -518,6 +519,43 @@ struct PainterState {
 /// start_painter(); the tray flips it (and re-persists) live. Detection/reporting are unaffected.
 pub(crate) static SKINS_ENABLED: AtomicBool = AtomicBool::new(true);
 
+// ── Phase 3: WEB-DRIVEN LOADOUT (server is the picker) ─────────────────────────────────────────────────
+// A background thread polls GET /skinsync/loadout (our own, auth-bound) and mirrors it into this in-memory
+// map — the painter merges it OVER the local skins.json store (a char set on the web wins; chars we didn't
+// set fall back to local). Purely in-memory on the hot path: painter_tick only rebuilds st.skins when the
+// version bumps (a real change), never reads a file per tick. sigs is empty (palette-only ⟹ paint_live path).
+fn server_loadout() -> &'static Mutex<HashMap<u8, LocalSkin>> {
+    static S: OnceLock<Mutex<HashMap<u8, LocalSkin>>> = OnceLock::new();
+    S.get_or_init(|| Mutex::new(HashMap::new()))
+}
+static LOADOUT_VER: AtomicU64 = AtomicU64::new(0);
+fn loadout_version() -> u64 { LOADOUT_VER.load(Ordering::Relaxed) }
+
+/// True if the freshly-fetched loadout differs from what we hold (by cid set + per-cid colours).
+fn loadout_differs(cur: &HashMap<u8, LocalSkin>, next: &HashMap<u8, LocalSkin>) -> bool {
+    if cur.len() != next.len() { return true; }
+    next.iter().any(|(cid, ls)| cur.get(cid).map(|o| o.colors != ls.colors).unwrap_or(true))
+}
+
+/// Poll our web loadout every few seconds and publish changes (bumps LOADOUT_VER so the painter re-merges).
+/// Runs regardless of a game being open — a change made on the web while idle is ready by the next match.
+pub(crate) fn start_loadout_sync() {
+    let _ = std::thread::Builder::new().name("loadout-sync".into()).spawn(|| loop {
+        if let Some(pairs) = crate::reader::fetch_loadout() {
+            let next: HashMap<u8, LocalSkin> = pairs
+                .into_iter()
+                .map(|(cid, colors)| (cid, LocalSkin { colors, sigs: Vec::new(), author: "web".into(), name: "loadout".into() }))
+                .collect();
+            let mut cur = server_loadout().lock().unwrap();
+            if loadout_differs(&cur, &next) {
+                *cur = next;
+                LOADOUT_VER.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+        std::thread::sleep(Duration::from_secs(6));
+    });
+}
+
 fn painter_tick(st: &mut PainterState) {
     // "Apply my skins" off → paint nothing this tick (no reload/regen, no RPM). When re-enabled the next tick
     // resumes normally (the skins.json fingerprint check re-picks up any change made while disabled).
@@ -525,19 +563,24 @@ fn painter_tick(st: &mut PainterState) {
         return;
     }
 
-    // 1) reload the local store on change → regen skins.dat + drop learned recipes (a changed skin invalidates them).
+    // 1) rebuild the effective store when EITHER the local skins.json OR the web loadout changes → the web
+    //    loadout (poll thread, in-memory) is merged OVER the local store so a char picked on the web wins.
+    //    Then regen skins.dat + drop learned recipes (a changed skin invalidates them). No per-tick file read
+    //    when nothing changed — just a cheap fingerprint stat + an atomic load.
     let fp = skins_fingerprint();
-    if fp != st.skin_fp {
+    let lver = loadout_version();
+    if fp != st.skin_fp || lver != st.last_loadout_ver {
         st.skin_fp = fp;
-        st.skins = load_local_skins();
+        st.last_loadout_ver = lver;
+        let mut merged = load_local_skins();
+        for (cid, ls) in server_loadout().lock().unwrap().iter() {
+            merged.insert(*cid, ls.clone()); // web loadout wins per-cid
+        }
+        st.skins = merged;
         regen_skins_dat(&st.skins);
         clear_pal_recipes();
-        trace(&format!("[painter] local skins reloaded ({} char(s))", st.skins.len()));
+        trace(&format!("[painter] skins rebuilt ({} char(s); loadout v{})", st.skins.len(), lver));
     }
-
-    // TODO(T5): apply cmd-channel skin — when the "change a skin from your phone" path lands, its pushed picks
-    // (cid → colors/sigs) merge into `st.skins` HERE (upsert), then regen_skins_dat(&st.skins) + clear_pal_recipes()
-    // so the next tick repaints. Nothing to do in T3 (local-first): the store is skins.json on disk.
 
     let view = reader::paint_view();
 
@@ -584,6 +627,7 @@ pub(crate) fn start_painter() {
             let mut st = PainterState {
                 skins: HashMap::new(),
                 skin_fp: String::new(),
+                last_loadout_ver: u64::MAX, // force a first merge even when the web loadout is empty (v0)
                 last_state: String::new(),
                 last_base: Instant::now() - Duration::from_secs(10),
             };

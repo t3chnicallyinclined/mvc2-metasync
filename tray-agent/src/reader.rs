@@ -171,6 +171,37 @@ pub fn ensure_registered(steamid: String) -> Result<(), String> {
     Ok(())
 }
 
+/// Phase 3: fetch THIS install's web-set loadout (per-character palettes) from the server. Returns
+/// (char-id, 16-colour palette) pairs, or None when unauthed / unreachable. The token binds the read to our
+/// own SteamID server-side, so we only ever receive our own picks. Bad/short entries are skipped, not fatal.
+pub fn fetch_loadout() -> Option<Vec<(u8, Vec<u32>)>> {
+    if auth_token().is_none() {
+        return None;
+    }
+    let v: serde_json::Value = auth_get(&format!("{}/loadout", SKINSYNC))
+        .timeout(std::time::Duration::from_secs(6))
+        .call()
+        .ok()?
+        .into_json()
+        .ok()?;
+    let arr = v.get("skins")?.as_array()?;
+    let out: Vec<(u8, Vec<u32>)> = arr
+        .iter()
+        .filter_map(|s| {
+            let cid = s.get("cid").and_then(|x| x.as_u64())? as u8;
+            let colors: Vec<u32> = s
+                .get("colors")?
+                .as_array()?
+                .iter()
+                .filter_map(|x| x.as_u64())
+                .map(|n| (n & 0xFF_FFFF) as u32)
+                .collect();
+            if colors.len() >= 16 { Some((cid, colors)) } else { None }
+        })
+        .collect();
+    Some(out)
+}
+
 // ---- team detection via per-character DAT signatures (see detect_state below) ----
 // Each fighter's decompressed DAT carries a unique 64-byte gfx1 chunk. When a character is
 // loaded for a match the game copies its DAT into a "working buffer" in the 0x10000000-0x14000000

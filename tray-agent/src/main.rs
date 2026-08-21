@@ -136,6 +136,10 @@ fn main() {
     // Local-first: no webview, no phone yet (the live "change a skin from your phone" push is T5). Returns immediately.
     painter::start_painter();
 
+    // Phase 3: poll our web-set loadout (the /app skin picker) in the background and mirror it into the
+    // painter's in-memory store — a skin picked on the web applies on the next match with no local files.
+    painter::start_loadout_sync();
+
     // Run the tray event loop on the main thread. Diverges — returns only when the user picks Quit, which
     // exits the process (and with it the background threads).
     tray::run();
