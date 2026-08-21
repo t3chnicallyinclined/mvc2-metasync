@@ -43,11 +43,22 @@ follow rejects a valid array → `game`/gamestate is never read.
   Live proof on the Bazzite box: `in_match=1`, real per-fighter health tracking (133→…→44 live), `[find] located
   live array (ptr)`, `fighters.txt` non-empty. **Bazzite match scoring + combat stats now read like Windows.**
   Expert sibling-scan: only WB_LO/HI needed changing (flycast_base/ARRAY_OFF are dead/harmless on Linux).
-- **NEXT (user's clean-architecture call): pointer-ONLY refactor.** The pointer chain is confirmed sufficient
-  on both platforms, so make it the SOLE locator and validate the array **address-agnostically** (health≤144 +
-  valid char_id + 70ms liveness — all pointer-relative) instead of the WB-range DatPal fingerprint, then DELETE
-  `find_array` + neuter the `paint_signatures` sig-scan. Removes the entire hardcoded-Windows-address bug class
-  (no is_wb/WB_LO/HI, no region caps to babysit) — deterministic-by-construction + faster on both. Expert-review it.
+- **NEXT (user's clean-architecture call): pointer-ONLY refactor — DESIGNED + expert-validated, READY TO APPLY.**
+  Exact diff (bazzite-linux-expert, live-verified on the box; deletes the cfg-split rather than adding branches):
+  - `reader.rs`: **delete** the `WB_LO`/`WB_HI` cfg-block + `is_wb`; **replace `array_valid`** with an
+    address-agnostic check — reject if any of 6 slots reads health >144; require ≥5/6 slots with `char_id ≤
+    MAX_CID` AND `DatPal != 0` (value test, not address range). `read_fighters` palette gate + the fingerprint
+    filter: `is_wb(dp)` → `dp != 0`. **Delete `find_array`** (zero call sites — pointer-follow replaces it) +
+    `pal_sig`. **Churn fix** (the 506-vs-69 `[find]` spam): the frozen-frame branch (`frozen_cycles>=3`) must
+    return `None` but **keep the cached `ram_base`** (drop the dead `ram_base=0` — a `find_array`-era reflex;
+    there's no "more-animating copy" to re-scan for). `hunt_frame_counter` + the anchor path stay.
+  - `painter.rs`: drop `is_wb`/`pal_sig`/`WB_LO`/`WB_HI` imports + `Instant`; `paint_live` gate `!is_wb(dp)` →
+    `dp==0`; **delete the entire APP-SIDE SIGNATURE PAINT section** (`paint_signatures` + `row_nib`/`sig_nib`/
+    `hexhi`/`hexbyte`/`row_from_hex`/`last_wb_pals`) + `PainterState.last_base` + its tick block/init.
+  - **Windows stays bit-for-bit correct** (real arrays: DatPals in-window ⟹ non-zero, char_id ≤ MAX_CID,
+    health ≤144 ⟹ new check accepts identically). One `array_valid`, NO `#[cfg]`. Re-test both: Win match still
+    scores + no per-cycle re-find; Linux holds + `[find]` churn collapses; grep shows no WB_LO/is_wb/find_array/
+    paint_signatures residue; `cargo check`/`build` warning-clean. Then formal 0.3.1 (both binaries + manifest).
 - **Formal release**: the fix is committed + hot-swapped on the user's box (verified). A proper 0.3.1 cross-
   platform release (rebuild+sign both binaries, agent-latest-linux.json) can bundle the pointer-only refactor.
 - **PARKED (future work, per user 2026-08-21)**: the skin **paint** (palette WRITE to fighters) on Proton —
