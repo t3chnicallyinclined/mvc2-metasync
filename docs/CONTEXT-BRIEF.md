@@ -24,6 +24,29 @@ fails CI on drift).
 
 ---
 
+## 2v. 0.3.0 Bazzite — THE PROTON READ BUG (found 2026-08-21, expert-diagnosed) — gates MATCH DATA, not just skins
+
+Live-diagnosed on the Bazzite box (direct `/proc/<pid>/mem` reads while in a round). **The RE is 100% correct
+on Proton** — proven live: exe_base=`0x140000000`, pointer chain `*(exe+0xac6ef0)+0x3f24` → the fighter array
+(read real char_ids + healths at stride 0x738), scene `*(*(exe+0xacd3a0)+0x8)`=5. The failure is ONE hardcoded
+Windows address: `is_wb()` (reader.rs ~1401) gates the array on DatPals in the WINDOWS working-buffer range
+`WB_LO=0x1000_0000..WB_HI=0x1420_0000`, but **Wine/Proton places the working buffer LOWER (~`0x0C000000`
+observed live)** → every DatPal fails `is_wb` → `array_valid` false → the (correct, deterministic) pointer-
+follow rejects a valid array → `game`/gamestate is never read.
+- **⚠ This is NOT just a skin bug.** `read_fighters`/`game` (the fighter array) drives **match scoring
+  (health→KO→winner, `update_score` @2184), combat stats (combo/damage/meters), and team detection** — so on
+  Bazzite a match is detected (roster via DAT sigs) but **NEVER reports a result**. The `is_wb` fix is the
+  MATCH-DATA fix. Land it. (Windows unaffected — its WB range is correct; all Linux work is cfg-gated.)
+- **Fix**: cfg-gate `WB_LO` lower on Linux to cover Wine's working buffer (exact bounds pending the
+  bazzite-linux-expert's live check of whether Wine's WB base is stable vs ASLR'd + a scan for sibling
+  hardcoded-Windows-address assumptions — `flycast_base`/reservation anchor, the `0x10000000` WB sig-scan
+  bounds). Then rebuild the Linux tray, redeploy, verify a live Bazzite match reports a correct scored result.
+- **PARKED (future work, per user 2026-08-21)**: the skin **paint** (palette WRITE to fighters) on Proton —
+  cosmetic, not the app's draw. The array READ fix above serves both, but we only *need* it for match/stats.
+- **Process**: created `~/.claude/agents/bazzite-linux-expert.md` — reviews ALL cross-platform code before it
+  ships (bakes in the Proton process-ambiguity, wine-helper `0x140000000` collision, short-reads, hardcoded-
+  address traps). Route cross-platform diffs through it.
+
 ## 2w. 0.3.0 — CROSS-PLATFORM TRAY (Windows + Linux/Bazzite), 2026-08-21 — awaiting live Bazzite test
 
 The tray goes cross-platform — this is the 0.3.0 cutover. **Empirically proven, expert-researched, no guessing:**
