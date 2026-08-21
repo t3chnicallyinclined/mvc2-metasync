@@ -1622,7 +1622,14 @@ fn read_gamestate_rpm(pid: u32, ram_base: &mut usize, last_find: &mut std::time:
                 // between-match copy — still NO struct-layout scan. Not the FPS-critical path, so the gate is fine.
                 *ram_base = pointer_follow_array(h, game_exe_base(pid)).unwrap_or(0);
             }
-            if *ram_base != 0 { trace(&format!("[find] located live array @ {:x} (ptr)", *ram_base)); }
+            if *ram_base != 0 {
+                // dedupe: only trace when the located base CHANGES. The frozen-frame drop (gs-103) makes this
+                // re-follow the SAME base every cycle during a KO freeze — logging each would spam the trace.
+                static LAST_FIND: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+                if LAST_FIND.swap(*ram_base, std::sync::atomic::Ordering::Relaxed) != *ram_base {
+                    trace(&format!("[find] located live array @ {:x} (ptr)", *ram_base));
+                }
+            }
         }
         let _ = last_find;
         // The fixed-anchor + last-base(hint) fallbacks are REMOVED. On this build the array RELOCATES every match
@@ -2526,11 +2533,15 @@ pub fn start_reader() {
                     let hh = game_liveness_hash(cur_pid, &g);
                     if hh != 0 && hh == prev_live_hash { frozen_cycles = frozen_cycles.saturating_add(1); }
                     else { frozen_cycles = 0; prev_live_hash = hh; }
-                    // ~1.2s byte-identical → not a live/current copy: surface NO game this cycle, but KEEP the
-                    // cached ram_base. The pointer-follow locator re-validates it (array_valid) every cycle and
-                    // re-acquires on the next live frame — there is no "more-animating copy" to re-scan for, so the
-                    // old find_array-era `ram_base = 0` reflex just forced a needless re-follow. (gs-102: pointer-only.)
-                    if frozen_cycles >= 3 { None } else { Some(g) }
+                    // ~1.2s byte-identical → a frozen/stale copy (KO freeze, between-games, menu). Surface NO game
+                    // AND DROP ram_base so the next cycle RE-FOLLOWS the pointer to the CURRENT match block. This is
+                    // ESSENTIAL: the array RELOCATES every game, but a just-ended game's block LINGERS valid-looking
+                    // (array_valid still passes on the frozen final frame), so WITHOUT the drop the reader PINS to
+                    // game 1's stale array and never advances to games 2..N → their wins are never scored. (gs-103:
+                    // the gs-102 "keep ram_base" broke SET reporting — only game 1 of a set recorded, score stuck 0-0.
+                    // 0.3.1 shipped that regression.) The re-follow is O(1) (pointer, not a scan); the [find] trace is
+                    // deduped so re-acquiring the same base during a freeze doesn't spam.
+                    if frozen_cycles >= 3 { ram_base = 0; None } else { Some(g) }
                 }
                 None => { frozen_cycles = 0; None }
             };
