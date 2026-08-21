@@ -109,8 +109,25 @@ const LOBBY_OPP_GAP:     usize = 0x148;     // opp SteamID addr = (addr holding 
 const LOBBY_OPP_NAME:    usize = 0x184;     // opp persona addr  = (addr holding OUR id) + this  (= opp id addr + 0x3c)
 
 // ── (4) limits / ranges ──
+// working-buffer pointer window — a fighter's DatPal (cl+0x4c) MUST fall in [WB_LO,WB_HI) for is_wb() to accept it
+// (array_valid / read_fighters palette read / find_array predicate / painter.rs paint_signatures scan).
+// ⚠ PLATFORM-SPLIT (Linux value added 2026-08-21, live-proven on the Bazzite box, game pid 0x1f0cc5): on WINDOWS
+// the per-match DAT copies sit in a ~66MB band at 0x10000000-0x14200000. Under PROTON/WINE the game's whole low
+// guest heap is ONE big rw-p reservation (live: [0x02ce2000,0x2f3f0000], 711MB) and the working buffers ROAM
+// within it — the SAME launch was observed with DatPals at 0x07xxxxxx (mvc_anchors work-span) AND 0x0Cxxxxxx (live)
+// — so the narrow Windows band matches 0/6 DatPals → is_wb fails every slot → array_valid=false → pointer_follow
+// rejects a VALID array → permanent "no gamestate", NO match scoring/stats, skins never paint. The Linux window
+// brackets that whole reservation and is IDENTICAL to the sig-scan cold window (rpm_occurrences 0x0200_0000..
+// 0x4000_0000), which has read rosters correctly across every relaunch in the trace log → proven cross-relaunch-
+// robust for exactly these pointers. A narrow Linux band would break between matches (the WB roams). Windows UNCHANGED.
+#[cfg(windows)]
 pub(crate) const WB_LO: u32 = 0x1000_0000;       // working-buffer pointer range LO (each fighter's own DAT region)
+#[cfg(windows)]
 pub(crate) const WB_HI: u32 = 0x1420_0000;       // working-buffer pointer range HI
+#[cfg(unix)]
+pub(crate) const WB_LO: u32 = 0x0200_0000;       // Proton: = sig-scan cold-window LO; low edge of the guest heap
+#[cfg(unix)]
+pub(crate) const WB_HI: u32 = 0x4000_0000;       // Proton: = sig-scan cold-window HI + region cap; brackets [0x02ce2000,0x2f3f0000]
 const HP_FULL: u16 = 144;             // full health
 pub(crate) const MAX_CID: u8 = 0x3A;             // Servbot = highest CPS2 unit id (58)
 
