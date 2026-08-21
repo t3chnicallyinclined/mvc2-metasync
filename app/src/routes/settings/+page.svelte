@@ -118,6 +118,18 @@
 	{/if}
 </div>
 
+<!-- Skins loadout — signed-in only -->
+{#if auth.authed}
+	<div class="rail sec-hd">Skins</div>
+	<a class="card skinlink" href="{base}/skins">
+		<div class="rowlabel">
+			<b>Skin loadout 🎨</b>
+			<span class="sub">Pick each character’s palette — your agent paints it live in your matches.</span>
+		</div>
+		<span class="chev" aria-hidden="true">›</span>
+	</a>
+{/if}
+
 <!-- Wallet (🪙 quarters) — signed-in only -->
 {#if auth.authed}
 	<div class="rail sec-hd">Wallet</div>
@@ -509,5 +521,26 @@
 		.row {
 			flex-wrap: wrap;
 		}
+	}
+	.skinlink {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: 10px;
+		text-decoration: none;
+		color: inherit;
+		transition: border-color 0.15s;
+	}
+	.skinlink:hover {
+		border-color: var(--gold-soft);
+	}
+	.skinlink .chev {
+		flex: none;
+		font-size: 20px;
+		font-weight: 700;
+		color: var(--faint);
+	}
+	.skinlink:hover .chev {
+		color: var(--gold);
 	}
 </style>
