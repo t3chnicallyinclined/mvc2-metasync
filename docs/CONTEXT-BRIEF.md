@@ -175,13 +175,18 @@ Goal: now-playing cards show the running set score live; SessionModal live-updat
 
 ---
 
-## 6. Known debt / latent bugs (not urgent, don't forget)
+## 6. Known debt / latent bugs
 
-- ⚠ **`matches.json` 5000-game ring** — once lifetime matches cross 5k, ring eviction corrupts lifetime
-  stats (ELO replay reads a truncated history). **Fix before 5k**: migrate append-only store to JSONL
-  (unbounded, streamed) so nothing is evicted. Currently well under 5k.
-- **`backfill_steam_profiles`** does a ~4s SYNC HTTP call on the single request thread (`app.rs:853`) →
-  head-of-line blocks other requests during backfill. Move off-thread. Deferred.
+- ✅ **`matches.json` eviction** — FIXED (2026-08-20). `record_result` no longer drains the oldest matches;
+  the log is the append-only SSOT replayed into records.json, so eviction eroded lifetime stats.
+  `MATCHES_CAP` is now a soft warn only. (If persist()'s full-file rewrite ever gets large — many tens of
+  thousands of matches — migrate to a JSONL/event-sourced store; the `verified` flip makes pure append-only
+  need event-sourcing, which is why we removed the cap rather than switching format now.)
+- ✅ **`backfill_steam_profiles` off-thread** — FIXED (2026-08-20). Misses enqueue to a detached resolver
+  thread; results land in an inbox drained at the top of `handle()` (in-flight set dedupes). No more ~4s
+  request-thread stall — cache-miss names resolve on the next lookup.
+- ✅ **Rank reconcile** — NO-OP: server `elo::rank_tier` and client `$lib/ranks RANK_TIERS` already match
+  exactly (Iron→…→Galactus, 5-game Civilian gate). The old "Silver mismatch" note was stale.
 - **28 mislabeled games** (ranked recorded as lobby pre-fix) left as-is (safe default). Can flip specific
   known-ranked sets if the user identifies them.
 
