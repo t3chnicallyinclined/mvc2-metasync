@@ -37,10 +37,19 @@ follow rejects a valid array → `game`/gamestate is never read.
   (health→KO→winner, `update_score` @2184), combat stats (combo/damage/meters), and team detection** — so on
   Bazzite a match is detected (roster via DAT sigs) but **NEVER reports a result**. The `is_wb` fix is the
   MATCH-DATA fix. Land it. (Windows unaffected — its WB range is correct; all Linux work is cfg-gated.)
-- **Fix**: cfg-gate `WB_LO` lower on Linux to cover Wine's working buffer (exact bounds pending the
-  bazzite-linux-expert's live check of whether Wine's WB base is stable vs ASLR'd + a scan for sibling
-  hardcoded-Windows-address assumptions — `flycast_base`/reservation anchor, the `0x10000000` WB sig-scan
-  bounds). Then rebuild the Linux tray, redeploy, verify a live Bazzite match reports a correct scored result.
+- ✅ **FIXED + LIVE-VERIFIED (2026-08-21, commit c82b60f).** cfg-gated the Linux WB window to the sig-scan cold
+  window `[0x0200_0000, 0x4000_0000)` (expert-validated: Wine's WB *roams* within one 711MB heap, so the whole-
+  reservation window is the ASLR-tolerant bound; a narrow band would break between matches). Windows UNCHANGED.
+  Live proof on the Bazzite box: `in_match=1`, real per-fighter health tracking (133→…→44 live), `[find] located
+  live array (ptr)`, `fighters.txt` non-empty. **Bazzite match scoring + combat stats now read like Windows.**
+  Expert sibling-scan: only WB_LO/HI needed changing (flycast_base/ARRAY_OFF are dead/harmless on Linux).
+- **NEXT (user's clean-architecture call): pointer-ONLY refactor.** The pointer chain is confirmed sufficient
+  on both platforms, so make it the SOLE locator and validate the array **address-agnostically** (health≤144 +
+  valid char_id + 70ms liveness — all pointer-relative) instead of the WB-range DatPal fingerprint, then DELETE
+  `find_array` + neuter the `paint_signatures` sig-scan. Removes the entire hardcoded-Windows-address bug class
+  (no is_wb/WB_LO/HI, no region caps to babysit) — deterministic-by-construction + faster on both. Expert-review it.
+- **Formal release**: the fix is committed + hot-swapped on the user's box (verified). A proper 0.3.1 cross-
+  platform release (rebuild+sign both binaries, agent-latest-linux.json) can bundle the pointer-only refactor.
 - **PARKED (future work, per user 2026-08-21)**: the skin **paint** (palette WRITE to fighters) on Proton —
   cosmetic, not the app's draw. The array READ fix above serves both, but we only *need* it for match/stats.
 - **Process**: created `~/.claude/agents/bazzite-linux-expert.md` — reviews ALL cross-platform code before it
