@@ -24,6 +24,28 @@ fails CI on drift).
 
 ---
 
+## 2w. 0.3.0 — CROSS-PLATFORM TRAY (Windows + Linux/Bazzite), 2026-08-21 — awaiting live Bazzite test
+
+The tray goes cross-platform — this is the 0.3.0 cutover. **Empirically proven, expert-researched, no guessing:**
+- **Builds + runs on Bazzite.** Built in the Beelink `tauri44` (F44) distrobox; the resulting plain ELF has
+  **70 NEEDED libs, 0 unsatisfied on the Bazzite host** — `tray-icon`/`tao`/`muda` need gtk3 + libxdo (both on
+  the host) and appindicator is **dlopen'd with a fallback chain** (`libayatana-…` → the host's
+  `libappindicator3.so.1`). So **plain ELF, no AppImage/flatpak/container** for this box.
+- **Tray shows natively.** Bazzite's default DE is **KDE Plasma**, which hosts `org.kde.StatusNotifierWatcher`
+  out of the box → the icon appears with zero extra setup. (GNOME image ships the AppIndicator extension.)
+- **Autostart + self-update already correct on Linux.** `autostart.rs` writes an XDG
+  `~/.config/autostart/*.desktop` (honored by KDE + GNOME, fires after the session bus); `self_replace` does
+  the atomic-rename-over-`~/.local/bin` the Linux way (no ETXTBSY). memory read needs `ptrace_scope=0` (Fedora
+  default; the installer checks + tells you how to set it).
+- **Shipped**: per-platform `UPDATE_MANIFEST` cfg-gate (Linux → `agent-latest-linux.json`). `v0.3.0` GitHub
+  release carries **both** `metasync-agent.exe` and `metasync-agent-linux` (+ sigs, served==signed). Both
+  manifests live at 0.3.0. PWA at 0.3.0. **One-shot installer** `nobd.net/skinsync/update/install-bazzite.sh`
+  (download → `~/.local/bin` → launch → self-registers autostart + tray).
+- **REMAINING**: (1) live Bazzite install test (the user runs the one-liner). (2) once confirmed, **retire the
+  Tauri app** — migration note for Bazzite users + unfreeze the release train from the frozen 0.2.6. Research
+  aside: a future `ksni` (pure-Rust D-Bus SNI) Linux tray backend would drop the gtk/appindicator/xdo link
+  entirely (cleaner for portability) — optional, not needed for this box.
+
 ## 2x. 0.2.9 — SHIPPED (Phase 3 web skin picker, the tray-only unlock), 2026-08-20
 
 The web is now the skin picker; the tray applies. This is what makes tray-only viable (the last real reason
