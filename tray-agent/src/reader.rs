@@ -2273,23 +2273,41 @@ fn roster_ids(r: &[Found]) -> Vec<u32> { r.iter().map(|f| f.cid).collect() }
 // returns an error on bad memory — it never faults the game or us, unlike in-process pointer reads).
 unsafe fn rpm_occurrences(h: &mem::Proc, lo: usize, hi: usize) -> Vec<(usize, u32, String)> {
     let (sigs, buckets) = sigtab();
+    // CHUNKED region read (was ONE read of the whole [a,b) span). Under Proton the guest RAM consolidates into a
+    // single ~728 MB rw-p region, so the old single process_vm_readv allocated + page-faulted + copied ~728 MB
+    // every scan → the Bazzite/Deck CPU cliff. We now read the span in bounded 8 MB pieces (same 8 MB chunk +
+    // partial-read tolerance as scan_region_sids / read_my_lobby above). This changes ONLY how bytes are read —
+    // the sig-match logic and the returned occurrence set are unchanged. A signature is SIG_LEN (64) bytes, so
+    // consecutive chunks OVERLAP by SIG_LEN-1 (63) bytes: every 64-byte window whose START lies inside a chunk
+    // fits wholly within that chunk, so a signature straddling an 8 MB boundary is still matched. Advancing the
+    // chunk start by CHUNK-(SIG_LEN-1) makes each chunk own a DISJOINT set of start positions (chunk k checks
+    // starts up to cs+len-SIG_LEN; the next chunk starts at cs+CHUNK-(SIG_LEN-1), exactly one past it) — so the
+    // union of checked start positions is precisely [a, b-SIG_LEN], identical to the old whole-region scan, with
+    // no position scanned twice (hence no double-counting, and no dedup needed).
+    const CHUNK: usize = 0x80_0000;     // 8 MB — matches the other chunked region scans in this file
+    const SIG_LEN: usize = 64;          // == Sig::bytes length; the chunk overlap is SIG_LEN-1
     let mut occ = Vec::new();
     for r in h.regions() {
         let base = r.base; let size = r.size;
         if r.readable && base < hi && base + size > lo {
             let a = base.max(lo); let b = (base + size).min(hi);
-            if let Some(buf) = read_at(h, a, b - a) {
-                if buf.len() >= 64 {
-                    let end = buf.len() - 64;
-                    let mut i = 0;
-                    while i <= end {
-                        for &si in &buckets[buf[i] as usize] {
-                            let s = &sigs[si];
-                            if buf[i..i + 64] == s.bytes { occ.push((a + i, s.cid, s.name.clone())); }
+            let mut cs = a;
+            while cs + SIG_LEN <= b {                       // only chunk starts with room for a full signature window
+                let want = (b - cs).min(CHUNK);
+                if let Some(buf) = read_at(h, cs, want) {
+                    if buf.len() >= SIG_LEN {
+                        let end = buf.len() - SIG_LEN;
+                        let mut i = 0;
+                        while i <= end {
+                            for &si in &buckets[buf[i] as usize] {
+                                let s = &sigs[si];
+                                if buf[i..i + SIG_LEN] == s.bytes { occ.push((cs + i, s.cid, s.name.clone())); }
+                            }
+                            i += 1;
                         }
-                        i += 1;
                     }
                 }
+                cs += CHUNK - (SIG_LEN - 1);               // advance keeping a 63-byte overlap so a boundary-straddling sig is still found
             }
         }
     }
