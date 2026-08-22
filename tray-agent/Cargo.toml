@@ -1,6 +1,6 @@
 [package]
 name = "metasync-agent"
-version = "0.3.4"  # LOCKSTEP with the MetaSync release train (latest.json / GitHub release). 0.3.4 = reader SELF-HEAL (supervisor respawns a dead reader + liveness watchdog restarts a hung one + tray health indicator) + Proton perf-cliff fix (chunked roster scan) + Linux "Host lobbies" toggle.
+version = "0.3.5"  # LOCKSTEP with the MetaSync release train (latest.json / GitHub release). 0.3.5 = update-available heads-up (non-modal toast + "🔔 Update ready" tray row + 3h re-check) + Proton idle-scan back-off (the REAL CPU fix — rate-limits the 896MB blind scan when idle, full cadence in-fight).
 description = "MetaSync tray agent — headless Windows tray companion that reads MvC2 memory, applies skins, and reports matches (replaces the Tauri webview)"
 authors = ["tristech"]
 edition = "2021"
