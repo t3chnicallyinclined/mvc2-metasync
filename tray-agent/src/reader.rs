@@ -532,7 +532,7 @@ unsafe fn finish_opp(h: &mem::Proc, my_addrs: &[usize], cand: &HashMap<u64, Vec<
 
 // DETERMINISTIC opponent + side. Three tiers, fastest first: FAST (cached slot, re-validated) → WARM (cached
 // region scan) → COLD (full sweep, first lock of a launch). Returns (opp_id, name, local_side 1/2/0).
-fn find_opponent_netplay(pid: u32, my_id: u64, cache: &mut Option<(usize, u8, String, u64)>, region: &mut Option<(usize, usize)>) -> Option<(u64, String, u8)> {
+fn find_opponent_netplay(pid: u32, my_id: u64, cache: &mut Option<(usize, u8, String, u64)>, region: &mut Option<(usize, usize)>, allow_cold: bool) -> Option<(u64, String, u8)> {
     if pid == 0 || my_id == 0 { return None; }
     let proc = mem::Proc::open_read(pid)?;
     let h = &proc;
@@ -570,6 +570,11 @@ fn find_opponent_netplay(pid: u32, my_id: u64, cache: &mut Option<(usize, u8, St
             // stale region (new session elsewhere) → fall through to the full sweep, which refreshes it
         }
         // 3. COLD PATH — full committed-memory sweep (readable regions, exactly as the old VirtualQueryEx walk).
+        // Proton CPU-cliff throttle: this blind full-memory sweep is rate-limited by the caller while idle/searching
+        // (allow_cold=false → skip it this cycle, return None). The FAST + WARM tiers above are NOT gated, so a
+        // cached/held opponent still re-validates EVERY cycle; only this cold first-acquire is paced. When a match is
+        // live (caller sets allow_cold on roster/live-fight) it runs at full cadence, so match-start never lags.
+        if !allow_cold { return None; }
         let mut my_addrs: Vec<usize> = Vec::new();
         let mut cand: HashMap<u64, Vec<usize>> = HashMap::new();
         for r in h.regions() {
@@ -602,7 +607,7 @@ fn name_fwd_rpm(h: &mem::Proc, addr: usize) -> String {
 // and can't misfire in ranked. On success it also PRIMES `cache` — the same slot find_opponent_netplay's fast
 // path re-validates — so subsequent cycles re-confirm the opponent cheaply instead of re-sweeping. RPM
 // read-only. Returns (opp_id, name, local_side 1/2/0) — side comes from localPlayerNum, exactly like ranked.
-fn find_opponent_lobby(pid: u32, my_id: u64, exe_base: usize, cache: &mut Option<(usize, u8, String, u64)>) -> Option<(u64, String, u8)> {
+fn find_opponent_lobby(pid: u32, my_id: u64, exe_base: usize, cache: &mut Option<(usize, u8, String, u64)>, allow_cold: bool) -> Option<(u64, String, u8)> {
     if pid == 0 || my_id == 0 || exe_base == 0 { return None; }
     let proc = mem::Proc::open_read(pid)?;
     let h = &proc;
@@ -617,6 +622,12 @@ fn find_opponent_lobby(pid: u32, my_id: u64, exe_base: usize, cache: &mut Option
         let net_ok = read_at(h, session + LOBBY_NETSESS_OFF, 4).filter(|b| b.len() >= 4)
             .map(|b| i32::from_le_bytes([b[0],b[1],b[2],b[3]])).map_or(false, |v| v >= 0);
         if !(hosted && net_ok) { return None; }
+        // Proton CPU-cliff throttle: past the cheap O(1) lobby gate, the rest of this function is a full committed-
+        // memory sweep (the second idle cliff — it re-walked ~896MB EVERY cycle while parked in a lobby with no
+        // opponent yet). The caller rate-limits it while idle/searching (allow_cold=false → bail after the cheap
+        // gate). Detection stays prompt: full cadence resumes the instant a fight goes live, and the caller's idle
+        // floor still fires this at least once per IDLE_OPP_SWEEP_MS so a newly-joined opponent locks without a stall.
+        if !allow_cold { return None; }
 
         // side from flycast localPlayerNum (0=P1→1, 1=P2→2; else unknown). Downstream ignores this for stats
         // (manual gate) but uses it for the team label, same as the ranked path.
@@ -2494,6 +2505,10 @@ fn reader_loop() {
         let mut last_wide = std::time::Instant::now() - std::time::Duration::from_secs(60); // idle throttle for the
                                                      // full-window sig-scan (the Proton CPU cliff). Seeded "long ago"
                                                      // so the first cold scan fires immediately (no cold-start lag).
+        let mut last_opp_sweep = std::time::Instant::now() - std::time::Duration::from_secs(60); // idle throttle for
+                                                     // the COLD opponent full-memory sweeps (the OTHER Proton cliff,
+                                                     // seen while searching/parked in a lobby). Seeded "long ago" so
+                                                     // the first opponent lock of a launch is never delayed.
         let mut opp: Option<(String, String)> = None;
         let mut opp_backoff: i32 = 0;
         let mut opp_pending: Option<String> = None;  // a DIFFERENT candidate id; must persist 2 scans to swap (anti-flip)
@@ -2649,11 +2664,27 @@ fn reader_loop() {
             // (cheap → effectively every cycle for responsive liveness); only the COLD full scan is paced by backoff.
             if opp_addr.is_some() || opp_backoff <= 0 {
                 let my_id = read_self_id().unwrap_or(0);
+                // ── PROTON CPU-CLIFF THROTTLE (opponent sweeps) ── mirror the roster-scan throttle for the two COLD
+                // full-memory sweeps below (find_opponent_netplay's cold path + find_opponent_lobby's sweep), which
+                // otherwise re-walk all committed memory EVERY cycle while SEARCHING (opp==None, parked in a lobby) —
+                // the second measured Proton idle cliff (~69% CPU). allow_cold is full cadence while there's REAL
+                // match activity (fighters present last cycle OR a live fight just seen), else rate-limited to
+                // IDLE_OPP_SWEEP_MS. Gauged from roster + live_seen ONLY — NOT in_session / a sticky opponent name.
+                // ⚠ allow_cold gates ONLY the COLD sweep inside each fn; the FAST (cached opp_addr slot) + WARM
+                // (cached opp_region) re-locks run every cycle regardless, so a HELD opponent keeps re-validating
+                // without lag and the anti-flip / opp_pending / OUT_TIMEOUT drop logic below is unchanged. Separate
+                // timer from last_wide so the roster scan and opponent sweep never starve each other of their slots.
+                const IDLE_OPP_SWEEP_MS: u128 = 1500;   // max spacing between cold opponent sweeps while truly idle
+                const LIVE_ACTIVE_SECS: u64 = 3;        // "recently in a live fight" window that forces full cadence
+                let allow_cold = !roster.is_empty()
+                    || live_seen.map_or(false, |t| t.elapsed().as_secs() < LIVE_ACTIVE_SECS)
+                    || last_opp_sweep.elapsed().as_millis() >= IDLE_OPP_SWEEP_MS;
+                if allow_cold { last_opp_sweep = std::time::Instant::now(); }
                 // ranked (netplay pairing geometry) FIRST; hosted-lobby MemberInfo scan as the ADDITIVE fallback
                 // (returns None instantly outside a hosted lobby). Both feed the SAME opp_addr cache + downstream
                 // flow, so the sticky-opponent / side / /peers logic below is identical for ranked and lobby.
-                let resolved = find_opponent_netplay(cur_pid, my_id, &mut opp_addr, &mut opp_region);
-                let resolved = resolved.or_else(|| find_opponent_lobby(cur_pid, my_id, exe_base, &mut opp_addr));
+                let resolved = find_opponent_netplay(cur_pid, my_id, &mut opp_addr, &mut opp_region, allow_cold);
+                let resolved = resolved.or_else(|| find_opponent_lobby(cur_pid, my_id, exe_base, &mut opp_addr, allow_cold));
                 match resolved {
                     Some((oid, onm, oside)) => {
                         // DETERMINISTIC → lock immediately (no anti-flip). Cached slot makes re-validation near-free.
