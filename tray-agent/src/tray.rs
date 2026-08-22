@@ -3,10 +3,13 @@
 //   • "MetaSync Agent · v{VERSION}"  (disabled header)
 //   • "🎮 {status}"                  (disabled; reader::status_line(), refreshed on the 1s timer)
 //   • "Signed in as {name}"          (disabled; reader::signed_in_name(), "Steam not detected" when none)
+//   • "🎛 HOST MODE — …"            (disabled; blank unless HOST_MODE — "don't play on this machine" banner)
 //   • ── separator ──
 //   • "Open MetaSync"                — opens the web app (config::WEB_APP) in the default browser
 //   • "Apply my skins" (✓)          — checkable, PERSISTED pref; gates the painter (painter::SKINS_ENABLED)
 //   • "Pause reporting" (✓)          — checkable, session-only; gates the reader's reports (reader::PAUSED)
+//   • "Host lobbies (this machine)" (✓) — checkable, PERSISTED; LINUX-ONLY (greyed on Windows); shells out to
+//                                     the arcade_hostd.sh daemon (host.rs) to register/unregister this host
 //   • ── separator ──
 //   • "Check for updates"            — runs updater::check_for_update on a thread; result reflected in the text
 //   • "Open logs folder"            — opens runtime_dir() in Explorer
@@ -23,7 +26,7 @@
 // back through the EventLoopProxy (UserEvent::UpdateResult); the loop — on the main thread, which owns the item —
 // applies set_text. This is the proxy path the task allowed, and here it's also the only sound one.
 
-use crate::{autostart, config, painter, prefs, reader, updater};
+use crate::{autostart, config, host, painter, prefs, reader, updater};
 use muda::{CheckMenuItem, Menu, MenuEvent, MenuId, MenuItem, PredefinedMenuItem};
 use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
@@ -79,6 +82,7 @@ struct MenuHandles {
     open_id: MenuId,
     apply_skins_id: MenuId,
     pause_id: MenuId,
+    host_id: MenuId,
     updates_id: MenuId,
     logs_id: MenuId,
     autostart_id: MenuId,
@@ -86,11 +90,14 @@ struct MenuHandles {
     // Item handles whose state/text we mutate at runtime.
     apply_skins_item: CheckMenuItem,
     pause_item: CheckMenuItem,
+    host_item: CheckMenuItem,
     autostart_item: CheckMenuItem,
     updates_item: MenuItem,
     // Disabled rows refreshed each second from the reader.
     status_item: MenuItem,
     signed_item: MenuItem,
+    // Disabled banner row: shows the "don't play on this machine" warning while HOST_MODE is on, else blank.
+    host_indicator: MenuItem,
 }
 
 /// "Signed in as {name}" / "Steam not detected" — the identity row text, sourced from the reader.
@@ -98,6 +105,16 @@ fn signed_in_text() -> String {
     match reader::signed_in_name() {
         Some(n) => format!("Signed in as {}", n),
         None => "Steam not detected".into(),
+    }
+}
+
+/// The HOST MODE banner text: a loud "don't play here" warning while hosting is active, else "" (blank row).
+/// A host box must NOT be played on (same Steam account can't host AND play), so this stays prominent.
+fn host_indicator_text() -> String {
+    if host::HOST_MODE.load(Ordering::Relaxed) {
+        "🎛 HOST MODE — don't play on this machine".into()
+    } else {
+        String::new()
     }
 }
 
@@ -109,6 +126,9 @@ fn build_menu() -> (Menu, MenuHandles) {
     let header = MenuItem::new(format!("MetaSync Agent · v{}", config::VERSION), false, None);
     let status = MenuItem::new(reader::status_line(), false, None);
     let signed = MenuItem::new(signed_in_text(), false, None);
+    // Prominent, disabled banner shown only while this box is a host. Blank (empty row) otherwise; text is
+    // (re)set by refresh_dynamic. HOST_MODE was reconciled from the live service in main() before this runs.
+    let host_indicator = MenuItem::new(host_indicator_text(), false, None);
     let sep1 = PredefinedMenuItem::separator();
 
     let open = MenuItem::new("Open MetaSync", true, None);
@@ -120,6 +140,18 @@ fn build_menu() -> (Menu, MenuHandles) {
         None,
     );
     let pause = CheckMenuItem::new("Pause reporting", true, reader::PAUSED.load(Ordering::Relaxed), None);
+    // "Host lobbies (this machine)" — makes this box an arcade/tournament host node. LINUX-ONLY: on Windows
+    // it's created DISABLED (greyed) with a "Linux only" label, since auto-hosting isn't supported there yet.
+    // Initial check state = HOST_MODE, which main() reconciled from the live systemd --user service at startup.
+    #[cfg(target_os = "linux")]
+    let host_toggle = CheckMenuItem::new(
+        "Host lobbies (this machine)",
+        true,
+        host::HOST_MODE.load(Ordering::Relaxed),
+        None,
+    );
+    #[cfg(not(target_os = "linux"))]
+    let host_toggle = CheckMenuItem::new("Host lobbies — Linux only (Windows soon)", false, false, None);
     let sep2 = PredefinedMenuItem::separator();
 
     let updates = MenuItem::new("Check for updates", true, None);
@@ -135,10 +167,12 @@ fn build_menu() -> (Menu, MenuHandles) {
         &header,
         &status,
         &signed,
+        &host_indicator,
         &sep1,
         &open,
         &apply_skins,
         &pause,
+        &host_toggle,
         &sep2,
         &updates,
         &logs,
@@ -151,16 +185,19 @@ fn build_menu() -> (Menu, MenuHandles) {
         open_id: open.id().clone(),
         apply_skins_id: apply_skins.id().clone(),
         pause_id: pause.id().clone(),
+        host_id: host_toggle.id().clone(),
         updates_id: updates.id().clone(),
         logs_id: logs.id().clone(),
         autostart_id: autostart_item.id().clone(),
         quit_id: quit.id().clone(),
         apply_skins_item: apply_skins,
         pause_item: pause,
+        host_item: host_toggle,
         autostart_item,
         updates_item: updates,
         status_item: status,
         signed_item: signed,
+        host_indicator,
     };
     (menu, handles)
 }
@@ -170,6 +207,7 @@ fn refresh_dynamic(handles: &MenuHandles, tray: &Option<TrayIcon>) {
     let line = reader::status_line();
     handles.status_item.set_text(&line);
     handles.signed_item.set_text(signed_in_text());
+    handles.host_indicator.set_text(host_indicator_text());
     if let Some(t) = tray {
         let _ = t.set_tooltip(Some(&line));
     }
@@ -247,6 +285,31 @@ pub fn run() -> ! {
                     // Session-only: mirror the check state into the reader's report gate (not persisted).
                     let paused = handles.pause_item.is_checked();
                     reader::PAUSED.store(paused, Ordering::Relaxed);
+                } else if ev.id == handles.host_id {
+                    // muda already flipped the check state. ON → make this box a host (shell out to the daemon)
+                    // + persist; OFF → stop hosting + persist. A REFUSED enable (Windows, or the host scripts
+                    // aren't installed) must NOT leave the item showing ON — revert the checkbox so it never
+                    // lies about the real host state, same as the autostart toggle below.
+                    let want = handles.host_item.is_checked();
+                    if want {
+                        match host::host_enable() {
+                            Ok(()) => {
+                                host::HOST_MODE.store(true, Ordering::Relaxed);
+                                prefs::save_host_mode(true);
+                            }
+                            Err(e) => {
+                                eprintln!("[tray] host enable refused: {e}");
+                                handles.host_item.set_checked(false);
+                                host::HOST_MODE.store(false, Ordering::Relaxed);
+                            }
+                        }
+                    } else {
+                        host::HOST_MODE.store(false, Ordering::Relaxed);
+                        prefs::save_host_mode(false);
+                        host::host_disable();
+                    }
+                    // Reflect the HOST MODE banner immediately rather than waiting for the 1s tick.
+                    refresh_dynamic(&handles, &tray);
                 } else if ev.id == handles.updates_id {
                     // Check off-thread, then INSTALL if an update is offered and it's safe (no game running).
                     // Feedback comes back via UpdateResult (the menu item is Rc-backed → can't cross threads).

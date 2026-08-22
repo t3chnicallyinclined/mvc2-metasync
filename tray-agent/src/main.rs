@@ -34,6 +34,9 @@ mod reader;
 mod painter;
 
 mod autostart;
+// "Host lobbies (this machine)" — Linux-only arcade/tournament host toggle. Shells out to an external
+// systemd --user daemon (arcade_hostd.sh); no-op on Windows. See host.rs.
+mod host;
 // Persisted tray preferences (prefs.json) — currently just the "Apply my skins" toggle restored below.
 mod prefs;
 // Machine-wide single-instance guard (named mutex on Windows / flock on Unix). Called first in main().
@@ -116,6 +119,22 @@ fn main() {
     // Restore the persisted "Apply my skins" preference (default ON) into the painter's gate BEFORE the painter
     // starts, so a user who turned skins off stays off across restarts without a first paint slipping through.
     painter::SKINS_ENABLED.store(prefs::load_apply_skins(), std::sync::atomic::Ordering::Relaxed);
+
+    // "Host lobbies (this machine)" reflects the LIVE systemd --user service, not a stored flag: reconcile
+    // HOST_MODE from the daemon's own `status` so a host enabled in a prior session comes up ON here (and the
+    // tray's "don't play on this machine" banner shows). We do NOT auto-enable — this only mirrors reality.
+    // The saved pref (load_host_mode) is a breadcrumb of intent, surfaced in the startup log; the service wins.
+    let host_st = host::host_status();
+    host::HOST_MODE.store(host_st.active, std::sync::atomic::Ordering::Relaxed);
+    if host_st.supported {
+        eprintln!(
+            "[host] startup: active={} installed={} (saved intent={}) — {}",
+            host_st.active,
+            host_st.installed,
+            prefs::load_host_mode(),
+            host_st.detail
+        );
+    }
 
     // "Start with Windows" is ON by DEFAULT: until the user makes an explicit choice in the tray, every launch
     // re-asserts the Run-key autostart (which also self-heals a stale path after a move/reinstall/auto-update).

@@ -7,6 +7,9 @@
 //     move/reinstall). Once the user toggles it in the tray we record their choice here and honor it forever —
 //     so an explicit OFF is never re-enabled behind their back, and an explicit ON is kept fresh.
 //   • `autostart_initialized` (LEGACY, ignored) — a former first-run-only flag; superseded by `autostart_choice`.
+//   • `host_mode` (bool, default false) — the "Host lobbies (this machine)" toggle. Records that this box was
+//     deliberately made an arcade/tournament host; the live systemd --user service is authoritative, so startup
+//     reconciles the tray toggle from `host::host_status()` rather than trusting this alone.
 // Session-only prefs (e.g. "Pause reporting") are deliberately NOT stored — they reset every launch by design.
 //
 // Reads default safely (absent / blank / malformed → the default); writes are best-effort. Every write does a
@@ -37,6 +40,20 @@ pub fn load_apply_skins() -> bool {
 pub fn save_apply_skins(on: bool) {
     let mut m = load_obj();
     m.insert("apply_skins".into(), on.into());
+    save_obj(&m);
+}
+
+/// The "Host lobbies (this machine)" preference. Defaults to `false` (not a host) when missing/blank/malformed.
+/// Persisted so a machine deliberately made a host stays one across restarts; the actual service state is
+/// still authoritative (startup reconciles the toggle from `host::host_status()`).
+pub fn load_host_mode() -> bool {
+    load_obj().get("host_mode").and_then(|x| x.as_bool()).unwrap_or(false)
+}
+
+/// Persist "Host lobbies (this machine)" (preserves the other keys).
+pub fn save_host_mode(on: bool) {
+    let mut m = load_obj();
+    m.insert("host_mode".into(), on.into());
     save_obj(&m);
 }
 
