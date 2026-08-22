@@ -2491,6 +2491,9 @@ fn reader_loop() {
         let mut stable: u32 = 0;
         let mut work: Option<(usize, usize)> = None; // located team region (cheap-tracked between relocates)
         let mut empty_streak: u32 = 0;               // consecutive empty track cycles before a wide relocate
+        let mut last_wide = std::time::Instant::now() - std::time::Duration::from_secs(60); // idle throttle for the
+                                                     // full-window sig-scan (the Proton CPU cliff). Seeded "long ago"
+                                                     // so the first cold scan fires immediately (no cold-start lag).
         let mut opp: Option<(String, String)> = None;
         let mut opp_backoff: i32 = 0;
         let mut opp_pending: Option<String> = None;  // a DIFFERENT candidate id; must persist 2 scans to swap (anti-flip)
@@ -2592,12 +2595,37 @@ fn reader_loop() {
             } else {
                 empty_streak += 1;
                 if work.is_none() || empty_streak >= 2 {
-                    team = pick_working(unsafe { rpm_occurrences(h, 0x0200_0000, 0x4000_0000) });
-                    work = match (team.first(), team.last()) {
-                        (Some(f), Some(l)) => Some((f.addr.saturating_sub(0x10_0000), l.addr + 0x10_0000)),
-                        _ => None,
-                    };
-                    empty_streak = 0;
+                    // ── PROTON CPU-CLIFF THROTTLE ── the full-window sig-scan (0x02000000–0x40000000, a single
+                    // ~hundreds-of-MB rw-p region under Proton) is by far the reader's heaviest work, and this
+                    // branch is the ONLY place it fires blindly across the whole window (the bounded `work` scan
+                    // above stays every-cycle — it's cheap). It MUST run every cycle while a match is live/loading
+                    // so detection never lags, but at a TRUE idle menu — no fighters loaded and no recent live
+                    // fight — re-scanning ~896MB every 300–500ms is exactly the measured cliff. So: fire it every
+                    // cycle when there's REAL match activity, otherwise rate-limit it to IDLE_WIDE_MS. "Activity"
+                    // is gauged from fighters-present-last-cycle + a recent live-fight array read ONLY — deliberately
+                    // NOT from in_session / a sticky opponent name, which linger BETWEEN GAMES and after a set and
+                    // must not keep the scan hot. Why match detection is preserved: the opponent scan
+                    // (find_opponent_netplay/_lobby) and the O(1) pointer-follow fighter-array read (read_gamestate_rpm,
+                    // which drives in_match/side/score and the /match/live + /result reporting) both run EVERY cycle
+                    // and are UNTOUCHED here — so throttling this SECONDARY roster sig-scan can never delay recording
+                    // a match. At worst the cosmetic char-select roster display lags up to IDLE_WIDE_MS on a cold
+                    // entry from a true idle menu; the instant a fight goes live (live_seen refreshes) or fighters
+                    // reappear (roster non-empty), full cadence resumes.
+                    const IDLE_WIDE_MS: u128 = 1500;   // max spacing between full-window scans while truly idle
+                    const LIVE_ACTIVE_SECS: u64 = 3;   // "recently in a live fight" window that forces full cadence
+                    let active = !roster.is_empty()    // fighters were present last cycle (in/around a match)
+                        || live_seen.map_or(false, |t| t.elapsed().as_secs() < LIVE_ACTIVE_SECS); // a live fight is/was just happening
+                    if active || last_wide.elapsed().as_millis() >= IDLE_WIDE_MS {
+                        last_wide = std::time::Instant::now();
+                        team = pick_working(unsafe { rpm_occurrences(h, 0x0200_0000, 0x4000_0000) });
+                        work = match (team.first(), team.last()) {
+                            (Some(f), Some(l)) => Some((f.addr.saturating_sub(0x10_0000), l.addr + 0x10_0000)),
+                            _ => None,
+                        };
+                        empty_streak = 0;
+                    }
+                    // If throttled (idle & not yet due) we simply skip the scan this cycle; empty_streak stays
+                    // elevated so want_wide holds and the very next `due` cycle scans — a bounded, self-clearing wait.
                 }
                 if team.is_empty() { team = unsafe { anchor_roster(h) }; } // last-resort only
             }
