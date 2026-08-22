@@ -804,7 +804,7 @@ fn read_my_lobby_inner() -> Option<serde_json::Value> {
 }
 
 pub fn sync_heartbeat(id: String, name: String) -> Result<serde_json::Value, String> {
-    auth_post(&format!("{}/heartbeat", SKINSYNC)).send_json(serde_json::json!({ "id": id, "name": name, "ver": env!("CARGO_PKG_VERSION"), "platform": if cfg!(windows) { "windows" } else { "linux" }, "client": "tray" }))
+    auth_post(&format!("{}/heartbeat", SKINSYNC)).send_json(serde_json::json!({ "id": id, "name": name, "ver": env!("CARGO_PKG_VERSION"), "platform": if cfg!(windows) { "windows" } else { "linux" }, "client": "tray", "reader_restarts": READER_RESTARTS.load(std::sync::atomic::Ordering::SeqCst), "reader_degraded": READER_DEGRADED.load(std::sync::atomic::Ordering::SeqCst) }))
         .map_err(|e| e.to_string())?
         .into_json::<serde_json::Value>().map_err(|e| e.to_string())
 }
@@ -2398,7 +2398,65 @@ pub fn start_reader() {
     start_gamestate_capture();       // dedicated fast thread: auto-records full per-frame state during matches
     start_gamestate_uploader();      // drains the recording spool between matches (dedup'd, never during a fight)
     start_result_uploader();         // drains the result outbox — re-delivers any match report the server missed
-    std::thread::spawn(|| {
+    // ── L1: SUPERVISED reader. The reader body runs in its own thread; if it EVER exits or panics, we respawn
+    // it. A dead reader must never again leave the process alive-but-silent (the "zombie" that silently stopped
+    // recording matches after a self-update relaunch). Paired with the liveness watchdog (start_reader_watchdog)
+    // which restarts the whole PROCESS if the reader HANGS — a case join() can't rescue (a hung thread never
+    // returns). Between the two, a reader that dies OR stalls self-heals within seconds instead of going silent.
+    std::thread::Builder::new().name("reader-sup".into()).spawn(|| {
+        loop {
+            match std::thread::Builder::new().name("reader".into()).spawn(reader_loop) {
+                Ok(j) => { let _ = j.join(); trace("[reader] thread exited/panicked — respawning in 2s"); }
+                Err(e) => trace(&format!("[reader] respawn spawn failed: {e}")),
+            }
+            READER_TICK.store(gs_now_ms(), std::sync::atomic::Ordering::SeqCst); // fresh beacon across the respawn gap so the watchdog doesn't double-fire
+            READER_DEGRADED.store(true, std::sync::atomic::Ordering::SeqCst);    // surfaced in the tray until the reader logs a healthy cycle
+            std::thread::sleep(std::time::Duration::from_secs(2));
+        }
+    }).ok();
+    start_reader_watchdog();
+}
+
+/// Liveness beacon — the reader stamps this (epoch ms) at the top of every cycle. Stale-while-a-game-is-up ⇒ a
+/// hung reader ⇒ the watchdog restarts the process. (A DEAD reader is instead respawned by the L1 supervisor.)
+static READER_TICK: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+/// True whenever the reader is not confirmed-healthy (just (re)spawned, or the watchdog saw a stall). Cleared on
+/// the reader's first successful cycle. Surfaced in the tray so a degraded reader is visible, never silent.
+pub(crate) static READER_DEGRADED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+/// Count of watchdog-triggered process restarts this run — a breadcrumb attached to the presence heartbeat so
+/// reader stalls become observable server-side (telemetry), not just a silent local self-heal.
+pub(crate) static READER_RESTARTS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Watchdog: restart the PROCESS if the reader stops cycling while a game is up. Safety net for a hung reader
+/// (deadlock / stuck syscall) that the L1 supervisor can't rescue (join never returns on a hung thread).
+/// Re-execs via the updater's relaunch (handles the single-instance lock handoff + Linux setsid; no popup).
+fn start_reader_watchdog() {
+    std::thread::Builder::new().name("reader-watchdog".into()).spawn(|| {
+        std::thread::sleep(std::time::Duration::from_secs(30)); // startup grace: let the reader begin stamping
+        READER_TICK.store(gs_now_ms(), std::sync::atomic::Ordering::SeqCst);
+        loop {
+            std::thread::sleep(std::time::Duration::from_secs(10));
+            let game_up = find_game_pid().is_some();
+            let age = gs_now_ms().saturating_sub(READER_TICK.load(std::sync::atomic::Ordering::SeqCst));
+            if game_up && age > 45_000 {
+                READER_DEGRADED.store(true, std::sync::atomic::Ordering::SeqCst);
+                // persist a restart breadcrumb across the re-exec so the heartbeat can report it post-restart
+                let n = READER_RESTARTS.load(std::sync::atomic::Ordering::SeqCst) + 1;
+                let _ = std::fs::write(crate::runtime_dir().join("reader_restarts.txt"), n.to_string());
+                trace(&format!("[watchdog] reader stalled {age}ms while game running — restarting process to self-heal (restart #{n})"));
+                crate::updater::restart(); // never returns
+            }
+        }
+    }).ok();
+}
+
+/// The reader loop body, extracted so the L1 supervisor can respawn it on any exit/panic. All state is
+/// re-initialized on each (re)spawn — a fresh reader simply re-follows the pointer chain, which is correct.
+fn reader_loop() {
+        // carry the watchdog restart count across a re-exec (breadcrumb file) so the heartbeat can report it
+        if let Ok(s) = std::fs::read_to_string(crate::runtime_dir().join("reader_restarts.txt")) {
+            if let Ok(n) = s.trim().parse::<u64>() { READER_RESTARTS.store(n, std::sync::atomic::Ordering::SeqCst); }
+        }
         let mut cur_pid: u32 = 0;
         // ── TRAY decouple: these three replace the webview-driven presence heartbeat + live-match broadcast.
         // The app called sync_heartbeat / report_live_match from JS on timers; with no webview the reader drives
@@ -2443,6 +2501,8 @@ pub fn start_reader() {
                                                      // DIFFERENT opponent still switches instantly, and it's hidden
                                                      // at a true menu, so a stale name never actually shows.
         loop {
+            READER_TICK.store(gs_now_ms(), std::sync::atomic::Ordering::SeqCst); // L3 liveness beacon: proves the reader is cycling (watchdog restarts the process if this goes stale while a game is up)
+            READER_DEGRADED.store(false, std::sync::atomic::Ordering::SeqCst);   // reached a cycle top ⇒ reader is alive, not a zombie ⇒ clear the tray warning
             // ── TRAY: presence heartbeat (was the webview's sync_heartbeat on a 60s timer). Runs regardless of
             // game state (presence = "any open app"). Spawned so a slow POST never stalls the reader cycle.
             // Gated by "Pause reporting" (tray): while PAUSED we send no presence at all (last_hb is left un-reset
@@ -2866,7 +2926,6 @@ pub fn start_reader() {
                 std::thread::sleep(std::time::Duration::from_millis(500));   // avoid a hot-spin on repeated panics
             }
         }
-    });
 }
 
 // ════════════════════════════════════════════════════════════════════════════════════════════════════════
@@ -2942,6 +3001,13 @@ pub(crate) fn paint_view() -> PaintView {
 /// One-line tray status derived from AgentStatus (the string tray.rs puts on its disabled status item +
 /// tooltip). Mirrors the app's own vocabulary: "watching for MvC2" / "in a match" / "● reporting".
 pub fn status_line() -> String {
+    // L5 reader-health FIRST: if the reader has stopped stamping its liveness beacon, say so — never show a
+    // healthy-looking status over a stalled/dead reader (that was exactly the silent-zombie failure mode). The
+    // supervisor/watchdog heal it within seconds; this makes the brief window visible instead of silent.
+    let tick = READER_TICK.load(std::sync::atomic::Ordering::SeqCst);
+    if tick != 0 && gs_now_ms().saturating_sub(tick) > 8_000 {
+        return "⚠ MetaSync — reader stalled, recovering…".into();
+    }
     let a = agent_status().lock().unwrap();
     if !a.game_running {
         return "MetaSync — watching for MvC2".into();
