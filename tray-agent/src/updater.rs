@@ -11,6 +11,19 @@
 use crate::config;
 use serde::Deserialize;
 use std::io::Read;
+use std::sync::Mutex;
+
+/// The version of a downloaded-and-waiting update that could NOT be auto-applied because MvC2 was open
+/// (`safe_to_apply()` was false). The tray reads this each refresh to surface a "update ready — installs when
+/// you close the game" hint on the menu row + tooltip. `None` when nothing is pending. Set by the periodic
+/// updater loop + the manual "Check for updates" click; cleared implicitly when an update finally applies —
+/// the process restarts into the new binary, re-initializing this static to None.
+pub static PENDING_UPDATE: Mutex<Option<String>> = Mutex::new(None);
+
+/// The last version we raised a NON-MODAL toast for, so periodic re-checks (every few hours) don't re-toast
+/// the same pending version. Distinct from PENDING_UPDATE (which always mirrors the latest deferred version
+/// for the tray) — this is purely the once-per-version de-dup guard for the balloon.
+static LAST_NOTIFIED: Mutex<Option<String>> = Mutex::new(None);
 
 // TODO(security): this is the SHIPPED MetaSync minisign PUBLIC key (also embedded in tauri.conf.json — it is
 // public by nature; the matching PRIVATE key lives off-repo at ~/.mvc-updater and is never committed). It is a
@@ -232,6 +245,50 @@ fn verify_signature(bin: &[u8], sig_str: &str) -> Result<(), UpdateError> {
     // allow_legacy = false: require modern (prehashed) minisign signatures, matching the release pipeline.
     pk.verify(bin, &sig, false)
         .map_err(|e| UpdateError::Verify(e.to_string()))
+}
+
+/// Record `version` as a downloaded-and-waiting update (deferred because MvC2 is open) and raise a NON-MODAL
+/// toast about it. PENDING_UPDATE always mirrors the latest deferred version so the tray can reflect it; the
+/// toast fires ONCE per version (the background loop passes `force=false` so a periodic re-check of the same
+/// version stays quiet), unless `force` is set — the manual "Check for updates" click passes `true` because
+/// the user explicitly asked and expects an immediate response.
+///
+/// NON-MODAL by construction: this goes through `toast()` (an OS notification), NEVER `notify()` (a modal
+/// MessageBox), so it can never steal focus from a live match.
+pub fn note_deferred_update(version: &str, force: bool) {
+    if let Ok(mut pend) = PENDING_UPDATE.lock() {
+        *pend = Some(version.to_string());
+    }
+    let already_notified = LAST_NOTIFIED
+        .lock()
+        .ok()
+        .map_or(false, |last| last.as_deref() == Some(version));
+    if force || !already_notified {
+        if let Ok(mut last) = LAST_NOTIFIED.lock() {
+            *last = Some(version.to_string());
+        }
+        toast(
+            "MetaSync update ready",
+            &format!("MetaSync {version} is ready — it'll install automatically when you close the game."),
+        );
+    }
+}
+
+/// NON-MODAL cross-platform heads-up (an OS toast/balloon): a Windows Action-Center toast + a Linux
+/// libnotify/dbus notification, both via `notify-rust`. Unlike `notify()` (a modal, top-most MessageBox used
+/// for the "updated—restarting" / "update failed" outcomes), a toast never grabs focus — safe to raise while
+/// the user is in a live match. Best-effort: a failure to show is logged, never propagated (a missing
+/// notification must not break the tray).
+pub fn toast(summary: &str, body: &str) {
+    if let Err(e) = notify_rust::Notification::new()
+        .summary(summary)
+        .body(body)
+        .appname("MetaSync")
+        .show()
+        .map(|_| ())
+    {
+        eprintln!("[updater] toast failed: {e}");
+    }
 }
 
 /// Show a native popup with the update outcome so the user sees it immediately — not buried in the tray menu

@@ -203,13 +203,36 @@ fn build_menu() -> (Menu, MenuHandles) {
 }
 
 /// Pull the current status + identity from the reader and paint them onto the disabled rows + the tray tooltip.
-fn refresh_dynamic(handles: &MenuHandles, tray: &Option<TrayIcon>) {
+/// Also reflects a downloaded-and-waiting update (updater::PENDING_UPDATE) on the "Check for updates" row + the
+/// tooltip. `updates_busy_until` is the instant a transient manual-check message ("Checking…" / "Up to date" /
+/// a result) stays pinned to the row — while it's in the future we leave that row alone so this 1s refresh
+/// doesn't stomp the manual feedback.
+fn refresh_dynamic(handles: &MenuHandles, tray: &Option<TrayIcon>, updates_busy_until: Option<Instant>) {
     let line = reader::status_line();
     handles.status_item.set_text(&line);
     handles.signed_item.set_text(signed_in_text());
     handles.host_indicator.set_text(host_indicator_text());
+
+    // A newer version that couldn't auto-apply (MvC2 open) surfaces here: the menu row + tooltip tell the user
+    // it's waiting and will install when they close the game. When nothing is pending the row keeps its normal
+    // "Check for updates" label.
+    let pending = updater::PENDING_UPDATE.lock().ok().and_then(|p| p.clone());
+    let show_transient = updates_busy_until.map_or(false, |t| Instant::now() < t);
+    if !show_transient {
+        match &pending {
+            Some(v) => handles
+                .updates_item
+                .set_text(format!("🔔 Update {v} ready — installs when you close the game")),
+            None => handles.updates_item.set_text("Check for updates"),
+        }
+    }
+
+    let tooltip = match &pending {
+        Some(v) => format!("🔔 Update {v} ready — installs when you close MvC2\n{line}"),
+        None => line,
+    };
     if let Some(t) = tray {
-        let _ = t.set_tooltip(Some(&line));
+        let _ = t.set_tooltip(Some(&tooltip));
     }
 }
 
@@ -235,6 +258,10 @@ pub fn run() -> ! {
     let (menu, handles) = build_menu();
     // Menu is moved into the tray builder on Init; keep it in an Option until then.
     let mut menu = Some(menu);
+    // While in the future, a transient manual-check message ("Checking…" / "Up to date" / a result) is pinned
+    // to the "Check for updates" row and the 1s refresh leaves that row alone. Captured (mutably) by the loop
+    // closure so it persists across ticks; set by the manual-check arm + UpdateResult below.
+    let mut updates_busy_until: Option<Instant> = None;
 
     event_loop.run(move |event, _target, control_flow| {
         // Wake at least once a second so the status + identity rows + tooltip track the reader's live state,
@@ -259,12 +286,12 @@ pub fn run() -> ! {
                         *control_flow = ControlFlow::Exit;
                     }
                 }
-                refresh_dynamic(&handles, &tray);
+                refresh_dynamic(&handles, &tray, updates_busy_until);
             }
 
             // 1s timer tick (from WaitUntil above) — refresh the status + identity rows from the reader.
             Event::NewEvents(StartCause::ResumeTimeReached { .. }) => {
-                refresh_dynamic(&handles, &tray);
+                refresh_dynamic(&handles, &tray, updates_busy_until);
             }
 
             Event::UserEvent(UserEvent::Menu(ev)) => {
@@ -309,11 +336,14 @@ pub fn run() -> ! {
                         host::host_disable();
                     }
                     // Reflect the HOST MODE banner immediately rather than waiting for the 1s tick.
-                    refresh_dynamic(&handles, &tray);
+                    refresh_dynamic(&handles, &tray, updates_busy_until);
                 } else if ev.id == handles.updates_id {
                     // Check off-thread, then INSTALL if an update is offered and it's safe (no game running).
                     // Feedback comes back via UpdateResult (the menu item is Rc-backed → can't cross threads).
                     handles.updates_item.set_text("Checking…");
+                    // Pin "Checking…" (and then the result) so the 1s refresh doesn't stomp it mid-check; the
+                    // manifest fetch can take a few seconds. UpdateResult resets this to a shorter window.
+                    updates_busy_until = Some(Instant::now() + Duration::from_secs(20));
                     let p = update_proxy.clone();
                     std::thread::spawn(move || {
                         match updater::check_for_update(config::VERSION) {
@@ -328,18 +358,15 @@ pub fn run() -> ! {
                                 );
                             }
                             Some(u) if !updater::safe_to_apply() => {
-                                // an update is ready but MvC2 is open — don't swap mid-session
+                                // An update is ready but MvC2 is open — never swap mid-session. Raise a
+                                // NON-MODAL toast (force=true: the user just asked) + record it as pending so
+                                // the tray row/tooltip keep showing it; it auto-applies once the game closes.
+                                // NO modal MessageBox here — it must not steal focus from a live match.
+                                updater::note_deferred_update(&u.version, true);
                                 let _ = p.send_event(UserEvent::UpdateResult(format!(
-                                    "v{} ready — close MvC2",
+                                    "🔔 Update {} ready — installs when you close the game",
                                     u.version
                                 )));
-                                updater::notify(
-                                    "MetaSync Update",
-                                    &format!(
-                                        "Update v{} is ready.\n\nClose MvC2 and it will install automatically.",
-                                        u.version
-                                    ),
-                                );
                             }
                             Some(u) => {
                                 let _ = p.send_event(UserEvent::UpdateResult(format!(
@@ -395,6 +422,9 @@ pub fn run() -> ! {
             // "Check for updates" finished on its worker thread → reflect the result in the item text.
             Event::UserEvent(UserEvent::UpdateResult(text)) => {
                 handles.updates_item.set_text(&text);
+                // Keep this transient result visible briefly before the 1s refresh reclaims the row (steady
+                // "Check for updates", or a pending-update hint if one is now waiting).
+                updates_busy_until = Some(Instant::now() + Duration::from_secs(6));
             }
 
             Event::UserEvent(UserEvent::Tray(_ev)) => {

@@ -29,6 +29,13 @@ tao = "0.36"
 # Opens https://nobd.net/app in the user's default browser (no window of our own).
 open = "5"
 
+# NON-MODAL update heads-up: a real OS toast/balloon (Windows Action-Center toast + Linux libnotify/dbus) so
+# a deferred update (MvC2 open) can be surfaced WITHOUT a focus-stealing MessageBox mid-match. Cross-platform:
+# on Linux it uses the session dbus (DBUS_SESSION_BUS_ADDRESS, present under the systemd --user service); on
+# Windows it shows a WinRT toast. See updater::toast. (The modal MessageBox path — updater::notify — stays for
+# the "updated—restarting" / "update failed" outcomes.)
+notify-rust = "4"
+
 # Self-updater skeleton (T1): fetch the manifest + signed binary, verify the minisign signature, swap the exe.
 # Also the reader's HTTP client (T2): result / heartbeat / live-match / register + gamestate uploads.
 ureq = { version = "2", features = ["json", "tls"] }

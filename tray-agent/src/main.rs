@@ -87,23 +87,37 @@ fn main() {
     std::thread::Builder::new()
         .name("updater-check".into())
         .spawn(|| {
+            // PERIODIC re-check so an agent that stays up for days still notices a version published AFTER
+            // launch. The first check keeps the short startup delay (let the tray come up first); every check
+            // APPLIES when it's safe (MvC2 not running), else raises a NON-MODAL, once-per-version toast +
+            // reflects the pending version in the tray (updater::note_deferred_update), and auto-applies on a
+            // later pass once the game closes.
+            const RECHECK_EVERY: std::time::Duration = std::time::Duration::from_secs(3 * 60 * 60); // 3h
             std::thread::sleep(std::time::Duration::from_secs(8));
-            match updater::check_for_update(config::VERSION) {
-                Some(u) if updater::safe_to_apply() => {
-                    eprintln!("[updater] applying {} (current {})", u.version, config::VERSION);
-                    match updater::apply_update(&u) {
-                        Ok(()) => {
-                            updater::notify("MetaSync", &format!("Updated to v{} — restarting.", u.version));
-                            updater::restart()
-                        }
-                        Err(e) => {
-                            eprintln!("[updater] apply failed: {e}");
-                            updater::notify("MetaSync Update", &format!("Update failed:\n\n{e}"));
+            loop {
+                match updater::check_for_update(config::VERSION) {
+                    Some(u) if updater::safe_to_apply() => {
+                        eprintln!("[updater] applying {} (current {})", u.version, config::VERSION);
+                        match updater::apply_update(&u) {
+                            Ok(()) => {
+                                updater::notify("MetaSync", &format!("Updated to v{} — restarting.", u.version));
+                                updater::restart()
+                            }
+                            Err(e) => {
+                                eprintln!("[updater] apply failed: {e}");
+                                updater::notify("MetaSync Update", &format!("Update failed:\n\n{e}"));
+                            }
                         }
                     }
+                    // Newer version, but MvC2 is open — never swap the exe mid-match. Non-modal heads-up
+                    // (deduped once per version) + reflect it in the tray; it auto-applies on a later pass.
+                    Some(u) => {
+                        eprintln!("[updater] {} available but MvC2 running — deferring", u.version);
+                        updater::note_deferred_update(&u.version, false);
+                    }
+                    None => eprintln!("[updater] up to date (v{})", config::VERSION),
                 }
-                Some(u) => eprintln!("[updater] {} available but MvC2 running — deferring", u.version),
-                None => eprintln!("[updater] up to date (v{})", config::VERSION),
+                std::thread::sleep(RECHECK_EVERY);
             }
         })
         .ok();
