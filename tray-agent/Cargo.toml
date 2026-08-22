@@ -1,6 +1,6 @@
 [package]
 name = "metasync-agent"
-version = "0.3.2"  # LOCKSTEP with the MetaSync release train (latest.json / GitHub release). 0.3.2 = hotfix: set under-reporting regression (0.3.1) + Linux self-update relaunch.
+version = "0.3.3"  # LOCKSTEP with the MetaSync release train (latest.json / GitHub release). 0.3.3 = match-loss resilience: durable result outbox + retry drainer + per-reporter idempotency key (client_result_id) — a match survives any server bounce/deploy/timeout/offline.
 description = "MetaSync tray agent — headless Windows tray companion that reads MvC2 memory, applies skins, and reports matches (replaces the Tauri webview)"
 authors = ["tristech"]
 edition = "2021"

@@ -995,6 +995,89 @@ const GS_SCHEMA: &str = "[frame,p1_in,p2_in,kcode,hp[6],px[6],py[6],p1_meter,p2_
 
 fn gs_now_ms() -> u64 { std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0) }
 
+// ── DURABLE RESULT OUTBOX ────────────────────────────────────────────────────────────────────────
+// The /result POST was fire-and-forget: a server bounce / timeout / deploy while a game finished DROPPED
+// that match (no retry, no persistence). This store-and-forward outbox fixes it — the result is written to
+// disk BEFORE the network call, and a background drainer re-POSTs it until the server accepts it. The server
+// dedups by its consensus match_key, so at-least-once delivery records exactly once (no double ELO). Same
+// proven pattern as the gamestate uploader above.
+const RESULT_OUTBOX_CAP: usize = 500; // max pending result reports on disk (soft backpressure)
+
+// Which HTTP statuses mean "resending this exact payload can NEVER succeed" (→ drop it) vs "retry later".
+// Conservative on purpose: for a never-lose-a-match store, we keep retrying anything that might recover —
+// 401/403 (auth token not ready at boot / transiently expired), 408/429 (backoff), 5xx, transport errors.
+// Only a malformed/oversized/semantically-conflicting body is truly hopeless. (409 = the server already holds
+// a conflicting outcome for this match → my dissenting report is correctly refused; resending won't change it.)
+fn is_permanent_reject(code: u16) -> bool { matches!(code, 400 | 409 | 413 | 422) }
+
+fn result_outbox_dir() -> std::path::PathBuf {
+    let base = std::env::var("LOCALAPPDATA").ok().map(std::path::PathBuf::from)
+        .unwrap_or_else(std::env::temp_dir);
+    let dir = base.join("MetaSync").join("result-outbox");
+    let _ = std::fs::create_dir_all(&dir);
+    dir
+}
+
+/// Write-ahead a finished-game result. Filename is deterministic per (game, reporter) so a repeat spool
+/// overwrites rather than duplicating. Returns the filename so a successful immediate POST can clear it.
+fn spool_result(body: &serde_json::Value, session_id: &str, match_index: u32, reporter: &str) -> String {
+    let dir = result_outbox_dir();
+    let sess = if session_id.is_empty() { format!("g{}", gs_now_ms()) } else { session_id.to_string() };
+    let safe: String = format!("{}_{}_{}", sess, match_index, reporter)
+        .chars().map(|c| if c.is_ascii_alphanumeric() || c == '_' || c == '-' { c } else { '-' }).collect();
+    let id = format!("{}.json", safe);
+    let pending = std::fs::read_dir(&dir)
+        .map(|rd| rd.flatten().filter(|e| e.file_name().to_string_lossy().ends_with(".json")).count())
+        .unwrap_or(0);
+    if pending >= RESULT_OUTBOX_CAP { trace(&format!("[result] outbox full ({pending}) — not spooling {id}")); return id; }
+    let env = serde_json::json!({ "spool_ts": gs_now_ms(), "body": body });
+    if let Ok(bytes) = serde_json::to_vec(&env) { let _ = atomic_write(&dir.join(&id), &bytes); }
+    id
+}
+
+fn remove_result_outbox(id: &str) {
+    if id.is_empty() { return; }
+    let _ = std::fs::remove_file(result_outbox_dir().join(id));
+}
+
+/// Drain the outbox: re-POST each undelivered result. 2xx (or a permanent 4xx reject) → delete; a transient
+/// failure (network / timeout / 5xx / 429) → keep for the next cycle. Prune anything stuck over a week.
+fn drain_result_outbox() {
+    let dir = result_outbox_dir();
+    let entries = match std::fs::read_dir(&dir) { Ok(rd) => rd, Err(_) => return };
+    let now = gs_now_ms();
+    for ent in entries.flatten() {
+        let path = ent.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("json") { continue; }
+        let env: serde_json::Value = match std::fs::read_to_string(&path).ok()
+            .and_then(|t| serde_json::from_str(&t).ok()) { Some(v) => v, None => { let _ = std::fs::remove_file(&path); continue; } };
+        if now.saturating_sub(env.get("spool_ts").and_then(|v| v.as_u64()).unwrap_or(0)) > 7 * 24 * 3600 * 1000 {
+            trace(&format!("[result] pruning stuck report {:?} (>7d unsent)", path.file_name())); let _ = std::fs::remove_file(&path); continue;
+        }
+        let body = match env.get("body") { Some(b) => b, None => { let _ = std::fs::remove_file(&path); continue; } };
+        match auth_post(&format!("{}/result", SKINSYNC)).timeout(std::time::Duration::from_secs(10)).send_json(body) {
+            Ok(_) => { trace(&format!("[result] re-delivered {:?}", path.file_name())); let _ = std::fs::remove_file(&path); }
+            Err(ureq::Error::Status(code, _)) if is_permanent_reject(code) => {
+                trace(&format!("[result] permanent reject {code} for {:?} — dropping", path.file_name())); let _ = std::fs::remove_file(&path);
+            }
+            Err(e) => { trace(&format!("[result] re-deliver failed ({e}) — retry next cycle")); }
+        }
+    }
+}
+
+// Background drainer: retries undelivered results every ~15s, REGARDLESS of in-match state (a result is tiny
+// JSON — no CPU/bandwidth concern) so a match is re-delivered the moment the server is reachable again.
+fn start_result_uploader() {
+    std::thread::spawn(|| {
+        std::thread::sleep(std::time::Duration::from_secs(8));
+        loop {
+            let guard = std::panic::catch_unwind(std::panic::AssertUnwindSafe(drain_result_outbox));
+            if guard.is_err() { trace("[result] drainer cycle panicked — recovering, continuing"); }
+            std::thread::sleep(std::time::Duration::from_secs(15));
+        }
+    });
+}
+
 fn load_share_setting() {
     if let Ok(s) = std::fs::read_to_string(share_file()) {
         let t = s.trim();
@@ -1953,6 +2036,16 @@ fn report_result_server(reporter: String, winner: String, winner_name: String, l
             }
             (0u32, 0u32, wchip.min(432), lchip.min(432), comeback.max(0) as u8)
         }).unwrap_or((0, 0, 0, 0, 0));
+        // IDEMPOTENCY KEY: a per-reporter id for THIS game, generated once and frozen into the spooled body so
+        // every retry re-sends it byte-identical. The server dedups on it (per reporter) → a retry is an exact
+        // no-op even in the committed-but-ACK-lost case (the one path that would otherwise double-credit via the
+        // 30s receive-time fallback bucket). Deterministic for ranked (session_id present); unique-per-report for
+        // casual (empty session) via a frozen timestamp nonce — stable across retries either way (body is frozen).
+        let client_result_id = if session_id.is_empty() {
+            format!("{}_g{}_{}", reporter, gs_now_ms(), match_index)
+        } else {
+            format!("{}_{}_{}", reporter, session_id, match_index)
+        };
         let body = serde_json::json!({
             "reporter": reporter.clone(), "winner": winner.clone(), "loser": loser.clone(),
             "winner_name": winner_name, "loser_name": loser_name,
@@ -1962,18 +2055,29 @@ fn report_result_server(reporter: String, winner: String, winner_name: String, l
             "wdmg": wdmg, "ldmg": ldmg, "wchip": wchip, "lchip": lchip, "wcomeback": wcomeback,
             "side": side,   // gs-92: which side the reporter was (1=P1,2=P2) — makes every game auditable server-side
             "session_id": session_id, "match_index": match_index,   // gs-96: tie each game to its ranked set (≤10 games)
+            "client_result_id": client_result_id,   // per-reporter idempotency key (see above) — server dedups on it
             "ver": env!("CARGO_PKG_VERSION"),   // gs-98: which app build recorded this — so we can tell fixed vs pre-fix
             "origin": origin, // GAME MODE claim ("ranked"|"lobby", read at the KO): the server stamps tournament/
                               // money server-side and decides ranked-eligibility (lobby needs both season-registered)
         });
+        // WRITE-AHEAD: persist the result to the durable outbox BEFORE the network call, so a server bounce /
+        // timeout / deploy can never lose the match — the drainer re-POSTs until it's accepted (idempotent by
+        // match_key). We clear the outbox copy immediately on a successful (or permanently-rejected) POST.
+        let outbox_id = spool_result(&body, &session_id, match_index, &reporter);
+        let mut posted_ok = false;
         // capture the server-derived match_key from the /result response (single source of truth → both
         // players consense on ONE key, and each tags its own recording with it).
         let key: Option<String> = match auth_post(&format!("{}/result", SKINSYNC))
-            .timeout(std::time::Duration::from_secs(5)).send_json(body) {
-            Ok(resp) => resp.into_json::<serde_json::Value>().ok()
-                .and_then(|v| v.get("key").and_then(|k| k.as_str()).map(|s| s.to_string())),
-            Err(_) => None,
+            .timeout(std::time::Duration::from_secs(5)).send_json(&body) {
+            Ok(resp) => { posted_ok = true; resp.into_json::<serde_json::Value>().ok()
+                .and_then(|v| v.get("key").and_then(|k| k.as_str()).map(|s| s.to_string())) }
+            // permanently-rejected payload (malformed / conflicting) — retrying can't help, so clear it.
+            Err(ureq::Error::Status(code, _)) if is_permanent_reject(code) => {
+                trace(&format!("[result] server rejected report ({code}) — permanent, not retrying")); posted_ok = true; None
+            }
+            Err(_) => None, // transient (network / timeout / 5xx / 429) — leave it for the drainer to retry
         };
+        if posted_ok { remove_result_outbox(&outbox_id); }
         // ── upload the per-frame recording (gated on the consent setting + a fresh recording) ──
         if !SHARE_GAMEPLAY.load(SeqCst) { return; }
         let gs = match gs { Some(g) => g, None => return };
@@ -2293,6 +2397,7 @@ pub fn start_reader() {
     });
     start_gamestate_capture();       // dedicated fast thread: auto-records full per-frame state during matches
     start_gamestate_uploader();      // drains the recording spool between matches (dedup'd, never during a fight)
+    start_result_uploader();         // drains the result outbox — re-delivers any match report the server missed
     std::thread::spawn(|| {
         let mut cur_pid: u32 = 0;
         // ── TRAY decouple: these three replace the webview-driven presence heartbeat + live-match broadcast.
