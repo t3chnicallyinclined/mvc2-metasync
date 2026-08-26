@@ -1,0 +1,76 @@
+From: Retro Receipts replay lane
+Subject: [PATCH] agent — read BOTH teams at character select, locally
+
+The agent already reads char-select picks, but only YOUR OWN: `read_char_picks()` pulls 3 entries
+from `game_state+0x758`, and its own comment says "we only ever receive our own picks."
+
+This adds both teams, read from the match block, without trusting anyone's client.
+
+WHY IT WORKS (measured live 2026-08-26, docs/STEAM-GGPO-DETERMINISM.md §2b):
+  * screen    : blk+0x3CB8 byte[2]  ->  1 = CHARACTER SELECT, 2 = IN BATTLE
+  * selection : blk + 0x3DB8 + i*0x738 + 0x6C0   (the fighter slot's CID field)
+    THE CHARACTER-SELECT CURSOR WRITES ITS SELECTION STRAIGHT INTO THE FIGHTER SLOT.
+    Found by differential capture: park P1 on one character, snapshot blk, move, snapshot, diff.
+    Exactly two words changed: blk+0x4478 (= blk+0x3DB8+0x6C0, slot 0 CID) went 0x3a -> 0x34,
+    i.e. 58 (Servbot) -> 52 (Sentinel) — the two characters actually selected.
+  * slots interleave as everywhere else: EVEN = P1 team, ODD = P2 team.
+
+WHY IT MATTERS FOR MONEY MATCHES: both teams become readable the instant they lock in, locally,
+BEFORE the fight starts. Team verification and wager locking stop depending on a client report.
+
+⚠ This reads the LIVE cursor/selection, which moves while a player is still hovering. Only treat it
+as final once the mode flips to 2 (in battle), or once the values hold steady — see `teams_locked`.
+
+Apply from the RetroReceipts-agent repo root:
+    git apply "C:\Users\trist\projects\mvc-live-skins-quarters\docs\patches\agent-both-teams-charselect.patch"
+
+--- a/agent/src/reader.rs
++++ b/agent/src/reader.rs
+@@
+ const PICKS_OFF:       usize = 0x758;       // char-select LOCKED picks (stride-4 char_ids) at game_state+this
++// ── character-select detection, read from the MATCH BLOCK (2026-08-26) ──────────────────────────
++// Supersedes menu scripting / screen scraping for OBSERVING which screen we are on and who is
++// selected. PICKS_OFF above gives OUR OWN locked team only; these give BOTH teams.
++const MODE_OFF:        usize = 0x3cb8;      // blk+0x3CB8 byte[2]: 1 = CHARACTER SELECT, 2 = IN BATTLE
++const H0_OFF:          usize = 0x3db8;      // blk+0x3DB8 = fighter slot 0 (⚠ NOT MATCH_ARR_ADD 0x3f24,
++                                            //   which is 0x16C INSIDE the object — see rr-steam-object-base-fix)
++const H_STRIDE:        usize = 0x738;
++const H_CID:           usize = 0x6c0;       // slot CID — ALSO where the char-select cursor writes
+@@
+     picks   // NO -1 requirement (a fully-locked team has no in-team -1). The CALLER gates on scene==5 && no live
+             // fighters (= char-select), so a settled menu/in-fight state never surfaces a stale team here.
+ }
++
++/// Which screen the SIMULATION is on: 1 = character select, 2 = in battle, 0 = unknown.
++/// Cheaper and more direct than inferring from `scene` + live-fighter heuristics.
++unsafe fn read_sim_mode(h: &mem::Proc, exe_base: usize) -> u8 {
++    match pointer_follow_blk(h, exe_base) {
++        Some(blk) => read_at(h, blk + MODE_OFF, 5).map(|b| b[2]).unwrap_or(0),
++        None => 0,
++    }
++}
++
++/// BOTH teams, read locally from the match block: `[p1a,p1b,p1c, p2a,p2b,p2c]`.
++///
++/// The character-select cursor writes its selection into the fighter slot's CID field, so this is
++/// live during selection and settled once the mode flips to 2. Slots interleave EVEN = P1 team,
++/// ODD = P2 team. Returns empty if the block is unreadable or any slot holds a non-character id.
++///
++/// ⚠ LIVE, not final, while a player is still hovering — gate on `read_sim_mode() == 2`, or on the
++/// values holding steady, before treating it as the locked team.
++unsafe fn read_both_teams(h: &mem::Proc, exe_base: usize) -> Vec<u8> {
++    let blk = match pointer_follow_blk(h, exe_base) { Some(b) => b, None => return Vec::new() };
++    let mut p1 = Vec::new();
++    let mut p2 = Vec::new();
++    for i in 0..6usize {
++        let cid = match read_at(h, blk + H0_OFF + i * H_STRIDE + H_CID, 1) {
++            Some(b) if !b.is_empty() => b[0],
++            _ => return Vec::new(),
++        };
++        if cid > 0x3A { return Vec::new(); }            // not a character id → block not populated yet
++        if i % 2 == 0 { p1.push(cid) } else { p2.push(cid) }
++    }
++    p1.extend(p2);
++    p1
++}
+ unsafe fn pointer_follow_array(h: &mem::Proc, exe_base: usize) -> Option<usize> {
