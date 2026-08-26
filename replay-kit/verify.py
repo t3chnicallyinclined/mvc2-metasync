@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""verify.py watch | rng [frames] [--exe] [--arena] | pool [secs] | cam | blk2 | reg | all
+"""verify.py watch | statics [frames] | rng [frames] [--exe] [--arena] | pool [secs] | cam | blk2 | reg | all
 
 THE FALSIFICATION HARNESS. Read-only. Every command here exists to try to DISPROVE something we
 have claimed, not to confirm it.
@@ -447,7 +447,80 @@ def cmd_watch(argv):
     print("stopped. Every screen that reported CHAR SELECT is one a tape can be anchored at.")
 
 
-CMDS = {"watch": cmd_watch, "rng": cmd_rng, "pool": cmd_pool, "cam": cmd_cam, "blk2": cmd_blk2, "reg": cmd_reg}
+
+def cmd_statics(argv):
+    """Enumerate every exe-static word that MOVES during play, and classify it.
+
+    This is the other end of the RNG question. `rng` asked "is DC's generator here?" and the answer
+    was no, anywhere. But that scan is keyed to specific constants, so it cannot see a generator the
+    recompile swapped. This asks the question that does not depend on knowing the algorithm:
+
+        WHAT, in the entire executable image, changes while a match runs?
+
+    Measured already: only ~315 four-byte words out of 17 million move over 600 frames. That is the
+    complete surface on which sim-relevant static state could hide outside blk. Small enough to
+    read by hand — which is the point.
+
+    Three snapshots, not two, so each word gets classified rather than just listed. A frame counter
+    advances by the same amount over both intervals; a PRNG does not.
+    """
+    frames = int(argv[0]) if argv and argv[0].isdigit() else 600
+    g = Game()
+    blk = g.u64(BLK_PTR)
+    if g.read(blk + MODE_OFF, 5)[2] != 2:
+        print("⚠ NOT IN A MATCH. Run this during a fight or everything below is menu noise.")
+    hdr = g.read(EXE, 0x400)
+    e = struct.unpack_from("<I", hdr, 0x3C)[0]
+    size = struct.unpack_from("<I", hdr, e + 24 + 56)[0]
+    print(f"exe 0x{EXE:x} +0x{size:x}, three snapshots {frames} frames apart")
+
+    snaps = []
+    for k in range(3):
+        if k:
+            wait_frames(g, blk, frames)
+        snaps.append(np.frombuffer(readable(g, EXE, size), dtype="<u4"))
+        print(f"  snapshot {k + 1} taken")
+    a, b, c = snaps
+    moved = np.nonzero((a != b) | (b != c))[0]
+    print(f"{len(a):,} words, {len(moved):,} moved")
+    if len(moved) == 0:
+        return
+
+    rows = []
+    for i in moved:
+        v0, v1, v2 = int(a[i]), int(b[i]), int(c[i])
+        d1 = (v1 - v0) & 0xFFFFFFFF
+        d2 = (v2 - v1) & 0xFFFFFFFF
+        # A counter advances by a similar amount over both intervals. A generator's successive
+        # deltas are unrelated. Anything that looks like neither gets flagged for a human.
+        if d1 == d2:
+            kind = "lockstep"
+        elif d1 and d2 and 0.5 <= d1 / d2 <= 2.0 and max(d1, d2) < frames * 64:
+            kind = "counter?"
+        elif v2 == v1 or v1 == v0:
+            kind = "settled"
+        else:
+            kind = "★CANDIDATE"
+        rows.append((kind, int(i) * 4, v0, v1, v2, d1, d2))
+
+    order = {"★CANDIDATE": 0, "settled": 1, "counter?": 2, "lockstep": 3}
+    rows.sort(key=lambda r: (order[r[0]], r[1]))
+    n_cand = sum(1 for r in rows if r[0] == "★CANDIDATE")
+    print(f"{n_cand} classified ★CANDIDATE (delta pattern unlike a counter)")
+    print("")
+    print(f"{'kind':<11} {'address':<14} {'v0':>10} {'v1':>10} {'v2':>10} {'d1':>10} {'d2':>10}")
+    for kind, off, v0, v1, v2, d1, d2 in rows[:120]:
+        print(f"{kind:<11} 0x{EXE + off:012x} {v0:>10} {v1:>10} {v2:>10} {d1:>10} {d2:>10}")
+    if len(rows) > 120:
+        print(f"... and {len(rows) - 120} more")
+    print("")
+    print("★CANDIDATE = worth a look: it changed twice by unrelated amounts, which is what a")
+    print("generator or a piece of live state looks like and what a counter does not. If every")
+    print("candidate turns out to be a timer, a render statistic or an audio cursor, then nothing")
+    print("in the exe image feeds the simulation and blk really is self-contained.")
+
+
+CMDS = {"watch": cmd_watch, "statics": cmd_statics, "rng": cmd_rng, "pool": cmd_pool, "cam": cmd_cam, "blk2": cmd_blk2, "reg": cmd_reg}
 
 if __name__ == "__main__":
     c = sys.argv[1] if len(sys.argv) > 1 else "all"
