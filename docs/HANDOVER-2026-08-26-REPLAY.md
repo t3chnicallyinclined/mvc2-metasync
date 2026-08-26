@@ -14,7 +14,7 @@ be saved, restored, and replayed exactly — from ~50 KB of data, on any PC that
 | Assists / projectiles / effects / stage / HUD were **unreachable** | All of it comes free — it's the real game running |
 | "Can we replay a match?" was an open research question | **Proven working**, bit-identical, twice |
 | Menu automation (ydotool/MENUNAV) needed to reach a screen | A **memory write** puts the game on any screen, including character select |
-| Tape processing speed unknown | **373× realtime** — a 5-minute match re-simulates in **0.8 s** |
+| Tape processing speed unknown | ⚠ **RETRACTED** — the "373×" figure was a write race, not a setting. See §6. |
 | Character select detection: months of failed approaches | **Two memory reads** |
 
 ---
@@ -28,14 +28,22 @@ local simulation. There is **no initial-state transfer at all**.
 Because it is rollback, the engine must register the region it saves/restores. It registers
 **exactly one**:
 
-> ### `blk[0 .. 0x33B18)` — 211,736 bytes — IS the complete deterministic simulation state.
+> ### `blk[0 .. 0x33B18)` — 211,736 bytes — holds all state that CHANGES during a match.
 
-**This is a proof, not an inference.** GGPO rewinds constantly during every online match; anything
-sim-relevant outside that region would desync peers within `MAX_PREDICTION_FRAMES`. Online matches
-complete. **VERIFIED LIVE:** the size field at `0x140AC6EF8` reads exactly `0x33B18`.
+**VERIFIED LIVE:** the size field at `0x140AC6EF8` reads exactly `0x33B18`.
 
-⚠ **That is the same `0x33B18` the agent already reads every frame.** We have been capturing the
-complete deterministic state all along and discarding all but a few fields.
+⚠⚠ **CORRECTED 2026-08-26 (this line originally claimed "IS the complete deterministic simulation
+state" — that was an overclaim by the author of this page, and it is retracted).** GGPO rewinding
+proves only that the region holds everything that **CHANGES** during a match: state set once before
+the match and merely **READ** during it never needs restoring, so rollback works fine without it.
+**Rollback-sufficiency is not replay-sufficiency.**
+The open counter-example is the **RNG**: the DC build's LCG sits ~1 MB below the global block, and a
+peer has since measured that it is in **neither `blk`, the exe image, nor the 256 MiB arena**. Until
+that is resolved, do **not** settle a money dispute on a re-simulation. `replay-kit/verify.py rng`
+exists to attack this.
+
+⚠ The `0x33B18` the agent already reads every frame is the same region — so the anchor costs no
+extra read. That part stands.
 
 ### Proven live, in this order
 1. **Save state** — snapshot (0.2 ms), play 59 s including a character TAG, write back (4.8 ms) →
@@ -47,7 +55,12 @@ complete deterministic state all along and discarding all but a few fields.
 4. **Cross-process portability** — a *character-select* state captured in one process restored into
    another with `blk` moved 36 MB; 804 + 243 pointers relocated; self-check passed; game continued
    at 60 fps; **the cursor snapped to the saved character**.
-5. **373× fast-forward** — 22,403 sim frames/sec, clean return to 60 fps.
+5. ⚠ **RETRACTED — "373× fast-forward".** The measurement (22,403 sim frames/sec) came from
+   hammering `G+0x798` in a loop; that is a bucket the run loop DRAINS and the tick refills to 1, so
+   it was a write race, not a configured speed. It was also already active by default during every
+   replay's character-select portion, and the follow-up test that would have verified inputs still
+   land correctly at speed returned VOID (the game was paused, `G+0x780 = 1`, window unfocused).
+   **Do not size a host node on this number.** See §6.
 
 ---
 
