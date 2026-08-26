@@ -200,9 +200,15 @@ with 100% fidelity including assists, projectiles, effects, stage and HUD.
 restore, input drive and stepping. Do **not** call the game's own `save_game_state` /
 `load_game_state` — they touch globals with no locking and would race GGPO and the sim.
 
-### Faster-than-realtime is shipping code
-`G+0x798` (`0x140AC74D8`) = frames-to-run; `G+0x770` suppresses rendering on catch-up frames.
-`FUN_140039de0` already loops on it. A re-simulation node just sets the counter.
+### ⚠ Faster-than-realtime is NOT a setting — corrected 2026-08-26
+`G+0x798` (`0x140AC74D8`) = frames-to-run and `G+0x770` suppresses rendering on catch-up frames, but
+**a re-simulation node cannot "just set the counter".** The loop is
+`while (G[0x798] >= 1 && !G[0x780]) { ...; G[0x798]--; }` and the tick refills it to 1: it is a
+bucket the loop DRAINS, and `G+0x780` (pause) gates the whole thing. The measured 22,403 f/s was
+reached by writing faster than the loop drained — a race, with no way to say "run exactly N frames".
+It also measured **pure simulation with no inputs**; at that rate frames are ~45 µs apart and an
+external poller cannot land a distinct input per frame. Deterministic fix: patch the immediate at
+`0x14003A2D0` from 1 to N. Frame-accurate feeding at speed needs in-process injection.
 
 ---
 

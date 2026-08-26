@@ -153,6 +153,28 @@ UI so it loads its own assets.
 
 ## 6. THROUGHPUT — 373× realtime
 
+> ## ⚠⚠ CORRECTED 2026-08-26 — TREAT THIS WHOLE SECTION AS UNVERIFIED
+> **Do not size a host node on these numbers.** Two independent findings, same day:
+>
+> 1. **`G+0x798` is not a setting.** The run loop is
+>    `while (G[0x798] >= 1 && !G[0x780]) { ...; G[0x798]--; }` and the tick refills it to **1**.
+>    It is a bucket the loop DRAINS, so `ffspeed.py` reached 22,403 f/s by topping it up faster
+>    than the loop emptied it — a write race, not a configured rate. You can never say "run exactly
+>    N frames", and `G+0x780` (pause) gates the loop entirely. Fast-forward is now OFF by default in
+>    `rrtape4.py` because it was corrupting the character-select portion of every replay, where the
+>    cursor input changes every frame.
+> 2. **The measurement was pure simulation with no inputs.** A replay must also land the correct
+>    input word on each frame, and at 22k f/s frames are ~45 µs apart — an external poller
+>    physically cannot write a distinct input per frame. `ffinject.py` (written by the original
+>    replay lane to close exactly this gap) returned **0 frames advanced at every rate**, because
+>    `G+0x780` read 1: the game was paused after its window lost focus. That run is void, not a
+>    result — but nobody has yet measured sustained throughput WITH inputs landing correctly.
+>
+> ⇒ "373× realtime" and "~4,480 tapes/hour/instance" are **unverified and probably wrong in kind**.
+> The deterministic fix for a real speed setting is to patch the immediate at `0x14003A2D0` from 1
+> to N; frame-accurate feeding *at* speed needs in-process injection at the engine's own input read.
+
+
 ```
 baseline           :     60.0 sim frames/sec
 frames-to-run = 8  : 22,403.7 sim frames/sec      (G+0x798, G+0x770 suppresses render)
