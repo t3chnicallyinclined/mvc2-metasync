@@ -55,14 +55,33 @@ const OFF_REDHP:  usize = 0x410;      // recoverable (red) health (u16) = health
 const OFF_ASSIST: usize = 0x4e9;      // assist type: alpha=0 beta=1 gamma=2 (confirmed live 2026-08-11; DC +0x4C9 does NOT map)
 const OFF_INPUT:  usize = 0x4fc;      // per-fighter input register (CPS2-decoded pad state for that side)
 const OFF_CHARID: usize = 0x554;      // CPS2 unit id (char_id)
-const OFF_POS_X:  usize = 0x61c;      // fighter world X (f32)
-const OFF_POS_Y:  usize = 0x620;      // fighter world Y (f32)
-const OFF_XVEL:   usize = 0x644;      // x velocity (f32)
-const OFF_YVEL:   usize = 0x648;      // y velocity (f32)
-const OFF_FACING: usize = 0x720;      // facing (u8) 0/1
-const OFF_ACTION: usize = 0x76c;      // action/move-phase state (u8). TODO: likely next-slot (RE 2026-08-15), verify before fix
-const OFF_COMBO_RECV: usize = 0x902;  // combo this fighter is RECEIVING. TODO: likely next-slot (RE 2026-08-15) —
-                                      //   true combo (dealt) = OFF_COMBO 0x1ca is already correct; verify before fix
+// ⚠⚠⚠ ROOT CAUSE OF THE ">STRIDE" BUG CLASS — FOUND + PROVEN 2026-08-25.
+// `cl = base + slot*STRIDE` is **0x16C bytes INSIDE the object**. The TRUE object base is
+//     H_i = base + slot*STRIDE - OBJ_BACK          (= *(exe+0xAC6EF0) + 0x3DB8 + i*STRIDE)
+// Since STRIDE - OBJ_BACK = 0x5CC, **every cl-relative offset >= 0x5CC reads the NEXT character**.
+// That is the same bug previously patched one field at a time (health 0xb44→0x40c, hitstun
+// 0x909→0x1d1) without finding the cause. Fields BELOW 0x5CC are unaffected and stay exactly as they
+// are — DatPal/health/red/char_id/combo/hitstun/assist/input/color all keep working (the skin painter
+// and W/L reader were never wrong).
+// PROOF (live, all six pairs, slots 0..4): `cl_i + off  ==  H_{i+1} + true_off` is the SAME ADDRESS,
+// and every recorded value was byte-identical to the NEXT character's field. Engine self-check:
+// {u64 @ blk+0x32500 + 8k} == {H_i} 6/6. Camera identity closes to 0.000px on H-relative reads.
+// Full cited spec: RetroReceipts-agent/docs/STEAM-REPLAY-ANSWERS.md.
+const OBJ_BACK:   usize = 0x16c;      // cl is this far INSIDE the object; H = cl - OBJ_BACK
+const H_POS_X:    usize = 0x50;       // world X (f32)  — replaces the broken cl+0x61c (next char)
+const H_POS_Y:    usize = 0x54;       // world Y (f32)  — replaces cl+0x620. +Y is UP, ground == 0.0
+const H_XVEL:     usize = 0x78;       // x velocity (f32) — replaces cl+0x644
+const H_YVEL:     usize = 0x7c;       // y velocity (f32) — replaces cl+0x648
+const H_FACING:   usize = 0x154;      // facing (u8) 0/1 — replaces cl+0x720
+const H_SCREEN_X: usize = 0x124;      // engine's own FOOT-anchored screen X (f32), 640x480 space
+const H_SCREEN_Y: usize = 0x128;      // engine's own screen Y (f32); grounded == 433.4 (blk+0x6998)
+const H_DRAWN:    usize = 0x170;      // DC +0x12C draw gate: non-zero = the engine rendered this
+                                      //   object THIS frame (bank03 loc_8c03093c early-returns on 0)
+const H_ANIM_TMR: usize = 0x186;      // anim cell duration countdown (u8)
+const H_SPRITE_ID: usize = 0x188;     // THE render key (u16, mask &0x7FFF) — atlas pose index
+// REMOVED: OFF_ACTION 0x76c and OFF_COMBO_RECV 0x902. Both are >0x5CC, i.e. the NEXT character's
+// fields (0x76c → char i+1's +0x600 region; 0x902 → char i+1's combo-dealt). There is no known
+// correct Steam analogue for either; do NOT re-add one without a live proof.
 
 // ── (2) battle-globals + meter (relative to the array base `ram`) ──
 // The DC BattleState struct transfers BYTE-FAITHFUL to array+0x2e5dc (MET_BARS/FILL are that base +0x5a/+0x7c;
@@ -1307,6 +1326,16 @@ unsafe fn read_gs_row(h: &mem::Proc, base: usize, frame: u32, exe_base: usize) -
         if buf.len() < 0xB50 { return None; }
         s.push(buf);
     }
+    // ⚠ TRUE OBJECT BASE (see OBJ_BACK): the `s` window starts 0x16C INSIDE the object, so kinematics
+    // and render state live BEFORE it. Read a second, small window at H_i for those — additive, so
+    // every already-correct field above keeps its exact address and behaviour.
+    let mut o: Vec<Vec<u8>> = Vec::with_capacity(6);
+    for i in 0..6 {
+        let hbase = (base + i * STRIDE).checked_sub(OBJ_BACK)?;
+        let buf = read_at(h, hbase, 0x200)?;               // covers +0x50 .. +0x188 (sprite_id)
+        if buf.len() < 0x200 { return None; }
+        o.push(buf);
+    }
     let hp = |i: usize| -> u16 { let v = le32(&s[i], OFF_HEALTH) & 0xffff; if v > 999 { 999 } else { v as u16 } };
     let rhp = |i: usize| -> u16 { let v = u16le(&s[i], OFF_REDHP); if v > 999 { 999 } else { v } };
     let hp_arr = [hp(0), hp(1), hp(2), hp(3), hp(4), hp(5)];
@@ -1318,19 +1347,25 @@ unsafe fn read_gs_row(h: &mem::Proc, base: usize, frame: u32, exe_base: usize) -
         p1_in: u16le(&s[0], OFF_INPUT), p2_in: u16le(&s[1], OFF_INPUT),
         kcode: if exe_base != 0 { rpm_u32(h, exe_base + KCODE_OFF).unwrap_or(0) } else { 0 },
         hp: hp_arr,
-        px: [lef32(&s[0], OFF_POS_X), lef32(&s[1], OFF_POS_X), lef32(&s[2], OFF_POS_X), lef32(&s[3], OFF_POS_X), lef32(&s[4], OFF_POS_X), lef32(&s[5], OFF_POS_X)],
-        py: [lef32(&s[0], OFF_POS_Y), lef32(&s[1], OFF_POS_Y), lef32(&s[2], OFF_POS_Y), lef32(&s[3], OFF_POS_Y), lef32(&s[4], OFF_POS_Y), lef32(&s[5], OFF_POS_Y)],
+        px: [lef32(&o[0], H_POS_X), lef32(&o[1], H_POS_X), lef32(&o[2], H_POS_X), lef32(&o[3], H_POS_X), lef32(&o[4], H_POS_X), lef32(&o[5], H_POS_X)],
+        py: [lef32(&o[0], H_POS_Y), lef32(&o[1], H_POS_Y), lef32(&o[2], H_POS_Y), lef32(&o[3], H_POS_Y), lef32(&o[4], H_POS_Y), lef32(&o[5], H_POS_Y)],
         m1: rpm_u8(h, base + MET_BARS).unwrap_or(0),
         m2: rpm_u8(h, base + MET_BARS + 1).unwrap_or(0),
         mfill: rpm_u16(h, base + MET_FILL).unwrap_or(0),
         cd: [u16le(&s[0], OFF_COMBO), u16le(&s[1], OFF_COMBO), u16le(&s[2], OFF_COMBO), u16le(&s[3], OFF_COMBO), u16le(&s[4], OFF_COMBO), u16le(&s[5], OFF_COMBO)],
-        cr: [u16le(&s[0], OFF_COMBO_RECV), u16le(&s[1], OFF_COMBO_RECV), u16le(&s[2], OFF_COMBO_RECV), u16le(&s[3], OFF_COMBO_RECV), u16le(&s[4], OFF_COMBO_RECV), u16le(&s[5], OFF_COMBO_RECV)],
-        vx: [lef32(&s[0], OFF_XVEL), lef32(&s[1], OFF_XVEL), lef32(&s[2], OFF_XVEL), lef32(&s[3], OFF_XVEL), lef32(&s[4], OFF_XVEL), lef32(&s[5], OFF_XVEL)],
-        vy: [lef32(&s[0], OFF_YVEL), lef32(&s[1], OFF_YVEL), lef32(&s[2], OFF_YVEL), lef32(&s[3], OFF_YVEL), lef32(&s[4], OFF_YVEL), lef32(&s[5], OFF_YVEL)],
+        // cr: REMOVED — OFF_COMBO_RECV 0x902 read the NEXT character's combo-dealt. Kept as zeros so the
+        //     positional tape schema is unchanged; combo RECEIVED is the opponent's `cd`.
+        cr: [0; 6],
+        vx: [lef32(&o[0], H_XVEL), lef32(&o[1], H_XVEL), lef32(&o[2], H_XVEL), lef32(&o[3], H_XVEL), lef32(&o[4], H_XVEL), lef32(&o[5], H_XVEL)],
+        vy: [lef32(&o[0], H_YVEL), lef32(&o[1], H_YVEL), lef32(&o[2], H_YVEL), lef32(&o[3], H_YVEL), lef32(&o[4], H_YVEL), lef32(&o[5], H_YVEL)],
         rhp: [rhp(0), rhp(1), rhp(2), rhp(3), rhp(4), rhp(5)],
-        face: [s[0][OFF_FACING], s[1][OFF_FACING], s[2][OFF_FACING], s[3][OFF_FACING], s[4][OFF_FACING], s[5][OFF_FACING]],
+        face: [o[0][H_FACING], o[1][H_FACING], o[2][H_FACING], o[3][H_FACING], o[4][H_FACING], o[5][H_FACING]],
         hitstun: [s[0][OFF_HITSTUN], s[1][OFF_HITSTUN], s[2][OFF_HITSTUN], s[3][OFF_HITSTUN], s[4][OFF_HITSTUN], s[5][OFF_HITSTUN]],
-        act: [s[0][OFF_ACTION], s[1][OFF_ACTION], s[2][OFF_ACTION], s[3][OFF_ACTION], s[4][OFF_ACTION], s[5][OFF_ACTION]],
+        // act: REPURPOSED. OFF_ACTION 0x76c read the NEXT character. The slot now carries the
+        // engine's own DRAW GATE (H+0x170, DC +0x12C): non-zero = the engine rendered this object
+        // THIS frame — which is the field a replay actually needs (point chars + a called assist,
+        // benched partners excluded). Same width, same position, so the tape schema is unchanged.
+        act: [o[0][H_DRAWN], o[1][H_DRAWN], o[2][H_DRAWN], o[3][H_DRAWN], o[4][H_DRAWN], o[5][H_DRAWN]],
     })
 }
 
@@ -1672,7 +1707,7 @@ unsafe fn anchor_array(h: &mem::Proc) -> Option<usize> {
     // MOTION GATE (capture-confirmed): the fixed anchor 0x10b33fc8 lands on a FROZEN savestate COPY (stuck at a
     // past frame — the whole bug). Only the live array's positions move frame-to-frame, so if the anchor is
     // identical across a short gap it's a frozen copy → reject it and let find_array's liveness locate take over.
-    let pos = |c: usize| -> Vec<u8> { let mut v = Vec::new(); for i in 0..6 { if let Some(b) = read_at(h, c + i * STRIDE + OFF_POS_X, 0x40) { v.extend_from_slice(&b); } } v };
+    let pos = |c: usize| -> Vec<u8> { let mut v = Vec::new(); for i in 0..6 { if let Some(b) = read_at(h, c + i * STRIDE - OBJ_BACK + H_POS_X, 0x40) { v.extend_from_slice(&b); } } v };
     let p1 = pos(cand); std::thread::sleep(std::time::Duration::from_millis(40)); let p2 = pos(cand);
     if !p1.is_empty() && p1 == p2 { return None; } // frozen → fall through to find_array
     Some(cand)
@@ -1813,7 +1848,7 @@ unsafe fn find_array(h: &mem::Proc) -> Option<usize> {
     let anim = |c: usize| -> Vec<u8> {
         let mut v = Vec::with_capacity(6 * 0x80);
         for i in 0..6 {
-            if let Some(b) = read_at(h, c + i * STRIDE + OFF_POS_X, 0x40) { v.extend_from_slice(&b); }
+            if let Some(b) = read_at(h, c + i * STRIDE - OBJ_BACK + H_POS_X, 0x40) { v.extend_from_slice(&b); }
             if let Some(b) = read_at(h, c + i * STRIDE + 0x100, 0x40) { v.extend_from_slice(&b); }
         }
         v
@@ -1929,7 +1964,7 @@ unsafe fn pointer_follow_array(h: &mem::Proc, exe_base: usize) -> Option<usize> 
     let snap = |a: usize| -> Vec<u8> {
         let mut v = Vec::with_capacity(6 * 0x80);
         for i in 0..6 {
-            if let Some(b) = read_at(h, a + i * STRIDE + OFF_POS_X, 0x40) { v.extend_from_slice(&b); }
+            if let Some(b) = read_at(h, a + i * STRIDE - OBJ_BACK + H_POS_X, 0x40) { v.extend_from_slice(&b); }
             if let Some(b) = read_at(h, a + i * STRIDE + 0x100, 0x40) { v.extend_from_slice(&b); }
         }
         v
