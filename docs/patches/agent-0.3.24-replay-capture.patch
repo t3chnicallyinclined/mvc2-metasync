@@ -1,0 +1,79 @@
+From: Retro Receipts replay lane
+Subject: [PATCH] agent 0.3.24 — capture what re-simulation needs
+
+Adds the AUTHORITATIVE input words + seat map + a character-select anchor snapshot, so a server can
+re-simulate a match exactly instead of the tape trying to describe it.
+
+Measured live on the Steam build (docs/STEAM-GGPO-DETERMINISM.md):
+  * MvC2 ships verbatim GGPO rollback. It registers ONE region, blk[0..0x33B18) — that IS the
+    complete deterministic simulation state (verified: size field at 0x140AC6EF8 reads 0x33B18).
+  * The agent ALREADY reads that exact block every frame, so the anchor costs no extra read.
+  * Input chain: G+0x218 (RAW) -> bit table @0x140A4F780 -> blk+0x3C66+i*0x14 -> cl+0x4fc.
+    We ship cl+0x4fc today: TWO STAGES DOWNSTREAM and lossy.
+  * KCODE_OFF is mislabelled "flycast kcode[0] (the LOCAL pad)". It is G+0x218 = GGPO SEAT 0's
+    input. Which seat is local comes from G+0x258, which we never read — the root cause of the
+    documented side-swap.
+  * A CHARACTER-SELECT snapshot is portable across processes (proven: restored into another process
+    with blk moved 36 MB, 804+243 pointers relocated, game continued at 60fps). A BATTLE snapshot is
+    NOT — it holds 557 pointers into the per-character asset image and killed the game twice.
+
+Columns are APPENDED, so positional consumers of existing columns are unaffected.
+
+Apply from the repo root:
+    git apply docs/patches/agent-0.3.24-replay-capture.patch
+
+--- a/agent/src/reader.rs
++++ b/agent/src/reader.rs
+@@
+ const MATCH_ARR_ADD:   usize = 0x3f24;      // fighter_array = *(exe+MATCH_PTR_OFF) + this. ⚠ pointer chain — do NOT change
+-const KCODE_OFF:       usize = 0xac6f58;    // flycast kcode[0] (the LOCAL pad) offset from the exe base
++// ⚠ CORRECTION (measured live 2026-08-26): this is NOT "flycast kcode[0] (the LOCAL pad)". It is
++// G+0x218 — GGPO SEAT 0's post-synchronisation input word. Which seat is LOCAL comes from
++// SEATMAP_OFF, which we never read; that omission is the root cause of the documented side-swap.
++const KCODE_OFF:       usize = 0xac6f58;    // = SEATIN_OFF (kept: existing references)
++const SEATIN_OFF:      usize = 0xac6f58;    // G+0x218: RAW input word, seat k at +k*4 (u32, 24-bit)
++const SEATMAP_OFF:     usize = 0xac6f98;    // G+0x258: GGPO player k -> seat index (i32, -1 unmapped)
++const ROLLBACK_OFF:    usize = 0xac74ac;    // G+0x76C: load_game_state count; >0 = GGPO rewound
++const ARENA_PTR_OFF:   usize = 0xac6d40;    // exe global -> the single 256 MiB arena blk is carved from
++const MODE_OFF:        usize = 0x3cb8;      // blk+0x3CB8: byte[2] 1 = CHARACTER SELECT, 2 = IN BATTLE
+ const LOCALPLAYER_OFF: usize = 0xac7230;    // localPlayerNum: 0 = P1, 1 = P2 (flycast's own side global, next to kcode;
+@@
+-const GS_SCHEMA: &str = "[frame,p1_in,p2_in,kcode,hp[6],px[6],py[6],p1_meter,p2_meter,meter_fill,combo_dealt[6],combo_recv[6],vx[6],vy[6],red_hp[6],facing[6],hitstun[6],drawn[6],sid[6],atimer[6],eyeX,eyeY,ground]";
++// 0.3.24 appends seat_in[2]: the AUTHORITATIVE raw pad words (G+0x218+seat*4), upstream of the
++// 12-entry translation table. p1_in/p2_in are the downstream decoded values and are kept only for
++// compatibility — a re-simulator must use seat_in.
++const GS_SCHEMA: &str = "[frame,p1_in,p2_in,kcode,hp[6],px[6],py[6],p1_meter,p2_meter,meter_fill,combo_dealt[6],combo_recv[6],vx[6],vy[6],red_hp[6],facing[6],hitstun[6],drawn[6],sid[6],atimer[6],eyeX,eyeY,ground,seat_in[2]]";
+@@
+     // replay columns (0.3.23): raw sprite ids + anim countdown per slot, camera globals + ground line
+     sid: [u16; 6], atimer: [u8; 6], eye_x: f32, eye_y: f32, ground: f32,
++    // 0.3.24: the AUTHORITATIVE inputs — raw pad words at G+0x218+seat*4, upstream of the
++    // translation table. This is what a re-simulation feeds back into the engine.
++    seat_in: [u32; 2],
+ }
+@@
+         atimer: [o[0][H_ANIM_TMR], o[1][H_ANIM_TMR], o[2][H_ANIM_TMR], o[3][H_ANIM_TMR], o[4][H_ANIM_TMR], o[5][H_ANIM_TMR]],
+         eye_x: cam.0, eye_y: cam.1, ground: cam.2,
++        seat_in: if exe_base != 0 {
++            [rpm_u32(h, exe_base + SEATIN_OFF).unwrap_or(0),
++             rpm_u32(h, exe_base + SEATIN_OFF + 4).unwrap_or(0)]
++        } else { [0, 0] },
+     })
+ }
+@@
+         "ts": ts, "schema": GS_SCHEMA,
+         "frame_counter_addr": gs.frame_addr as u64, "synthetic_frames": gs.synthetic,
++        // 0.3.24 re-simulation envelope. seat_map says which GGPO player is which seat (fixes the
++        // side-swap at its root); rollbacks > 0 means GGPO rewound during capture, so the tape's
++        // frames may not be a single clean timeline; the anchor is the portable CHARACTER-SELECT
++        // state a server restores before feeding seat_in back in.
++        "seat_map": gs.seat_map, "rollbacks": gs.rollbacks, "build_id": gs.build_id,
++        "anchor": gs.anchor_b64, "anchor_blk": gs.anchor_blk,
++        "anchor_arena": gs.anchor_arena, "anchor_frame": gs.anchor_frame,
+         "frame_count": frames.len(), "frames": frames,
+     });
+@@
+         GsRow { frame, p1_in: 0, p2_in: 0, kcode: 0, hp, px: [0.0; 6], py: [0.0; 6], m1, m2, mfill,
+                 cd, cr: [0; 6], vx: [0.0; 6], vy: [0.0; 6], rhp: [0; 6], face: [0; 6], hitstun, act: [0; 6],
+-                sid: [0; 6], atimer: [0; 6], eye_x: 0.0, eye_y: 0.0, ground: 0.0 }
++                sid: [0; 6], atimer: [0; 6], eye_x: 0.0, eye_y: 0.0, ground: 0.0, seat_in: [0; 2] }
+     }

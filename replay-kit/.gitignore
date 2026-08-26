@@ -1,0 +1,8 @@
+# generated tapes and scratch captures — regenerable, and they accumulate fast
+__pycache__/
+*.rr4
+*.rr3
+*.rrtape
+*.inp
+*.state
+*.out.json
