@@ -6,3 +6,4 @@ __pycache__/
 *.inp
 *.state
 *.out.json
+tapes-kept/
