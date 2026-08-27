@@ -263,3 +263,100 @@ Everything in §10 of the first handover still applies. Added by this session:
 - **When a probe comes back negative, say what it does and does not rule out.** The RNG scan is
   keyed to specific constants; "no LCG found" is not "no RNG outside blk".
 - **Give Tris the full absolute command, every time.** Naming a script makes him hunt for it.
+
+---
+---
+
+# PART 2 — 2026-08-27 — what the first live run changed
+
+Everything above was written before agent 0.3.24 had ever run against a real game. It then ran a
+live money match, and the trace on disk answered more than the questions we were asking.
+
+## ⭐⭐⭐ THE TAPE WAS 9% OF THE MATCH — the frame counter was a SPRITE ID
+
+The single most important finding of the whole train. From the live trace:
+
+```
+[gamestate] recording START base=0x167e4f24 fc=0x167e5db0
+[gamestate] recording END   frames=300      <- 54.9 SECONDS of play
+[gamestate] recording END   frames=308      <- 58.7 seconds
+```
+
+`blk` was `0x167e1000`, so the hunted counter sat at `blk+0x4DB0`. The fighter array starts at
+`blk+0x3DB8`, stride `0x738` ⟹ that address is **slot 2 + 0x188 = `H_SPRITE_ID`**.
+`hunt_frame_counter` had locked onto a character's sprite id and called it the frame counter.
+
+A row is only stored when `frame != last`, so the tape gained a row only when that one character's
+sprite changed. **300 rows for ~3,295 frames = 9.1%.** Every tape this agent has ever produced is
+undersampled the same way — the stats layer has been computing damage, chip, meter and the momentum
+line from a ninth of each match, and re-simulation (which needs EVERY frame's input) could never
+have worked at all.
+
+`blk+0x3CC8` is the sim frame counter and always was — the replay kit polls it and gets 7,040 frames
+across 118 s at 59.7 fps with zero gaps. Fixed (`be24c80`): derive it as `base − BLK_BACK +
+BLK_FRAME_OFF`, keep the hunt as a fallback behind a **3× retried** advance check, because the
+fallback is now known-harmful and one 40 ms sample is only ~2.4 frames.
+
+⚠ **This is why "it compiles and the tests pass" is not "it works."** Nothing but a live trace was
+ever going to surface it, and it was hiding in plain sight in every recording we have.
+
+## ✅ The new capture paths DID work
+```
+[gamestate] anchor @char-select blk=0x167e1000 frame=3 211736 B -> 2426 B gz hash=80a769ff28b0e533
+[gamestate] character select recorded: 1006 frames of input
+```
+Six anchors across the session, no panics. ⭐ **The anchor compresses to ~2.4 KB, not the ~17 KB
+estimated** — at character select the block is nearly all zeros. Prelude is ~8 KB, not ~25.
+
+## ⭐⭐ WHO IS ACTUALLY FIGHTING — see `mvc-steam-seat-identity` in memory
+The 3-seat lobby bug ("LOSS vs NOBD_Arcade" three times) is **not** a scan-ordering bug to patch with
+owner-exclusion. `find_opponent_lobby()`'s structure — our id at A, opponent at `A+0x148` — **could
+not be located**; no such adjacency exists in the coordinator member array or the matchState peer
+array. The game keeps an explicit seat→identity table three pointers away:
+```
+CSteamID *(u64*)(matchState + 0x6f2c + slot*0x170)      seat *(i32*)(PL + 0x11cc + slot*0x128)
+```
+The SEAT is what excludes a spectator (a slot is appended only under `0 <= seat < numSeats`).
+⚠ **The `GGPOPlayer[]` staging array DOES contain spectators** (`type==2`) — "read the GGPO player
+list" is the wrong instruction. And it lives on **P1's box**, not the cabinet: `session+0x1d0` is the
+slot holding seat 0, not the lobby owner.
+⚠ **No per-participant spectator flag exists anywhere** — checked exhaustively. The distinction IS
+the absence of a seat.
+⭐ Five local "am I spectating" signals, **only two of them live** — see the memory page. Staleness is
+the trap: `localPlayerNum` was observed reading `1` while the seat table read `[-1,-1,-1,-1]`.
+⚠ **`session+0xd0328` is NOT a flat enum** — corrected in `mvc-ranked-custom-discriminator`. It is a
+raw menu index and the game always tests it paired with `0xd0320 == 1`.
+
+## The host-node saga — closed, and the lesson generalises
+Bundling `referee.py` + its unit exposed a chain of hazards, each found by the next layer of review:
+1. The materializer only ran from the tray toggle, so a bundle fix reached **only fresh installs** —
+   inert on every box already hosting.
+2. Enabling a newly bundled unit needed an OFF→ON toggle, which unregisters the node. Fixed by the
+   host-node lane's non-destructive `ensure-units`.
+3. ⚠ **My `Requires=arcade-hostd.service` caused a live incident**: restarting the referee to apply a
+   unit change **resurrected hosting 57 s after the operator turned it off**, and the cabinet
+   silently re-registered. `PartOf=` alone is correct — one-way, no start-side edge. Verified on the
+   real box with **inert stand-in units**, so the test could not repeat the incident.
+4. Arming (`REFEREE_SEAT_P1`/`REFEREE_REPORT`) lives in `referee.env`, which **no bundle path may
+   ever write**. Absent = observe = safe. Documented at the write list in `host.rs`, because that
+   file sits inside the directory the materializer writes into.
+
+⭐ **The durable rule, from the host-node lane: _refresh follows the operator; it never leads._**
+
+## Tools added (all in `replay-kit/`, all read-only w.r.t. the game unless noted)
+| | |
+|---|---|
+| `TAPECHECK.cmd` / `checktape.py` | grades an agent tape. **Prints the coverage number.** `watch` copies tapes before the uploader drains them |
+| `LOBBY.cmd` / `lobbyprobe.py` | seat→SteamID, local role (5 signals), GGPO host, lobby members, falsifiers |
+| `VERIFY.cmd statics` | enumerates every exe-static word that moves during a match (~315 of 17M) |
+| `AB.cmd` | the generator-agnostic determinism test |
+
+## WHAT GATES THE MERGE — both need the game
+1. **`TAPECHECK.cmd`, then one match on the new build.** Coverage must read ~100%. If it reads ~9%
+   the counter is wrong again and every downstream claim on the branch is void.
+2. **`LOBBY.cmd` on the cabinet AND a player box, same live 3-seat match.** Cabinet: all five
+   spectator signals agreeing, both fighters named. Player box: section H naming P1 — not the
+   cabinet — as GGPO host. **`reader.rs` stays untouched until that prints.**
+
+⚠ The branch is now on the node-split's critical path: phase 1 moves `reader.rs` and is explicitly
+gated on this branch landing (main's copy is 399 lines behind). Merging is Tris's call.
