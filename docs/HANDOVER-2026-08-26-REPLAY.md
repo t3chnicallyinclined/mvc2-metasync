@@ -103,16 +103,76 @@ input store sites = 0x14003A33B / 0x14003A35F      (NOP these 6-byte stores to i
 
 ---
 
-## 3. ⚠⚠ THE RULE THAT COST US THREE CRASHES
+## 3. ⚠⚠ RETRACTED — "BATTLE STATE IS NOT PORTABLE" WAS NEVER PROVEN
 
-> **CHARACTER-SELECT state is PORTABLE. BATTLE state is NOT.**
+This section originally read *"a battle state holds 557 pointers into the decompressed per-character
+asset image … restoring one cross-process killed the game twice."* **Both the number and the
+conclusion are wrong.** Corrected 2026-08-26 after a Ghidra + event-log investigation that located
+both faulting instructions.
 
-A battle state holds **557 pointers into the decompressed per-character asset image**
-(`arena+0x8400000`). Relocation fixes their *addresses* but not the fact that the bytes there belong
-to whichever characters that session loaded. Restoring one cross-process **killed the game twice**.
+**The two crashes had TWO DIFFERENT causes**, decoded from the Windows Application event log
+(`VA = 0x140000000 + fault offset`):
+| | crash A 04:34:18 | crash B 04:40:11 |
+|---|---|---|
+| VA / function | `0x14063E4AF` — `FUN_14063e4a0`+0x0F | `0x1406124B8` — `FUN_140612430`+0x88 |
+| bad thing | the pointer at **H+0x2C0** | the **u32 read out of** the H+0x1B0 table |
+| class | **relocation** — H+0x2C0 is an INTRA-BLK pointer to another slot base | **asset contents** — `H+0x1B0` itself was valid and mapped; the fault was on `base + table[sid]` |
 
-At character select **no characters are loaded**, so nothing dangles. Same relocation code, opposite
-outcome. **Anchor every portable savestate at character select.**
+So only crash B is the asset-contents mechanism. Crash A is a relocation failure on a word the
+relocator already covers — i.e. it is evidence the *relocator* was wrong at the time, not that
+battle states are unportable.
+
+**The experiment was confounded three ways:**
+1. `rrtape.py play()` has **no mode gate** (`restore_blk.py` does). A battle state was probably
+   restored into a process sitting at CHARACTER SELECT, where the asset image is still
+   `memset 0xCD` — so `table[sid] = 0xCDCDCDCD`. That tests *"no characters loaded"*, which is not
+   the hypothesis.
+2. The sibling-block relocation bucket was added at 04:41 — **after the last crash** — and a battle
+   restore was **never re-run with the corrected relocator**.
+3. `rrtape4.py` then **regressed that fix**: its loop has only `blk` and `arena` buckets, so any
+   pointer into `blk2 = blk+0x33B18` is bucketed `arena` and moved by `d_arena = 0`.
+
+**Measured pointer census (live, `replay-kit/ptrcensus.py`, `fight_live.blk`):**
+| bucket | battle | char select |
+|---|---|---|
+| intra-blk | 553 | 804 |
+| exe image | 158 | 254 |
+| **per-slot asset windows** | **188** | **0** |
+| common / stage banks | 142 | 241 |
+| foreign heap/DLL | **0** | **0** |
+
+Note character select has **241 asset pointers of its own** — it is portable not because it has none,
+but because they all land in **slot 6** (loaded with a fixed entry id `0x95`, not a cid) and the
+common banks, whose contents are identical in every process. All 19 per-fighter pointer fields are
+NULL in all six slots at character select — measured, not assumed.
+
+Also ruled out by measurement: foreign-heap pointers (zero), and a non-zero exe delta (the PE has
+`DllCharacteristics 0x8020` — **DYNAMIC_BASE off** — and `BASERELOC size 0`, so it *cannot* relocate).
+
+### The fix, if we want battle anchors: RE-DERIVE, don't relocate
+`FUN_14060d100` installs the per-character pointers, and its loader primitive `FUN_14060dcf0` is a
+**plain memcpy** out of an AFS archive that already lives in the target's own arena:
+```
+steam_addr = arena + 0x8400000 + (naomi_addr - 0x0C000000)     # the asset image IS NAOMI main RAM
+entry      = 209 + 59*k + cid        for k = 0..9
+copy arena + off(entry), len(entry) -> arena + 0x8400000 + (TBL_k[slot] - 0x0C000000)
+```
+~60 memcpys, pure RPM/WPM, **no code execution needed**. Palettes need nothing (they live inside
+`blk` at `blk+0x1074+row*0x38`). The **stage** banks are the remaining unenumerated axis —
+`FUN_14060d770` rewrites embedded offsets in place and is **not idempotent**.
+
+**Until that is built and gated, keep anchoring at character select** — but for the right reason
+("battle anchors are not yet retested with a correct relocator"), not the retracted one.
+
+### The gate — nothing ships on "it didn't crash"
+- **G0:** assert `d_arena == 0`, `G+0x48 >= 3`, and bucket `blk2` pointers with `d_blk`.
+- **G1 (offline, zero risk):** replay one tape to frame N in two cold boots; `relocate(S_A) == S_B`
+  byte-exact, for ≥3 frames N spanning a match.
+- **G2 (live):** after restoring, the `blk_crc` trajectory must match every checkpoint for ≥600
+  frames — not just the end state.
+
+⚠ Do **not** bisect by restoring partial byte ranges of `blk` — a half-restored state is internally
+inconsistent (draw list vs pool nodes vs the `blk+0x32500` table) and crashes for unrelated reasons.
 
 ### Relocation (needed because blk moves every launch; the arena has been stable)
 ```
