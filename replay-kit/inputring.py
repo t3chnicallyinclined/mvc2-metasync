@@ -52,6 +52,14 @@ NPLAYERS_OFF, INPUT_SIZE_OFF = 0x174, 0x178
 LAST_CONF_OFF, FRAMECOUNT_OFF, MAXPRED_OFF, QUEUES_OFF = 0x184, 0x188, 0x18c, 0x190
 IQ_STRIDE, INPUTS_OFF, GI_STRIDE, RING = 0xE44, 40, 28, 128
 Q_ID_OFF, Q_LAST_ADDED_OFF, Q_FRAME_DELAY_OFF = 0, 24, 36
+ROLLINGBACK_OFF = 0x180
+# ⚠⚠ TWO CONFOUNDS, both read out of the latch-fill routine at 0x140118950. Without these the
+# comparison below manufactures disagreements that have NOTHING to do with prediction:
+#   and ecx, 0xffffff                    -> the latch keeps only the LOW 24 BITS
+#   mov [rdx + rax*4 + 0x218], ecx       -> where rax = *(i32*)(G + 0x258 + i*4), a RUNTIME
+#                                           seat->slot PERMUTATION (negative = seat not present)
+LATCH_MASK = 0xFFFFFF
+SEATMAP = EXE + 0xAC6F98        # G+0x258
 IN0 = EXE + 0xAC6F58            # G+0x218 -- the latch the agent polls
 
 SECS = float(sys.argv[1]) if len(sys.argv) > 1 else float("inf")
@@ -100,8 +108,13 @@ last_harvest = 0.0
 stopped = False
 
 
+nonzero_bits = [0] * n     # G8-style liveness: a dead (Init-only) ring is all-zero bits
+
+
 def harvest():
-    """Pull every confirmed entry out of both rings. 3584 B per queue, ~1/s is ample (128 frames = 2.13s)."""
+    """Pull every confirmed entry out of each ring. 3584 B/queue, ~1/s is ample (128 frames = 2.13s).
+    Mask to 24 bits so ring values compare against the 24-bit latch. G2 self-consistency (frame%128==slot)
+    is the gate for accepting a slot -- it, not sz==4, is what proves the slot was actually written."""
     for k in range(n):
         buf = g.read(queues + k * IQ_STRIDE + INPUTS_OFF, RING * GI_STRIDE)
         if not buf or len(buf) < RING * GI_STRIDE:
@@ -109,7 +122,9 @@ def harvest():
         for s in range(RING):
             fr, sz, bits = struct.unpack_from("<iiI", buf, s * GI_STRIDE)
             if fr >= 0 and sz == 4 and fr % RING == s:
-                ring[k][fr] = bits
+                ring[k][fr] = bits & LATCH_MASK
+                if bits & LATCH_MASK:
+                    nonzero_bits[k] += 1
 
 
 while time.time() - t0 < SECS:
@@ -122,9 +137,15 @@ while time.time() - t0 < SECS:
         break
     if fc != last_f:
         last_f = fc
-        b = g.read(IN0, 8)
-        if b and len(b) == 8:
-            latch[fc] = struct.unpack("<II", b)
+        # skip frames sampled mid-rollback: the latch is being rewritten under us
+        if g.u8(sync + ROLLINGBACK_OFF) == 0:
+            b = g.read(IN0, 16)     # 4 seat words, not 2 -- the permutation can target any of them
+            if b and len(b) == 16:
+                words = struct.unpack("<IIII", b)
+                # queue k's value lands at word seatmap[k]; negative means the seat is absent
+                slots = [g.i32(SEATMAP + 4 * k) for k in range(n)]
+                if all(s is not None and 0 <= s < 4 for s in slots):
+                    latch[fc] = tuple(words[s] & LATCH_MASK for s in slots)
         lc = g.u32(sync + LAST_CONF_OFF)
         if lc is not None:
             lag[fc - lc] += 1
@@ -142,35 +163,36 @@ print(f"latch samples {len(latch)}   ring entries {[len(r) for r in ring]}   "
 if lag:
     print(f"_framecount - _last_confirmed_frame: {sorted(lag.items())[:8]}  (how far the ring trails)")
 
-if not latch or not ring[0]:
-    sys.exit("\nnot enough data -- was a fight actually running?")
+# ── G8 NEGATIVE CONTROL: a dead, Init-only ring reads frame%128==slot on stale slots too, so the
+#    self-consistency gate alone is NOT liveness. A live ring MUST carry nonzero input bits. ──
+print(f"\nliveness: nonzero-input entries per queue {nonzero_bits}")
+if not latch or not any(ring) or not any(nonzero_bits):
+    sys.exit("DEAD or EMPTY ring -- no queue carried a nonzero input. Not a running fight, or the\n"
+             "layout is wrong. (This is the negative control: at a menu this is the CORRECT result.)")
 
-# ── which shift aligns the latch with the ring? ─────────────────────────────────────────────────
+# ── which shift aligns the latch with the ring? key by _framecount; the shift should come out 0 ──
 print("\nshift  compared  agree   disagree   agreement")
 best = None
 for sh in range(-12, 13):
     comp = ag = 0
-    for f, (l0, l1) in latch.items():
-        a, b_ = ring[0].get(f + sh), ring[1].get(f + sh)
-        if a is None or b_ is None:
+    for f, lw in latch.items():
+        rw = [ring[k].get(f + sh) for k in range(n)]
+        if any(v is None for v in rw):
             continue
         comp += 1
-        if (a, b_) == (l0, l1):
+        if tuple(rw) == lw:
             ag += 1
     if comp >= 30:
         pct = 100.0 * ag / comp
-        mark = ""
         if best is None or pct > best[1]:
             best = (sh, pct, comp, ag)
-            mark = ""
-        print(f"{sh:>+5}  {comp:>8}  {ag:>5}  {comp-ag:>8}   {pct:>7.1f}%{mark}")
+        print(f"{sh:>+5}  {comp:>8}  {ag:>5}  {comp-ag:>8}   {pct:>7.1f}%")
 
 if best is None:
     sys.exit("\nno shift had enough overlap to compare -- run a longer match.")
 
 sh, pct, comp, ag = best
 print(f"\nBEST ALIGNMENT: shift {sh:+d}  ->  {pct:.1f}% agreement over {comp} frames")
-print(f"  frame_delay read from Sync = {delay}")
 if sh == 0:
     print("  => a stored .frame N IS the input the sim consumed on frame N. No delay adjustment.")
 else:
@@ -178,15 +200,19 @@ else:
     print(f"     or every input lands {abs(sh)} frames from where it belongs (looks plausible, replays wrong).")
 
 dis = comp - ag
-print(f"\nLATCH vs CONFIRMED RING: {dis} disagreement(s) in {comp} compared frames ({100.0*dis/comp:.2f}%)")
+print(f"\nLATCH vs CONFIRMED RING (at shift {sh}, both masked to 24 bits, seat-permuted, "
+      f"rollback frames skipped):")
+print(f"  {dis} disagreement(s) in {comp} compared frames ({100.0*dis/comp:.2f}%)")
 if dis:
-    print("  *** The latch does NOT match the confirmed record. Every tape recorded off G+0x218")
-    print("      carries those wrong values, and they cluster where the connection is worst. ***")
+    print("  -> On these frames the value we sampled from the latch differed from GGPO's confirmed")
+    print("     record. NOTE: the latch SELF-CORRECTS on the rollback re-sim path, so this is a")
+    print("     SAMPLING-RACE measurement (we caught a pre-correction value), not proof the latch is")
+    print("     permanently wrong. It is the magnitude the confirmed-ring read would eliminate.")
     shown = 0
-    for f, (l0, l1) in sorted(latch.items()):
-        a, b_ = ring[0].get(f + sh), ring[1].get(f + sh)
-        if a is not None and b_ is not None and (a, b_) != (l0, l1):
-            print(f"      frame {f}: latch=({l0:#x},{l1:#x})  confirmed=({a:#x},{b_:#x})")
+    for f, lw in sorted(latch.items()):
+        rw = tuple(ring[k].get(f + sh) for k in range(n))
+        if all(v is not None for v in rw) and rw != lw:
+            print(f"      frame {f}: latch={tuple(hex(x) for x in lw)}  confirmed={tuple(hex(x) for x in rw)}")
             shown += 1
             if shown >= 10:
                 break
