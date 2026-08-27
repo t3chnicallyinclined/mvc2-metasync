@@ -150,12 +150,22 @@ M_CONNID     = 0x129c              # i32
 M_CONNSTATE  = 0x12a0              # u8  0 = us / 1 = pending / 2 = connected
 
 # session object fields already known to the tray
-S_NETSESS   = 0x1b8
-S_GGPOHOST  = 0x1d0
+S_NETSESS   = 0x1b8                # OUR net-session id; localPlayerNum = its index in S_SEATTBL
+S_SEATTBL   = 0x1bc                # i32[4]: seat s -> net-session id  (FUN_14004b130)
+S_ACTIVE    = 0x1cd                # u8  match active
+S_GGPOHOST  = 0x1d0                # = FUN_140065d80(PL,0) = SLOT OF SEAT 0, NOT the lobby owner
+S_HOSTSLOT2 = 0x1d4                # = FUN_140065c80() = matchState+0xcd60 session host slot
 S_HOSTED    = 0xd0320
-S_MODE      = 0xd0328              # 1 ranked / 2 custom / 4 spectator
+S_MODE      = 0xd0328              # 4 == SPECTATOR (five `cmp [sess+0xd0328],4` sites in the exe)
 S_D0374     = 0xd0374
+S_D037C     = 0xd037c
 S_MYSEATX   = 0xd03f0
+
+# G role flags, latched once per match by FUN_140037370
+G_LOCALPNUM = 0x4f0                # == exe+0xac7230; -1 when we hold no seat
+G_ISVERSUS  = 0x7b4                # (hosted==1), forced to 0 in spectator mode
+G_NUMSEATS  = 0x7f4                # set to 2 by FUN_14003c130
+G_SPECTATOR = 0x7f8                # set to 1 iff hosted==1 && mode==4   (FUN_140037370)
 
 STEAMID_HI = 0x01100001            # universe 1 / type 1 individual / instance 1
 TRAY_GAP   = 0x148                 # what find_opponent_lobby() assumes today
@@ -267,6 +277,93 @@ def resolve(m):
     return r
 
 
+def view_role(m, r):
+    """(a) can THIS machine tell it is spectating?  Five independent signals."""
+    print("=== R. LOCAL ROLE - am I a fighter or a spectator? ===")
+    g, s_, ms, pl = r.get("G"), r.get("S"), r.get("MS"), r.get("PL")
+    if not g or not s_:
+        print("  G / SESSION not resolved")
+        print()
+        return
+    hosted = i32(m, s_ + S_HOSTED)
+    mode = i32(m, s_ + S_MODE)
+    specflag = i32(m, g + G_SPECTATOR)
+    lpn = i32(m, g + G_LOCALPNUM)
+    ggidx = i32(m, GG_MYIDX)
+    myslot = i32(m, ms + MS_MYSLOT) if ms else None
+    myseat = None
+    if pl and myslot is not None and 0 <= myslot < 16:
+        myseat = i32(m, pl + PL_BASE + myslot * PL_STRIDE + PL_SEAT)
+    print("  [1] ourGgpoIndex   exe+0x2d10964 = %-6s  %s" % (
+        ggidx, "SPECTATING (routes to ggpo_start_spectating)"
+        if (ggidx is not None and ggidx < 0) else "we are GGPO player %s" % ggidx))
+    print("  [2] localPlayerNum exe+0xac7230  = %-6s  %s" % (
+        lpn, "NO SEAT -> spectator" if lpn == -1 else "seat index %s" % lpn))
+    print("  [3] sess+0xd0320 / +0xd0328      = %s / %s   %s" % (
+        hosted, mode, "SPECTATOR (hosted==1 and mode==4)"
+        if (hosted == 1 and mode == 4) else "not the spectator combination"))
+    print("  [4] G+0x7f8 spectator latch      = %-6s  %s   [G+0x7b4 versus=%s  G+0x7f4 seats=%s]"
+          % (specflag, "SPECTATOR" if specflag else "not spectating",
+             i32(m, g + G_ISVERSUS), i32(m, g + G_NUMSEATS)))
+    print("  [5] our own seat (live, from PL) = %-6s  %s" % (
+        myseat, "NO SEAT -> spectator"
+        if (myseat is not None and myseat < 0) else "seated"))
+    print("  seat table sess+0x1bc[0..3] = %s   (our net id sess+0x1b8 = %s)" % (
+        [i32(m, s_ + S_SEATTBL + i * 4) for i in range(4)], i32(m, s_ + S_NETSESS)))
+    print("      localPlayerNum is literally the index of our net id in that table, else -1.")
+    votes = {
+        "ggpoIndex<0": (ggidx is not None and ggidx < 0),
+        "localPlayerNum==-1": (lpn == -1),
+        "mode==4": (hosted == 1 and mode == 4),
+        "G+0x7f8": bool(specflag),
+        "no seat": (myseat is not None and myseat < 0),
+    }
+    yes = [k for k, v in votes.items() if v]
+    print("  >>> signals saying SPECTATOR: %s" % (yes or "none - this machine is a FIGHTER"))
+    if yes and len(yes) != len(votes):
+        print("      !! signals DISAGREE (%s say no) - do not ship until that is understood"
+              % [k for k, v in votes.items() if not v])
+    print("  staleness: [1] is latched per SESSION (FUN_14003a520), [2] and [4] per MATCH")
+    print("             (FUN_140037370) - both hold the LAST match answer between matches.")
+    print("             [3] and [5] are the live ones.")
+    print()
+
+
+def view_ggpohost(m, r, participants):
+    """(b) which machine holds the typed (spectator-inclusive) staging array?"""
+    print("=== H. WHO IS THE GGPO HOST (holder of the typed participant list) ===")
+    s_, ms = r.get("S"), r.get("MS")
+    if not s_ or not ms:
+        print("  not resolved")
+        print()
+        return
+    ggpohost = i32(m, s_ + S_GGPOHOST)
+    myslot = i32(m, ms + MS_MYSLOT)
+    seat0 = next((e["slot"] for e in participants if e["seat"] == 0), None)
+    owner = next((e["slot"] for e in participants if e["host"]), None)
+    live = bool(i32(m, GG_STARTED))
+    print("  sess+0x1d0 ggpoHostSlot = %-4s   (= FUN_140065d80(PL,0): THE SLOT HOLDING SEAT 0)"
+          % ggpohost)
+    if not live:
+        print("     ^^ STALE: +0x1d0 is recomputed ONLY at match start (FUN_14003c130) and the")
+        print("        GGPO globals read started=0 right now. Ignore every comparison below")
+        print("        until a match is actually running.")
+    print("  slot holding seat 0     = %-4s   %s" % (
+        seat0, ("MATCH" if seat0 == ggpohost else
+                "MISMATCH -> the +0x1d0 reading is wrong") if live else "(stale, not compared)"))
+    print("  slot with PlayerInfo host flag (lobby owner) = %s" % owner)
+    print("  sess+0x1d4 = %s   matchState+0xcd60 = %s" % (
+        i32(m, s_ + S_HOSTSLOT2), i32(m, ms + MS_HOSTSLOT)))
+    print("  our slot = %s  ->  %s" % (myslot,
+          ("WE are the GGPO host: our staging array below INCLUDES type==2 spectators"
+           if myslot == ggpohost else
+           "we are NOT the GGPO host: our staging array holds fighters only")
+          if live else "(no live session - role undetermined)"))
+    if live and owner is not None and ggpohost is not None and owner != ggpohost:
+        print("  !! LOBBY OWNER and GGPO HOST are different slots -> a spectating cabinet does")
+        print("     NOT hold the typed spectator list; the seat-0 FIGHTER does.")
+    print()
+
 def view_session(m, r):
     """VIEW B first: it feeds VIEW A and it exists even with no GGPO session."""
     print("=== B. SESSION PARTICIPANT SLOTS  (16 x 0x128 in PL, 16 x 0x170 in matchState) ===")
@@ -366,7 +463,9 @@ def view_ggpo(m, r, participants):
                 print("      !! slot %d has no present participant record - offsets disagree" % slot)
     print()
 
-    print("  GGPOPlayer[] staging array @0x%010x (host-only entries include SPECTATORS):" % GG_PLAYERS)
+    print("  GGPOPlayer[] staging array @0x%010x - populated ONLY on the SEAT-0 fighter's box,\n"
+          "  where it also carries type==2 SPECTATOR entries%s:" % (
+              GG_PLAYERS, "" if started else "   [STALE: started=0]"))
     n = nentries if (nentries and 0 < nentries <= 16) else 4
     for k in range(n):
         a = GG_PLAYERS + k * GGP_STRIDE
@@ -606,7 +705,9 @@ def snapshot(m, do_hex):
               "to pin seat->side)" % i32(m, LOCALPLAYER))
         print()
 
+    view_role(m, r)
     participants = view_session(m, r)
+    view_ggpohost(m, r, participants)
     view_ggpo(m, r, participants)
     members = view_lobby(m, r)
     verdict(m, r, participants, members)
@@ -731,6 +832,15 @@ WHAT WOULD DISPROVE THIS
 * C shows the three id copies disagreeing -> at least one member offset is wrong.
 * D5 finds a +/-0x148 adjacency inside these structures -> the tray was reading THIS structure
   after all, and the bug is narrower than "wrong structure".
+* R's five spectator signals DISAGREE on the cabinet -> none is authoritative alone; trust the
+  live pair (mode==4, our seat<0) and treat the latched ones as advisory only.
+* R[3] does NOT read 4 on a spectating cabinet -> session+0xd0328==4 is not the role
+  discriminator despite five `cmp ...,4` sites, and the memory note is wrong.
+* H shows ggpoHostSlot == the cabinet's own slot while the cabinet is spectating -> the reading
+  `session+0x1d0 = FUN_140065d80(PL,0)` (slot of SEAT 0) is wrong and the cabinet DOES hold the
+  typed list.
+* On the seat-0 fighter's box, A shows no type==2 entry while a spectator is present -> the
+  typed-spectator route does not exist on this build at all.
 """)
 
 
