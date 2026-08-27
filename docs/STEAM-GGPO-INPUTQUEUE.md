@@ -66,7 +66,66 @@ set_frame_delay. `input_size = 4` — four bytes per player, i.e. the two u32s w
 `GameInput::init(-1,0)` calls. The `new[]` in the backend constructor is the endpoint array. Do not
 confuse the two; both are `new[]`-allocated with a cookie.
 
-## Inside one InputQueue — INFERRED (upstream layout, size-matched)
+## ⭐ CONFIRMED LIVE 2026-08-27 (`replay-kit/ringdiag.py`, real ranked match)
+
+Everything below marked INFERRED was **verified against a running game**. The decisive result:
+
+```
+SELF-CONSISTENCY: slots whose stored frame satisfies frame%128 == slot : 128 ok / 0 bad
+ring dump: [27] 411/4  [28] 412/4  [29] 413/4  [30] 286/4  [31] 287/4  [32] 288/4
+           413 % 128 = 29 ✓          286 = 413-127, 286 % 128 = 30 ✓   <- the wrap, exactly right
+GameInput.size == 4 on all 6875 samples across all 128 slots
+array cookie at queues-8 == 2 == nplayers
+```
+
+A 128-entry ring, stride 28, base +40, keyed `frame % 128`. Proven by data, not by arithmetic.
+
+### The Sync scalar map — CONFIRMED by live values
+
+| offset | live value | field | evidence |
+|---|---|---|---|
+| `+0x174` | 2 | `_num_players` | read in `Sync::Init` |
+| `+0x178` | 4 | `_frame_delay` | passed to `InputQueue::Init` |
+| `+0x180` | 0 | `_rollingback` | byte, zeroed in Init |
+| `+0x184` | 413 | `_last_confirmed_frame` | tracked `_last_added_frame` exactly |
+| `+0x188` | 416 | **`_framecount`** | zeroed in Init; == `blk+0x3CC8` |
+| `+0x18c` | **8** | `_max_prediction_frames` | == upstream `MAX_PREDICTION_FRAMES` |
+| `+0x190` | ptr | `_input_queues` | read in `Sync::Init` |
+
+Member order matches upstream `Sync` exactly:
+`bool _rollingback; int _last_confirmed_frame; int _framecount; int _max_prediction_frames; InputQueue *_input_queues;`
+
+### ⭐⭐ `blk+0x3CC8` IS GGPO's `_framecount`
+
+Live: `sync+0x188 = 416` and `blk+0x3CC8 = 416` — the same number, and both advanced by exactly 179
+over the same 3 s window. There is **no epoch offset to derive**; the game's counter and GGPO's frame
+numbering are one and the same. (Consistent with `blk+0x3CC8` sitting inside the registered region and
+therefore being memcpy-restored on rollback.)
+
+### ⚠⚠ THE RING LAGS THE LIVE FRAME — read the watermark, never `_framecount`
+
+`_last_added_frame = 413` while `_framecount = 416`. Frame 416 is **not in the ring yet**, so slot
+`416 % 128 = 32` still holds frame **288** from the previous lap. A reader that asks the ring for the
+CURRENT frame gets a stale entry from 128 frames ago, every time — this is what produced an initial
+`0/6875` result and it was the reader's bug, not the model's.
+
+Confirmed inputs necessarily arrive AFTER the sim has already run on predictions. That lag is the
+entire point of the structure. Bound every read by the confirmed watermark, which is exactly GGPO's
+own recorder pattern (`p2p.cpp`):
+
+```c
+while (_next_spectator_frame <= total_min_confirmed) { ...GetConfirmedInputs(_next_spectator_frame)... }
+```
+
+⟹ read frames up to `min(_last_added_frame)` over the queues (or `Sync::_last_confirmed_frame` at
+`sync+0x184`), and **never** index by `_framecount`.
+
+⚠ STILL OPEN: whether a stored `.frame == N` means "the input the sim CONSUMED on frame N", or whether
+`_frame_delay` (live: 4) shifts it — upstream `AdvanceQueueHead` stores at `frame + _frame_delay`.
+Getting this wrong offsets every recorded input by 4 frames in a way that looks plausible and replays
+wrong. Resolve from the GGPO source before writing a recorder.
+
+## Inside one InputQueue — was INFERRED, now CONFIRMED above
 
 `sizeof(InputQueue) == 0xE44 == 3652` is **exactly** upstream GGPO's size, so the fork did not change
 the layout and the upstream offsets should hold:
