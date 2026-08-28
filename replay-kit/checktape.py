@@ -87,14 +87,28 @@ def check(path):
     # ── 3. seat_in must be the RAW word, not a copy of the decoded one ─────────────────────────
     sch = r.get("schema", "")
     print(f"-- INPUTS --")
-    # NOT rstrip(']') - that strips EVERY trailing bracket, including the one in "seat_in[2]", and
-    # reports a correct schema as broken. The self-test caught it; drop exactly one.
-    sch_inner = sch[:-1] if sch.endswith("]") else sch
-    print(f"   {ok(sch_inner.endswith('seat_in[2]'))} schema ends with seat_in[2]"
-          f"{'' if sch_inner.endswith('seat_in[2]') else '   <-- got: ...' + sch_inner[-28:]}")
-    if frames and isinstance(frames[0], list):
+    # Locate seat_in BY NAME from the schema's top-level columns (ignoring [] groups), NOT by tail
+    # position: 0.3.25 appends sx/sy/zx/zy and 0.3.28 appends flash/glow/layer/timer AFTER seat_in, so
+    # the old `len-1` read `timer` (an int) → "'int' object is not iterable".
+    def _cols(s):
+        s = s.strip()
+        s = s[1:] if s.startswith("[") else s
+        s = s[:-1] if s.endswith("]") else s
+        out, depth, cur = [], 0, ""
+        for ch in s:
+            if ch == "[": depth += 1; cur += ch
+            elif ch == "]": depth -= 1; cur += ch
+            elif ch == "," and depth == 0: out.append(cur.strip()); cur = ""
+            else: cur += ch
+        if cur.strip(): out.append(cur.strip())
+        return out
+    names = [c.split("[")[0] for c in _cols(sch)]
+    has_seat = "seat_in" in names
+    print(f"   {ok(has_seat)} schema has seat_in[2]"
+          f"{'' if has_seat else '   <-- got columns: ...' + ','.join(names[-4:])}")
+    if frames and isinstance(frames[0], list) and has_seat:
         try:
-            i_seat = len(frames[0]) - 1              # appended last
+            i_seat = names.index("seat_in")          # BY NAME (was len-1, broke on appended columns)
             seat_vals = {tuple(f[i_seat]) for f in frames if f[i_seat] != [0, 0]}
             p_vals = {(f[1], f[2]) for f in frames if (f[1], f[2]) != (0, 0)}
             print(f"   {ok(bool(seat_vals))} seat_in non-zero on {sum(1 for f in frames if f[i_seat] != [0, 0]):,} frames "
