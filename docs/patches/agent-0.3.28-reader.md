@@ -16,9 +16,16 @@ Cargo.toml). Then `cargo build --release`.
 built on it. Apply on the tape/replay lane's branch, NOT on `origin/main` (which is 0.3.23, tape-work-unmerged
 — cutting a release from main is what would ship an empty tape).
 
-⚠ **Headers are repo-relative (`a/`,`b/`)** — regenerated 2026-08-28 after projects-45 caught that the first
-artifact had absolute scratchpad paths and `git apply` failed with "No such file or directory". `git apply`
-(default `-p1`) now applies clean.
+⚠ **Line endings + apply command** — regenerated 2026-08-28 (twice, after projects-45's review): first for
+absolute scratchpad paths (now `a/`,`b/` repo-relative), then because the repo `reader.rs` is **CRLF** while
+this diff is **LF-normalized contextual** (23 hunks). Apply with one of:
+```
+git -C "...\RetroReceipts-agent" apply --ignore-whitespace "...agent-0.3.28-reader.diff"
+# or, line-ending tolerant:
+cd RetroReceipts-agent && patch -p1 < "...agent-0.3.28-reader.diff"
+```
+A plain `git apply` (no `--ignore-whitespace`) will fail on the CRLF/LF mismatch. Verified: `patch -p1` clean +
+reproduces the built 0.3.28 (LF) byte-for-byte. (Content is already landed on the replay lane's `try-0.3.28`.)
 
 ⚠ **Run `cargo test`, not just `cargo check`.** `check` never builds the test cfg. `GsRow` gained 8 fields
 (`sx/sy/zx/zy`, `flash/glow/layer/timer`); a stats-test row constructor must be kept EXHAUSTIVE or `cargo test`
