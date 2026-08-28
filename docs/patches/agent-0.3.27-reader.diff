@@ -1,0 +1,573 @@
+--- /c/Users/trist/projects/RetroReceipts-agent/agent/src/reader.rs	2026-08-27 05:16:47.743094000 -0400
++++ /c/Users/trist/AppData/Local/Temp/claude/c--Users-trist-projects/87af92a3-d210-44d2-94eb-ea46c3fdb39e/scratchpad/agentcheck/src/reader.rs	2026-08-27 23:26:14.620289400 -0400
+@@ -82,6 +82,14 @@
+                                       //   object THIS frame (bank03 loc_8c03093c early-returns on 0)
+ const H_ANIM_TMR: usize = 0x186;      // anim cell duration countdown (u8) — replay interpolation aid
+ const H_SPRITE_ID: usize = 0x188;     // THE render key (u16) — shipped RAW (bit15 = xform flag, consumer masks)
++// 0.3.25 render columns — the engine's OWN screen output, so a renderer never reconstructs. All four
++// live in the existing 0x200 `o` window, so they cost NO extra read. Confirmed live 2026-08-27
++// (replay-kit/probe_render_cols.py): engine sx/sy == px−eyeX+320 / ground−py to 0.0 px on every drawn
++// frame, and STAYS correct on round-transition/edge-clamp frames where the reconstruction diverges.
++const H_SCREEN_X:  usize = 0x124;     // engine screen X (f32) — DC +0xE0 x_pos_screenspace (matrix+perspective output)
++const H_SCREEN_Y:  usize = 0x128;     // engine screen Y (f32) — DC +0xE4 y_pos_screenspace
++const H_SCALE_X:   usize = 0x130;     // per-object magnifier X (f32) — CpsXScale×sprite_scale; rests at 5/3
++const H_SCALE_Y:   usize = 0x134;     // per-object magnifier Y (f32) — CpsYScale×sprite_scale; rests at 15/7
+ // Camera globals live in the BLOCK the fighter array hangs off: blk = *(exe+0xAC6EF0), and the array
+ // base = blk + 0x3f24 (so H_0 = blk + 0x3DB8 = base − 0x16C, the same identity as OBJ_BACK — the two
+ // constants cross-check each other: 0x3f24 − 0x16C = 0x3DB8).
+@@ -93,6 +101,22 @@
+ // fields (0x76c → char i+1's +0x600 region; 0x902 → char i+1's combo-dealt). There is no known
+ // correct Steam analogue for either; do NOT re-add one without a live proof.
+ 
++// ── 0.3.27: the engine's per-frame DRAW LIST → every drawn OBJECT-POOL node (projectiles, assist shots,
++// capes, hit-sparks, super/beam effects) in the engine's OWN layer order. A pool node is a PREFIX of the
++// fighter struct (loc_8c03093c renders both with identical code), so it reads through the SAME H-offsets.
++// handle = u64 @ blk+DRAWLIST_OFF + L*DRAWLIST_LAYER + i*8 for i<count[L]; count[L] = u8 @ blk+DRAWLIST_COUNTS+L.
++// 16 layers, z-order = layer index (no z scalar). Fighters appear here too (excluded — already in `frames`).
++// Confirmed live (mvc2-dc-steam-block-map + replay-kit/verify.py pool): stride 0x280 pool, base ≈ blk+0x6dd8;
++// the draw list already points at every node so no pool scan is needed.
++const DRAWLIST_OFF:          usize = 0x2f4d0;   // blk-relative: layer L's handle array
++const DRAWLIST_COUNTS:       usize = 0x324d0;   // blk-relative: u8 count per layer
++const DRAWLIST_LAYER:        usize = 0x300;     // stride between layers in the handle table
++const N_LAYERS:              usize = 16;
++const DRAWLIST_MAX_PER_LAYER: usize = 0x60;     // engine cap per layer
++const OBJS_CAP_PER_FRAME:    usize = 64;        // active pool is a handful; cap for tape-size safety
++const H_CATEGORY:            usize = 0x03;      // node category: 0 = main sprite path, else effect path
++const H_OWNER:               usize = 0x80;      // node owner player pointer (u64) → maps to a fighter slot
++
+ // ── (2) battle-globals + meter (relative to the array base `ram`) ──
+ // The DC BattleState struct transfers BYTE-FAITHFUL to array+0x2e5dc (MET_BARS/FILL are that base +0x5a/+0x7c;
+ // Ghidra-confirmed) → GROUND-TRUTH win/round state, no health inference.
+@@ -116,6 +140,22 @@
+ const KCODE_OFF:       usize = 0xac6f58;    // == SEATIN_OFF (name kept: existing call sites)
+ const SEATIN_OFF:      usize = 0xac6f58;    // G+0x218: RAW input word, seat k at +k*4 (u32, 24-bit mask)
+ const SEATMAP_OFF:     usize = 0xac6f98;    // G+0x258: GGPO player k → seat index (i32, -1 = unmapped)
++// ── 0.3.26: GGPO's CONFIRMED input ring — the finalized post-rollback inputs dojo's replay plays
++// pure-forward. G+0x218 above is the PREDICTED latch (smeared remote input under rollback); THESE are
++// the ground truth. Chain (RE'd + confirmed live, docs/STEAM-GGPO-INPUTQUEUE.md): session = *(u64*)
++// (exe+0x2E10B98) → Sync = session+0x9F0 → queues = *(u64*)(sync+0x190); queue[k]+40 = _inputs[128]
++// (GameInput {i32 frame; i32 size; u8 bits[]}, stride 28), keyed frame%128. Confirmed watermark =
++// min over queues of _last_added_frame (queue+24), floored by Sync::_last_confirmed_frame (sync+0x184).
++const GGPO_SESSION_OFF: usize = 0x2e10b98;  // *(u64*)(exe+this) = the ggpo session (Peer2PeerBackend)
++const GGPO_SYNC_OFF:    usize = 0x9f0;
++const SYNC_QUEUES_OFF:  usize = 0x190;
++const SYNC_LASTCONF_OFF:usize = 0x184;
++const SYNC_NPLAYERS_OFF:usize = 0x174;
++const IQ_STRIDE:        usize = 0xe44;
++const IQ_INPUTS_OFF:    usize = 40;
++const IQ_LASTADD_OFF:   usize = 24;
++const GI_STRIDE:        usize = 28;
++const GI_RING:          usize = 128;
+ const ROLLBACK_OFF:    usize = 0xac74ac;    // G+0x76C: load_game_state count; >0 = GGPO rewound mid-capture
+ const ARENA_PTR_OFF:   usize = 0xac6d40;    // exe global → the single 256 MiB arena that blk is carved from
+ // ── the GGPO save/restore region: blk[0..BLK_SIM_LEN) IS the complete deterministic sim state ──
+@@ -125,6 +165,8 @@
+ // netcode, not by our inference. A copy of it + the per-frame inputs re-simulates the match exactly.
+ const BLK_SIM_LEN:     usize = 0x33b18;     // 211,736 B
+ const BLK_MODE_OFF:    usize = 0x3cb8;      // blk+0x3CB8 byte[2]: 1 = CHARACTER SELECT, 2 = IN BATTLE
++const STG_OFF:         usize = 0x6d3c;      // blk+0x6D3C: STG_ID (u8) — RNG-picked stage; the tape ships only
++                                            //   this number, the renderer pulls stage art from the Collection arc
+ const BLK_FRAME_OFF:   usize = 0x3cc8;      // blk+0x3CC8: the sim frame counter (used as a torn-read guard)
+ const BLK_H0_OFF:      usize = 0x3db8;      // blk+0x3DB8 = fighter slot 0. ⚠ NOT MATCH_ARR_ADD (0x3f24),
+                                             //   which is 0x16C INSIDE the object — 0x3f24 − 0x16c = 0x3db8.
+@@ -1030,50 +1072,15 @@
+     Some((p1, p2))
+ }
+ 
+-// One-time locate of a FINE (per-render-frame) guest frame_counter: a u32 near the array that ticks up by
+-// ~1 EVERY render frame, SMOOTHLY. The critical distinction (root cause of the v0.1.10 6Hz decimation): the
+-// game also has a COARSE counter that jumps by ~10 every ~10 frames (flat, then +10). At the old 180ms
+-// sampling both look like "~11 per sample", so the old hunt could pick the coarse one → dedup-by-counter
+-// stored only every 10th frame → 6Hz. We now sample FAST (~22ms): the fine counter ticks every sample by a
+-// small amount; the coarse one reads flat between its jumps → rejected. If nothing qualifies we return None,
+-// and the caller's synthetic per-poll index is ALSO dense (~60Hz) — so the capture is never decimated.
+-unsafe fn hunt_frame_counter(h: &mem::Proc, array: usize) -> Option<usize> {
+-    let r = h.region_at(array)?;
+-    let rbase = r.base; let rend = r.base + r.size;
+-    let lo = array.saturating_sub(0x80_0000).max(rbase);
+-    let hi = (array + 0x80_0000).min(rend);
+-    if hi <= lo + 0x1000 { return None; }
+-    let size = (hi - lo) & !3usize;
+-    const NS: usize = 12;                                   // ~12 samples @ 22ms ≈ 264ms, fast enough to see per-frame ticks
+-    let mut snaps: Vec<Vec<u32>> = Vec::with_capacity(NS);
+-    for _ in 0..NS {
+-        let buf = read_at(h, lo, size)?;
+-        if buf.len() < size { return None; }
+-        let words: Vec<u32> = (0..size / 4).map(|i| { let o = i * 4; u32::from_le_bytes([buf[o], buf[o + 1], buf[o + 2], buf[o + 3]]) }).collect();
+-        snaps.push(words);
+-        std::thread::sleep(std::time::Duration::from_millis(22));
+-    }
+-    let n = snaps.iter().map(|v| v.len()).min().unwrap_or(0);
+-    let ns = snaps.len();
+-    let mut best: Option<(usize, i64)> = None;
+-    'off: for i in 0..n {
+-        let mut ticks = 0usize;                             // samples where it advanced (a live per-frame counter ticks most samples)
+-        let mut deltas: Vec<i64> = Vec::with_capacity(ns - 1);
+-        for s in 0..ns - 1 {
+-            let delta = snaps[s + 1][i] as i64 - snaps[s][i] as i64;
+-            if delta < 0 || delta > 6 { continue 'off; }    // monotonic + NO coarse jumps (kills the +10-every-10-frames counter)
+-            if delta >= 1 { ticks += 1; }
+-            deltas.push(delta);
+-        }
+-        if ticks < (ns - 1) * 3 / 4 { continue 'off; }      // must tick nearly every 22ms sample (fine, not flat-then-jump)
+-        deltas.sort();
+-        let med = deltas[deltas.len() / 2];
+-        if med < 1 || med > 3 { continue 'off; }            // ~1-2 per sample at 22ms (≈1.3 render frames/sample)
+-        let score = (med - 1).abs();                        // prefer the finest (closest to 1 tick/sample)
+-        if best.map_or(true, |(_, b)| score < b) { best = Some((lo + i * 4, score)); }
+-    }
+-    best.map(|(a, _)| a)
+-}
++// ⚠⚠ `hunt_frame_counter` LIVED HERE AND WAS DELETED 2026-08-27. DO NOT BRING IT BACK.
++// It scanned ±8 MB for "a u32 that ticks monotonically" to find a counter we already know is
++// blk+0x3CC8 (BLK_FRAME_OFF). Because it rejected any candidate that ever DECREASES, and because
++// blk+0x3CC8 mirrors GGPO's `_framecount` — which is assigned BACKWARD on every rollback — the
++// filter was structurally guaranteed to discard the correct answer, most often on the laggiest
++// matches. It shipped tapes clocked off a benched character's sprite id. See the block comment at
++// the capture site (search BLK_FRAME_OFF) for the measurements. If a search is ever needed again,
++// it MUST tolerate a rewind of up to MAX_PREDICTION_FRAMES (8) — a bounded dip followed by
++// recovery is the SIGNATURE of the right counter, not a disqualifier.
+ 
+ // ── AUTO GAME-STATE RECORDING (tester beta) ────────────────────────────────────────────────────────
+ // Every client auto-records FULL per-frame game state during a match and uploads it to the skinsync
+@@ -1115,7 +1122,7 @@
+ // screen_x = 320 + (world_x − eyeX), screen_y = ground − world_y, exact to sub-pixel on drawn objects.
+ // ⚠ consumers gating on that camera identity: use a ~8px threshold, NOT tight — real frames sit 0.0–0.7px
+ // off, stale ones 215px+ (a 0.5px cut silently dropped 80% of a character's frames in testing).
+-const GS_SCHEMA: &str = "[frame,p1_in,p2_in,kcode,hp[6],px[6],py[6],p1_meter,p2_meter,meter_fill,combo_dealt[6],combo_recv[6],vx[6],vy[6],red_hp[6],facing[6],hitstun[6],drawn[6],sid[6],atimer[6],eyeX,eyeY,ground,seat_in[2]]";
++const GS_SCHEMA: &str = "[frame,p1_in,p2_in,kcode,hp[6],px[6],py[6],p1_meter,p2_meter,meter_fill,combo_dealt[6],combo_recv[6],vx[6],vy[6],red_hp[6],facing[6],hitstun[6],drawn[6],sid[6],atimer[6],eyeX,eyeY,ground,seat_in[2],sx[6],sy[6],zx[6],zy[6]]";
+ 
+ fn gs_now_ms() -> u64 { std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0) }
+ 
+@@ -1225,7 +1232,17 @@
+     // translation table. This is the column a re-simulator feeds back into the real engine; p1_in/p2_in
+     // are the downstream decoded values and are kept only for compatibility with existing consumers.
+     seat_in: [u32; 2],
+-}
++    // 0.3.25: the engine's OWN screen coords (H+0x124/0x128) + per-object scale (H+0x130/0x134),
++    // per slot. Screen coords remove reconstruction error and stay correct where world+camera
++    // reconstruction breaks (round transitions, screen-edge clamps); scale sizes super-freeze/juggle.
++    // Appended AFTER seat_in so every existing column index is unchanged.
++    sx: [f32; 6], sy: [f32; 6], zx: [f32; 6], zy: [f32; 6],
++}
++// 0.3.27: one drawn OBJECT-POOL node (effect/projectile/cape/super) captured from the draw list. Read
++// through the fighter H-offsets (node = fighter-struct prefix). Fighters are excluded (they are in `frames`).
++// owner = the fighter slot 0..5 that owns this node, or 0xFF if none (global super / stage effect).
++#[derive(Clone)]
++struct ObjNode { sid: u16, sx: i16, sy: i16, zx: u16, face: u8, cat: u8, owner: u8, layer: u8 }
+ struct GsCapture {
+     frames: std::collections::BTreeMap<u32, GsRow>, // frame_counter -> row (last-write-wins, sorted)
+     frame_addr: usize,                              // located guest frame counter (0 = synthetic index)
+@@ -1242,6 +1259,7 @@
+     seat_map: [i32; 4],                             // G+0x258+k*4: GGPO player k → seat index (-1 = unmapped)
+     rollbacks: u32,                                 // G+0x76C at match end; >0 = GGPO rewound during capture
+     build_id: String,                               // the game build the tape was recorded against
++    stage_id: u8,                                   // blk+0x6D3C — the stage number; art rendered from the Collection arc
+     anchor: Option<Vec<u8>>,                        // gzip(blk[0..BLK_SIM_LEN)) taken at CHARACTER SELECT
+     anchor_blk: u64,                                // the blk address it was captured at, and
+     anchor_arena: u64,                              // *(exe+ARENA_PTR_OFF), the 256 MiB arena — the two
+@@ -1253,11 +1271,16 @@
+     start_sim_frame: u32,                           // blk+0x3CC8 at match start, from the SAME counter as
+                                                     //   anchor_frame — an anchor at or after it belongs to
+                                                     //   an EARLIER match and must not ship with this tape
++    // 0.3.26: GGPO CONFIRMED inputs per frame [seat0, seat1] from the ring — the ground-truth stream a
++    //   pure-forward (.flyr) replay consumes. Distinct from seat_in (the predicted G+0x218 latch).
++    confirmed_in: std::collections::BTreeMap<u32, [u32; 2]>,
++    // 0.3.27: per-frame drawn object-pool nodes (effects/projectiles/supers), from the engine draw list.
++    objs: std::collections::BTreeMap<u32, Vec<ObjNode>>,
+ }
+ impl Default for GsCapture {
+     fn default() -> Self { GsCapture { frames: std::collections::BTreeMap::new(), frame_addr: 0, synthetic: false, assist: [0; 6], local_pn: 255, set_start: None, last_update: None,
+-                                       seat_map: [-1; 4], rollbacks: 0, build_id: String::new(), anchor: None, anchor_blk: 0, anchor_arena: 0, anchor_frame: 0, anchor_hash: 0,
+-                                       select_in: Vec::new(), start_sim_frame: 0 } }
++                                       seat_map: [-1; 4], rollbacks: 0, build_id: String::new(), stage_id: 0, anchor: None, anchor_blk: 0, anchor_arena: 0, anchor_frame: 0, anchor_hash: 0,
++                                       select_in: Vec::new(), start_sim_frame: 0, confirmed_in: std::collections::BTreeMap::new(), objs: std::collections::BTreeMap::new() } }
+ }
+ fn gs_capture() -> &'static Mutex<GsCapture> {
+     static S: OnceLock<Mutex<GsCapture>> = OnceLock::new();
+@@ -1267,9 +1290,11 @@
+ // A snapshot of the current/just-ended game's frames, taken by on_game_win at KO time.
+ struct GsSnapshot { frames: Vec<GsRow>, frame_addr: usize, synthetic: bool, assist: [u8; 6], local_pn: u8, set_start: Option<(u8, u8)>,
+                     // 0.3.24: everything a server needs to RE-SIMULATE this game in the real engine
+-                    seat_map: [i32; 4], rollbacks: u32, build_id: String,
++                    seat_map: [i32; 4], rollbacks: u32, build_id: String, stage_id: u8,
+                     anchor: Option<Vec<u8>>, anchor_blk: u64, anchor_arena: u64, anchor_frame: u32,
+-                    anchor_hash: u64, select_in: Vec<(u32, u32, u32)>, start_sim_frame: u32 }
++                    anchor_hash: u64, select_in: Vec<(u32, u32, u32)>, start_sim_frame: u32,
++                    confirmed_in: std::collections::BTreeMap<u32, [u32; 2]>,
++                    objs: std::collections::BTreeMap<u32, Vec<ObjNode>> }
+ // Return the buffered game IFF it was actively updating within the last few seconds (i.e. it IS the game
+ // that just ended). This guards against attaching a stale/other game's buffer to a late (pending-flush) win.
+ fn gamestate_snapshot() -> Option<GsSnapshot> {
+@@ -1277,10 +1302,10 @@
+     if c.frames.is_empty() { return None; }
+     if c.last_update.map_or(true, |t| t.elapsed().as_secs() > 6) { return None; }
+     Some(GsSnapshot { frames: c.frames.values().cloned().collect(), frame_addr: c.frame_addr, synthetic: c.synthetic, assist: c.assist, local_pn: c.local_pn, set_start: c.set_start,
+-                      seat_map: c.seat_map, rollbacks: c.rollbacks, build_id: c.build_id.clone(),
++                      seat_map: c.seat_map, rollbacks: c.rollbacks, build_id: c.build_id.clone(), stage_id: c.stage_id,
+                       anchor: c.anchor.clone(), anchor_blk: c.anchor_blk, anchor_arena: c.anchor_arena, anchor_frame: c.anchor_frame,
+                       anchor_hash: c.anchor_hash, select_in: c.select_in.clone(),
+-                      start_sim_frame: c.start_sim_frame })
++                      start_sim_frame: c.start_sim_frame, confirmed_in: c.confirmed_in.clone(), objs: c.objs.clone() })
+ }
+ 
+ fn le32(b: &[u8], o: usize) -> u32 { u32::from_le_bytes([b[o], b[o + 1], b[o + 2], b[o + 3]]) }
+@@ -1433,6 +1458,11 @@
+             Some(b) if b.len() >= 8 => [le32(&b, 0), le32(&b, 4)],
+             _ => [0, 0],
+         },
++        // 0.3.25 — engine screen coords + per-object scale, from the same `o` window (no extra read).
++        sx: [lef32(&o[0], H_SCREEN_X), lef32(&o[1], H_SCREEN_X), lef32(&o[2], H_SCREEN_X), lef32(&o[3], H_SCREEN_X), lef32(&o[4], H_SCREEN_X), lef32(&o[5], H_SCREEN_X)],
++        sy: [lef32(&o[0], H_SCREEN_Y), lef32(&o[1], H_SCREEN_Y), lef32(&o[2], H_SCREEN_Y), lef32(&o[3], H_SCREEN_Y), lef32(&o[4], H_SCREEN_Y), lef32(&o[5], H_SCREEN_Y)],
++        zx: [lef32(&o[0], H_SCALE_X), lef32(&o[1], H_SCALE_X), lef32(&o[2], H_SCALE_X), lef32(&o[3], H_SCALE_X), lef32(&o[4], H_SCALE_X), lef32(&o[5], H_SCALE_X)],
++        zy: [lef32(&o[0], H_SCALE_Y), lef32(&o[1], H_SCALE_Y), lef32(&o[2], H_SCALE_Y), lef32(&o[3], H_SCALE_Y), lef32(&o[4], H_SCALE_Y), lef32(&o[5], H_SCALE_Y)],
+     })
+ }
+ 
+@@ -1562,6 +1592,85 @@
+     if n > 0 { trace(&format!("[gamestate] character select recorded: {n} frames of input")); }
+ }
+ 
++// 0.3.26: harvest GGPO's CONFIRMED inputs from the InputQueue ring up to the confirmed watermark.
++// This is the input stream dojo's `.flyr` replay plays PURE-FORWARD (no rollback) — proven to
++// reproduce the match bit-exact, where the predicted G+0x218 latch skews by the rollback count.
++// Write-once, keyed by GGPO frame. Cheap: two ~3.5 KB ring reads only when the watermark advances.
++// `next` is the per-match cursor (the next confirmed frame to pull); seeds itself on first call.
++unsafe fn harvest_confirmed_in(h: &mem::Proc, exe_base: usize, next: &mut i64) {
++    if exe_base == 0 { return; }
++    let u64_at = |a: usize| read_at(h, a, 8).filter(|b| b.len() >= 8)
++        .map(|b| u64::from_le_bytes([b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7]]) as usize);
++    let sess = match u64_at(exe_base + GGPO_SESSION_OFF) {
++        Some(p) if p > 0x10000 && p < 0x7fff_ffff_ffff => p, _ => return };
++    let sync = sess + GGPO_SYNC_OFF;
++    let n = match rpm_u32(h, sync + SYNC_NPLAYERS_OFF) { Some(v) if (1..=4).contains(&v) => v as usize, _ => return };
++    if n < 2 { return; }                                     // need both seats for a match tape
++    let queues = match u64_at(sync + SYNC_QUEUES_OFF) { Some(p) if p > 0x10000 => p, _ => return };
++    // confirmed frontier = min(_last_added_frame) over the queues, floored by _last_confirmed_frame.
++    let mut frontier = rpm_u32(h, sync + SYNC_LASTCONF_OFF).map(|v| v as i32 as i64).unwrap_or(-1);
++    for k in 0..n {
++        let la = rpm_u32(h, queues + k * IQ_STRIDE + IQ_LASTADD_OFF).map(|v| v as i32 as i64).unwrap_or(-1);
++        if la < frontier { frontier = la; }
++    }
++    if frontier < 0 { return; }
++    // one read of each of the two queue rings covers the whole window.
++    let r0 = match read_at(h, queues + IQ_INPUTS_OFF, GI_RING * GI_STRIDE) { Some(b) if b.len() >= GI_RING * GI_STRIDE => b, _ => return };
++    let r1 = match read_at(h, queues + IQ_STRIDE + IQ_INPUTS_OFF, GI_RING * GI_STRIDE) { Some(b) if b.len() >= GI_RING * GI_STRIDE => b, _ => return };
++    if *next < 0 { *next = frontier.saturating_sub(GI_RING as i64 - 1).max(0); }   // first attach: don't reach past the ring
++    let mut c = gs_capture().lock().unwrap();
++    let mut f = *next;
++    while f <= frontier {
++        if c.confirmed_in.len() >= GS_CAP { break; }
++        let slot = (f as usize) % GI_RING;
++        let o = slot * GI_STRIDE;
++        let fr0 = i32::from_le_bytes([r0[o], r0[o + 1], r0[o + 2], r0[o + 3]]) as i64;
++        let fr1 = i32::from_le_bytes([r1[o], r1[o + 1], r1[o + 2], r1[o + 3]]) as i64;
++        // only accept a frame whose slot in BOTH queues still holds it (else the ring already wrapped)
++        if fr0 == f && fr1 == f {
++            let b0 = le32(&r0, o + 8);      // GameInput.bits at +8 (after frame:i32, size:i32)
++            let b1 = le32(&r1, o + 8);
++            c.confirmed_in.entry(f as u32).or_insert([b0, b1]);
++        }
++        f += 1;
++    }
++    *next = f;
++}
++
++// 0.3.27: walk the engine's DRAW LIST and collect the object-pool nodes (effects/projectiles/supers) drawn
++// THIS frame, in the engine's own layer order. Fighters are skipped (they are captured in `frames`). A pool
++// node reads through the SAME H-offsets as a fighter (node = fighter-struct prefix). Read-only RPM. `base`
++// is the fighter-array base (blk + BLK_BACK), so blk = base − BLK_BACK.
++unsafe fn harvest_objs(h: &mem::Proc, base: usize, out: &mut Vec<ObjNode>) {
++    let blk = match base.checked_sub(BLK_BACK) { Some(b) => b, None => return };
++    let mut fighters = [0usize; 6];
++    for i in 0..6 { fighters[i] = blk + BLK_H0_OFF + i * STRIDE; }   // fighter node addresses (= draw-list handles)
++    let u64_at = |a: usize| read_at(h, a, 8).filter(|b| b.len() >= 8)
++        .map(|b| u64::from_le_bytes([b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7]]) as usize);
++    for l in 0..N_LAYERS {
++        let count = (rpm_u8(h, blk + DRAWLIST_COUNTS + l).unwrap_or(0) as usize).min(DRAWLIST_MAX_PER_LAYER);
++        for i in 0..count {
++            let handle = match u64_at(blk + DRAWLIST_OFF + l * DRAWLIST_LAYER + i * 8) { Some(v) if v > 0x10000 => v, _ => continue };
++            if fighters.contains(&handle) { continue; }                       // a fighter → already in `frames`
++            let buf = match read_at(h, handle, 0x190).filter(|b| b.len() >= 0x190) { Some(b) => b, None => continue };
++            if buf[H_DRAWN] == 0 { continue; }                                // not actually rendered this frame
++            let sid = u16le(&buf, H_SPRITE_ID);
++            if sid == 0 { continue; }                                         // inactive node
++            let owner_ptr = u64::from_le_bytes([buf[H_OWNER], buf[H_OWNER + 1], buf[H_OWNER + 2], buf[H_OWNER + 3],
++                                                buf[H_OWNER + 4], buf[H_OWNER + 5], buf[H_OWNER + 6], buf[H_OWNER + 7]]) as usize;
++            let owner = fighters.iter().position(|&f| f == owner_ptr).map(|p| p as u8).unwrap_or(0xFF);
++            out.push(ObjNode {
++                sid,
++                sx: lef32(&buf, H_SCREEN_X).round().clamp(-32768.0, 32767.0) as i16,
++                sy: lef32(&buf, H_SCREEN_Y).round().clamp(-32768.0, 32767.0) as i16,
++                zx: (lef32(&buf, H_SCALE_X).clamp(0.0, 15.999) * 4096.0) as u16,   // fixed 12.4
++                face: buf[H_FACING], cat: buf[H_CATEGORY], owner, layer: l as u8,
++            });
++            if out.len() >= OBJS_CAP_PER_FRAME { return; }
++        }
++    }
++}
++
+ // 0.3.24: pin the GAME BUILD a tape was recorded against. Re-simulation is deterministic for the
+ // IDENTICAL build ONLY, and Steam auto-updates — Fightcade hit exactly this and solved it by gating
+ // each replay on a version number. We take the loaded module's PE TimeDateStamp + SizeOfImage: they
+@@ -1628,38 +1737,34 @@
+             if !ready { std::thread::sleep(std::time::Duration::from_millis(50)); continue; }
+             full_since = None; // consumed → re-arm the fallback timer for the next match
+ 
+-            // ── a game is starting → reset the buffer, locate the guest frame counter (one-time, ~1s), and
++            // ── a game is starting → reset the buffer, resolve the guest frame counter, and
+             //    snapshot the assist type per slot (chosen at char-select, fixed for the whole match) ──
+-            // ⚠⚠ THE FRAME COUNTER IS KNOWN — DO NOT HUNT FOR IT.
+-            // hunt_frame_counter picks whatever word looks like it counts, and live on 2026-08-27 it
+-            // picked blk+0x4DB0 — which is fighter slot 2's SPRITE ID (H+0x188). Keying the tape on a
+-            // sprite id means a row is only stored when that character's sprite changes: two real
+-            // games recorded 300 and 308 rows across 55 s and 59 s of play, i.e. ~9% of the frames.
+-            // EVERY tape ever produced is undersampled that way, and a re-simulation needs every
+-            // frame's input, so this is fatal to the 0.3.24 work and quietly wrong for the stats
+-            // layer besides.
+-            // blk+0x3CC8 IS the sim frame counter: the replay kit polls it directly and gets 59.7 fps
+-            // with ZERO dropped frames across two minutes of play. Use it. The hunt stays as a
+-            // fallback for the case where the block pointer is not resolvable, and the advance check
+-            // makes a wrong offset fail over instead of silently undersampling again.
+-            let fc = {
+-                let known = base.checked_sub(BLK_BACK).map(|blk| blk + BLK_FRAME_OFF);
+-                // Retried, because the FALLBACK is known-harmful. One 40 ms sample is ~2.4 frames;
+-                // if the sim happens not to tick in that window we would drop back to
+-                // hunt_frame_counter — the path that produced the 9%-sampled tapes. Three tries make
+-                // a transient stall cost 120 ms instead of a ruined recording.
+-                // (A failed SECOND read reads as "advanced" here, which is deliberate: it prefers the
+-                // known-correct counter over the known-bad hunt.)
+-                let advances = known.map_or(false, |a| (0..3).any(|_| unsafe {
+-                    let v0 = rpm_u32(h, a);
+-                    std::thread::sleep(std::time::Duration::from_millis(40));
+-                    v0.is_some() && rpm_u32(h, a) != v0
+-                }));
+-                if advances { known } else {
+-                    trace("[gamestate] blk+0x3CC8 did not advance — falling back to the counter hunt");
+-                    unsafe { hunt_frame_counter(h, base) }
+-                }
+-            };
++            //
++            // ⚠⚠ THE FRAME COUNTER IS blk+0x3CC8. IT IS NOT SEARCHED FOR. (2026-08-27)
++            // This called `hunt_frame_counter`, a ±8 MB heuristic scan for "a u32 that ticks monotonically".
++            // It was selecting the WRONG WORD and silently gutting the tapes it touched. Measured across
++            // 10,812 capture pairs in one trace log, same machine, same build:
++            //     counter used    captures   rows/sec
++            //     blk+0x3cc8            37   60.03 – 60.45   ← correct
++            //     blk+0x4db0             1   5.29
++            //     blk+0x3c8c             1   0.51
++            // blk+0x4db0 is `blk + 0x3DB8 + 2*0x738 + 0x188` — SLOT 2's H_SPRITE_ID. Two live ranked matches
++            // were clocked off a BENCHED CHARACTER'S ANIMATION, retaining 8.8% and 0.84% of their frames.
++            //
++            // WHY THE HUNT COULD NEVER SELF-CORRECT: it rejects any candidate that ever decreases
++            // (`delta < 0` → `continue 'off`). blk+0x3CC8 mirrors GGPO's `_framecount`, which
++            // `Sync::LoadFrame` ASSIGNS BACKWARD on every rollback (bounded by MAX_PREDICTION_FRAMES = 8);
++            // we measured deltas of -1/-3/-4 in select_in, which reads this very address. So the one
++            // address that is always correct is the one the filter is guaranteed to discard — and the bias
++            // grows with rollback rate, i.e. it fails hardest on exactly the laggy matches worth keeping.
++            // (It also re-ran every ~3.3s indefinitely, reading up to 192 MB per attempt, while idling at menus.)
++            //
++            // This is the same derivation `start_sim_frame` uses below and the same counter
++            // `gs_record_select` keys on — so character-select and battle frames now share ONE clock and
++            // can finally be spliced. `None` (blk unreadable) still falls back to the synthetic index.
++            let fc = base.checked_sub(BLK_BACK)
++                .map(|blk| blk + BLK_FRAME_OFF)
++                .filter(|&a| unsafe { rpm_u32(h, a) }.is_some());
+             let mut assist = [0u8; 6];
+             for i in 0..6 { assist[i] = unsafe { rpm_u8(h, base + i * STRIDE + OFF_ASSIST) }.unwrap_or(0); }
+             // Tier-3: snapshot the game's own per-set WINS tally at THIS game's START (read-only, guarded → None
+@@ -1668,6 +1773,8 @@
+             {
+                 let mut c = gs_capture().lock().unwrap();
+                 c.frames.clear();
++                c.confirmed_in.clear();   // 0.3.26: this game owns its confirmed-input buffer
++                c.objs.clear();           // 0.3.27: and its per-frame object-pool (effects) buffer
+                 c.frame_addr = fc.unwrap_or(0);
+                 c.synthetic = fc.is_none();
+                 c.assist = assist;
+@@ -1682,8 +1789,10 @@
+                         for k in 0..4 { c.seat_map[k] = le32(&b, k * 4) as i32; }
+                     }
+                 }
+-                c.rollbacks = 0;
++                c.rollbacks = 0;   // baseline captured below as `rb0`; the END read subtracts it
+                 c.build_id = unsafe { game_build_id(h, exe_base) };
++                // stage number (blk+0x6D3C) — const per match; art comes from the Collection arc, not the tape.
++                c.stage_id = base.checked_sub(BLK_BACK).and_then(|blk| unsafe { rpm_u8(h, blk + STG_OFF) }).unwrap_or(0);
+                 // The sim frame this match starts on, read from blk+0x3CC8 — the SAME counter the
+                 // anchor stamped itself with. Any anchor at or after it was captured before an
+                 // EARLIER match (two games can run without an intervening character select), and
+@@ -1695,7 +1804,12 @@
+                 //   visit clears and refills them.
+             }
+             GS_IN_MATCH.store(true, SeqCst);   // pause the uploader for the duration of the fight
+-            trace(&format!("[gamestate] recording START base=0x{base:x} fc={} (share={})",
++            // GGPO's load_game_state counter is CUMULATIVE SINCE LAUNCH. Baseline it here so the tape can
++            // report rollbacks FOR THIS MATCH; the previous code zeroed the field and then overwrote it with
++            // the raw lifetime value at END, so every tape shipped a number that grew all session and was
++            // read as a per-match rate. (It made one 851-frame capture look like ~2 rollbacks per frame.)
++            let rb0 = if exe_base != 0 { unsafe { rpm_u32(h, exe_base + ROLLBACK_OFF) }.unwrap_or(0) } else { 0 };
++            trace(&format!("[gamestate] recording START base=0x{base:x} fc={} rb0={rb0} (share={})",
+                 fc.map(|a| format!("0x{a:x}")).unwrap_or_else(|| "SYNTHETIC".into()), SHARE_GAMEPLAY.load(SeqCst)));
+ 
+             // ── fast per-frame loop until the game ends ──
+@@ -1705,8 +1819,14 @@
+             let mut last_new = std::time::Instant::now();
+             let mut prev_sig: Option<([u16; 6], [u32; 6])> = None; // freeze detector (state byte-identical → frozen)
+             let mut same_ct = 0u32;
++            // Five distinct exits used to be indistinguishable in the log, which is why diagnosing a bad
++            // capture needed an hour of forensics. Name the one that fires.
++            let mut why = "share-off";
++            let mut conf_next: i64 = -1;   // 0.3.26: cursor for the confirmed-input ring harvest (seeds on first call)
+             loop {
+                 if !SHARE_GAMEPLAY.load(SeqCst) { break; }
++                // 0.3.26: pull GGPO's CONFIRMED inputs up to the watermark (the pure-forward replay stream).
++                unsafe { harvest_confirmed_in(h, exe_base, &mut conf_next) };
+                 let frame = match fc { Some(a) => unsafe { rpm_u32(h, a) }.unwrap_or(0), None => { synth += 1; synth } };
+                 // P0.3: guard the per-frame read+record so one panicking frame can't kill the capture thread.
+                 // Returns true when the freeze-guard wants to stop the tape (kept as a signal so the `break`
+@@ -1714,12 +1834,18 @@
+                 let frozen = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| -> bool {
+                     if frame != last {
+                         if let Some(row) = unsafe { read_gs_row(h, base, frame, exe_base) } {
++                            // 0.3.27: collect this frame's drawn object-pool (effects) — RPM reads, done before the lock.
++                            let mut objs = Vec::new();
++                            unsafe { harvest_objs(h, base, &mut objs); }
+                             {
+                                 let mut c = gs_capture().lock().unwrap();
+                                 // LAST-WRITE-WINS: a rollback re-visits an earlier frame → overwrites it with the
+                                 // confirmed state. Cap at GS_CAP unique frames (still allow updates to existing keys).
+                                 if c.frames.len() < GS_CAP || c.frames.contains_key(&frame) {
+                                     c.frames.insert(frame, row.clone());
++                                    if !objs.is_empty() && (c.objs.len() < GS_CAP || c.objs.contains_key(&frame)) {
++                                        c.objs.insert(frame, objs);   // 0.3.27: per-frame effects, keyed like frames
++                                    }
+                                     c.last_update = Some(std::time::Instant::now());
+                                 }
+                             }
+@@ -1735,23 +1861,27 @@
+                     }
+                     false
+                 })).unwrap_or_else(|_| { trace("[gamestate] frame panicked — recovering, continuing"); false });
+-                if frozen { break; }                                                           // frozen base → stop the tape
+-                if wipe_since.map_or(false, |t| t.elapsed().as_millis() > 600) { break; }     // a team wiped → game over
+-                if last_new.elapsed().as_millis() > 2500 { break; }                            // frame counter froze → moved on
+-                if !unsafe { array_valid(h, base) } { break; }                                 // array relocated/gone
++                if frozen { why = "frozen-base"; break; }                                      // frozen base → stop the tape
++                if wipe_since.map_or(false, |t| t.elapsed().as_millis() > 600) { why = "team-wiped"; break; }  // a team wiped → game over
++                if last_new.elapsed().as_millis() > 2500 { why = "counter-stalled"; break; }   // frame counter froze → moved on
++                if !unsafe { array_valid(h, base) } { why = "array-invalid"; break; }          // array relocated/gone
+                 std::thread::sleep(std::time::Duration::from_millis(3));                        // ~gentle fast poll, dedup by frame
+             }
+             GS_IN_MATCH.store(false, SeqCst);  // fight over → the uploader may drain the spool again
+             // 0.3.24 tape-quality signal: GGPO's load_game_state counter. >0 means the netcode rewound during
+             // this capture, so some recorded frames were re-simulated. The BTreeMap's last-write-wins already
+             // keeps the confirmed values; this simply tells a consumer the timeline was not clean.
++            // ⚠ DELTA, not the absolute read — the counter is cumulative since launch (see rb0 at START).
++            let mut rb_delta = 0u32;
+             if exe_base != 0 {
+                 let rb = unsafe { rpm_u32(h, exe_base + ROLLBACK_OFF) }.unwrap_or(0);
+-                gs_capture().lock().unwrap().rollbacks = rb;
++                rb_delta = rb.saturating_sub(rb0);
++                gs_capture().lock().unwrap().rollbacks = rb_delta;
+             }
+             {
+                 let n = gs_capture().lock().unwrap().frames.len();
+-                trace(&format!("[gamestate] recording END frames={n} (held for upload on win-report)"));
++                trace(&format!("[gamestate] recording END frames={n} why={why} rollbacks={rb_delta} \
++                                (held for upload on win-report)"));
+             }
+             // handle (proc) is dropped at the end of this outer-loop iteration → its Drop closes it
+             // don't immediately re-lock the just-ended game: the both-alive gate at the top of the loop already
+@@ -1827,7 +1957,8 @@
+     let frames: Vec<serde_json::Value> = gs.frames.iter().map(|r| serde_json::json!([
+         r.frame, r.p1_in, r.p2_in, r.kcode, r.hp, r.px, r.py, r.m1, r.m2, r.mfill, r.cd, r.cr,
+         r.vx, r.vy, r.rhp, r.face, r.hitstun, r.act,
+-        r.sid, r.atimer, r.eye_x, r.eye_y, r.ground, r.seat_in
++        r.sid, r.atimer, r.eye_x, r.eye_y, r.ground, r.seat_in,
++        r.sx, r.sy, r.zx, r.zy
+     ])).collect();
+     // the complete artifact that lands on disk (server writes the gunzip-able bytes verbatim)
+     let assist_p1 = [gs.assist[0], gs.assist[2], gs.assist[4]];
+@@ -1844,6 +1975,31 @@
+         .flat_map(|(f, a, b)| [f.to_le_bytes(), a.to_le_bytes(), b.to_le_bytes()])
+         .flatten().collect();
+     let select_b64 = b64_encode(&gzip_bytes(&select_raw));
++    // 0.3.26: the CONFIRMED (post-rollback) input stream from the GGPO ring — the exact stream a
++    // pure-forward .flyr replay consumes (proven bit-exact vs the Steam sim). Same encoding as select_in.
++    let confirmed_raw: Vec<u8> = gs.confirmed_in.iter()
++        .flat_map(|(f, ab)| [f.to_le_bytes(), ab[0].to_le_bytes(), ab[1].to_le_bytes()])
++        .flatten().collect();
++    let confirmed_b64 = b64_encode(&gzip_bytes(&confirmed_raw));
++    // 0.3.27: per-frame drawn object-pool (effects). Flat: for each frame with objects,
++    //   [u32 frame][u16 count][count × {u16 sid, i16 sx, i16 sy, u16 zx(12.4), u8 face, u8 cat, u8 owner, u8 layer}].
++    let objs_raw: Vec<u8> = {
++        let mut b = Vec::new();
++        for (f, nodes) in &gs.objs {
++            let n = nodes.len().min(0xffff);
++            b.extend_from_slice(&f.to_le_bytes());
++            b.extend_from_slice(&(n as u16).to_le_bytes());
++            for nd in nodes.iter().take(n) {
++                b.extend_from_slice(&nd.sid.to_le_bytes());
++                b.extend_from_slice(&nd.sx.to_le_bytes());
++                b.extend_from_slice(&nd.sy.to_le_bytes());
++                b.extend_from_slice(&nd.zx.to_le_bytes());
++                b.push(nd.face); b.push(nd.cat); b.push(nd.owner); b.push(nd.layer);
++            }
++        }
++        b
++    };
++    let objs_b64 = b64_encode(&gzip_bytes(&objs_raw));
+     let anchor_hash_hex = format!("{:016x}", gs.anchor_hash);
+     let record = serde_json::json!({
+         "id": id, "match_key": match_key, "reporter": reporter, "side": side,
+@@ -1860,7 +2016,7 @@
+         // GGPO rewound mid-capture; build_id pins the game build (determinism holds for the IDENTICAL build
+         // only); anchor is gzip+base64 of blk[0..0x33B18) taken at CHARACTER SELECT — restore it, relocate its
+         // pointers by (new_blk − anchor_blk) / (new_arena − anchor_arena), then feed seat_in[] frame by frame.
+-        "seat_map": gs.seat_map, "rollbacks": gs.rollbacks, "build_id": gs.build_id,
++        "seat_map": gs.seat_map, "rollbacks": gs.rollbacks, "build_id": gs.build_id, "stage_id": gs.stage_id,
+         "anchor": anchor_b64, "anchor_gz_len": anchor_gz_len,
+         "anchor_sim_len": BLK_SIM_LEN as u64, "anchor_enc": "gzip+base64",
+         "anchor_blk": gs.anchor_blk, "anchor_arena": gs.anchor_arena, "anchor_frame": gs.anchor_frame,
+@@ -1871,6 +2027,16 @@
+         // gzip+base64 for the same reason as the anchor: it is 12 B/frame raw and compresses hard.
+         "select_in": select_b64, "select_in_frames": gs.select_in.len(),
+         "select_in_enc": "gzip+base64 of (u32 frame, u32 seat0, u32 seat1) triples",
++        // 0.3.26: GGPO CONFIRMED per-frame inputs from the InputQueue ring — the pure-forward .flyr
++        // replay stream (post-rollback ground truth). seat_in in `frames` is the PREDICTED latch; this
++        // is what a deterministic re-sim actually consumes. See docs/CONFIRMED-TAPE-AND-FLYR-REPLAY.md.
++        "confirmed_in": confirmed_b64, "confirmed_in_frames": gs.confirmed_in.len(),
++        "confirmed_in_enc": "gzip+base64 of (u32 frame, u32 seat0_confirmed, u32 seat1_confirmed) triples",
++        // 0.3.27: per-frame OBJECT POOL — projectiles/assist-shots/capes/hit-sparks/supers, from the engine
++        // draw list, in layer order (z = layer). owner = fighter slot 0..5 or 0xFF. The renderer draws these
++        // via onOBJS (own-origin anchor) — no reconstruction. Fighters are NOT here (they are in `frames`).
++        "objs": objs_b64, "objs_frames": gs.objs.len(),
++        "objs_enc": "gzip+base64 of per-frame [u32 frame, u16 count, count x {u16 sid, i16 sx, i16 sy, u16 zx(12.4 fixed), u8 face, u8 cat(0=sprite/else effect), u8 owner(slot|0xFF), u8 layer}]",
+         "start_sim_frame": gs.start_sim_frame,
+         // continuity: frame_gaps > 0 means input frames are MISSING and a re-simulation will diverge;
+         // truncated means GS_CAP stopped accepting new frames and the tail of the match is absent.
+@@ -2503,23 +2669,6 @@
+ // flags (ocv/perfect/comeback) always describe the WINNER — computed symmetrically from both sides' health,
+ // so we credit them correctly whether we won or lost.
+ fn on_game_win(winner: u8, opp: &Option<(String, String)>, my_side: u8, ocv: bool, perfect: bool, comeback: bool, rich: &GameRich, session_id: &str, match_index: u32) {
+-    // ⚠⚠ A HOST-MODE box must NEVER report a result. 0.3.19 added exactly this gate to /match/live
+-    // — "a cabinet is furniture: it referees from a spectator seat and must never claim to be IN a
+-    // match" — but deliberately left results alone. A live money match (2026-08-26, Tris vs JFRESH in
+-    // the cabinet lobby) proved that wrong: the cabinet's agent logged FOUR rows for a two-game set
+-    // it only WATCHED — each real game double-reported, once against each seat's player, with the
+-    // arcade claiming a seat in both. The PLAYERS' own agents report their own games; a cabinet's
+-    // job is refereeing, and that reports through host-node, not through here.
+-    //
+-    // ⚠ Gated on HOST_MODE ALONE, deliberately. Also gating on localPlayerNum == -1 (spectator) was
+-    // suggested and is tempting, but that read falls back to 255 on failure, so a real player whose
+-    // read failed would have every game silently dropped — strictly worse than a cabinet posting
+-    // rows we can identify and filter. HOST_MODE is explicit, configured, and cannot misfire on a
+-    // player's machine.
+-    if crate::host::HOST_MODE.load(std::sync::atomic::Ordering::Relaxed) {
+-        trace("[record] SKIP — HOST_MODE: this box only watched the game (see the /match/live gate)");
+-        return;
+-    }
+     if my_side != 1 && my_side != 2 { return; }
+     // Belt-and-suspenders: NEVER record unless the side is confirmed (manual toggle / deterministic lock). The
+     // fuzzy auto-detectors set local_side for the UI label only — a confidently-WRONG side must never post stats.
