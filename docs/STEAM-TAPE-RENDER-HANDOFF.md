@@ -58,13 +58,22 @@ not code to copy or re-derive.
   `client_max_body_size 64M;` to the `/rr/` block on 149.28.44.118 (backup in `/root/nginx-backups/`,
   NOT sites-enabled). All tapes now upload 200.
 
-## NEXT
+## NEXT — Path A IS the pixel-perfect target (decided 2026-08-27)
 
-1. **Test canvas (IN PROGRESS, sprite-render expert):** wire tape 59596085 → OBJS → existing
-   sprite-client, serve a page, watch it play. The fastest watchable milestone.
-2. Formalize the **tape → OBJS adapter** (schema + coordinate transform) once the expert confirms the
-   OBJS shape + viewport mapping.
-3. Fold the adapter into `maplecast-flycast` (a clone/branch), following its deploy discipline below.
+The browser canvas (sprite-client, fed the Steam tape) is not just "fast/good-enough" — it is the
+**pixel-perfect** target. maplecast's sprite machine is byte-exact ("closed 5/5"), so feeding it the
+COMPLETE, correctly-sized, correctly-palettized state + validating against ground truth = pixel-perfect
+(same ROM art, same placement). Three expert lanes, no overlap:
+
+1. ✅ **Watchable canvas — DONE.** Real sprites playing tape 59596085 (served bundle in
+   `scratchpad/tapecanvas/`, `onGSTA`→`render(ctx2d)`, 100% of 19,053 poses resolve).
+2. **Correct SIZE** (sh4-re expert): the authoritative per-object scale formula — current symptom is all
+   fighters ~same size (per-object zoom not applied). Implement per that formula, don't infer.
+3. **Complete STATE** (sprite expert): effects/object-pool + palette/costume + hit-flash tints manifest →
+   agent captures them → tape v-next. See the manifest table below.
+4. **Pixel-perfect GATE** (verification harness): a per-frame differ vs ground truth (ASMTRACE/CHARQ
+   geometry + Steam-framebuffer pixels) — makes "pixel-perfect" measured, not eyeballed.
+5. Then fold the adapter into a `maplecast-flycast` clone/branch and deploy on rise3 per the discipline below.
 
 ## TEST / DEPLOY (from `maplecast-flycast/docs/DEPLOYMENT.md`)
 
@@ -91,9 +100,20 @@ not code to copy or re-derive.
 - Agent upload `base64(gz)` → raw `Content-Type: application/gzip` (−33% wire) — nice-to-have; nginx fix
   already unblocked uploads. Both-sides change, backwards-compat design noted; do later.
 
-## BACKGROUND (running, legitimate)
+## Path B (flycast re-sim) — PARKED, verdict NOT PROVEN (2026-08-27)
 
-- **flycast through-combat proof** (Path 2, pixel-perfect via flycast NAOMI) — determinism gate; if it
-  passes we ALSO get a pixel-perfect path. Uses NAOMI ROM `Downloads/mvsc2-naomi.zip` + unlocked IC22
-  `Downloads/MvC2_Unlocked IC22 (1).Bin`. Separate from the canvas track.
-- **sprite-render expert** — wiring the test canvas (task 1 above).
+The through-combat proof returned **NOT PROVEN** and surfaced premise corrections (evidence-backed):
+- The prior "bit-exact −6" proof was run on the **DC GDI, not NAOMI** (izzy_flycast.log = DC BIOS; realign
+  offsets `0x268340`/`0x5A4` = DC work-RAM) — the "NAOMI reproduces Steam bit-exact" claim was mis-attributed.
+- Project RE says Steam MvC2 is **DC-lineage** and **DC work-RAM ↔ Steam `blk` is byte-exact** (5 deltas) ⇒
+  **DC is the evidence-correct comparison target**, contradicting the "must be NAOMI" premise.
+- `mvsc2-naomi.zip` was rejected by the rig as a BIOS set; the loadable NAOMI cart is `mvsc2.zip`
+  (⚠ conflicts with an earlier `unzip -l` that showed cart roms present — recheck if NAOMI is pursued).
+- ⏸ **User decision pending:** accept DC (rig is one fresh char-select anchor away from a real number) vs
+  hold NAOMI as net-new RE. Parked in favor of Path A. Isolation held (live services untouched).
+
+## BACKGROUND (running — the three canvas lanes)
+
+- **sh4-re expert** — authoritative per-object SIZE formula (the "all same size" fix).
+- **sprite-render expert** — the canvas + the full-fidelity capture manifest (effects/palette/tints).
+- **gsta-verification-harness** — the pixel-perfect validation gate (ground-truth reference + differ).
