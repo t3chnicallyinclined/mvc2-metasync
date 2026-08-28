@@ -62,6 +62,49 @@ are captured (nodes) but not renderable — shipped OFF rather than faked.
 2. `gsta-verification-harness`: `H+0x172` transition during a live combo → lock the hit-flash value table (OPEN-A).
 3. `mvc2-sprite-render-expert`: this-match effect atlas (directory-idx keyed) + costume LUT + hp-drop white-flash.
 
+## 0.3.28 FINAL — reconciled from the renderer + RE completeness audits (2026-08-28)
+
+Both audits (mvc2-sprite-render-expert render read-set + mvc2-sh4-re-expert disasm) closed. The full
+capture set for the ONE final migration. Everything CONFIRMED unless marked. `H = blk+0x3DB8+slot*0x738`.
+
+**Fix (no column):** **confirmed positions** — kills the shake. Rule (cited, deterministic): poll every ~3ms,
+key by `blk+0x3CC8`, last-write-wins; **(a)** emit tape frame F only once `maxSeen ≥ F+8` (rollback bounded
+to 8 → F is then final); **(b)** on clock-DECREASE, tight-loop RPM re-read (no sleep) until the clock climbs
+back, so a resim burst's corrected values overwrite the predictions. Buffer 9 frames (ring 16). (a) removes
+the shake with no probe; a live probe is only needed to certify "confirmed-exact", not to fix the wobble.
+
+**New PER-FIGHTER columns:**
+| Field | Steam offset | S/F | Cite / note |
+|---|---|---|---|
+| costume/color | `H+0x6C1` (u8) | STATIC | recolor is renderer-side (costume-indexed LUT); byte is captured |
+| hit-flash | `H+0x172` (u16) | PER-FRAME | OPEN-A value table (probe/hp-drop) |
+| super-glow `char_pal_effect` | **`H+0x5C`** (u8) | PER-FRAME | DC+0x40, CONFIRMED-by-bracketing δ0x1C; drives super-freeze brighten |
+| fighter layer | draw-list reverse-lookup | PER-FRAME | captured; whole-sprite path hardcodes body z, emitter path uses it |
+| sprite_id | `H+0x188` u16 **RAW** | PER-FRAME | ⚠ keep bit15 (rasterization mode) — mask `&0x7FFF` only at atlas-index time |
+
+**New OBJS (pool node) sub-fields** — already capturing sid/x/y/scale/facing/cat/layer; ADD:
+| Field | Steam offset | Cite / note |
+|---|---|---|
+| effect GFX ptr | **`H+0x1A8`** (u64) | node+0x15C → Steam H+0x1A8 CONFIRMED via loader `FUN_14060D100` (64-bit). The effects-atlas/additive routing signal. |
+| owner→slot | inline SCAN of `H+0x9C` & `H+0xC4` (u64) vs the 6 fighter bases | ladder-ambiguous → resolve by scan; owner-less globals legitimately match neither (route by `cat`). |
+| blend | DERIVED from `cat` (`H+0x03`, already captured) | `{01,05,06,0B,0C,0D}`=body/cape opaque/PT, `{07,08,09}`=projectile/effect additive. No separate byte. |
+
+**New GLOBAL (HUD) columns** (known reader offsets): round **timer** (`0x2e61c`), **round-win** count
+(`0x2e61a`/set-score) — join the captured meter (`m1/m2/mfill`) + combo (`cd`). 
+
+**OPEN (capture the input now, resolve later — NO re-record needed):**
+- **Effect texture INDEX** — `H+0x1A8` points into the arena, not a `0x0CEDxxxx` addr, so the DC
+  `idx=(ptr−dirBase)/0x10` formula does NOT port. Capture the raw `H+0x1A8` pointer now; resolve the
+  `pointer→idx` map via a Ghidra pass on the Steam effect loader OR a one-time match-load directory-dump
+  probe. Effects render OFF until then. NOT a schema blocker.
+- **Owner offset** — resolved by the inline scan above (self-checking vs the 6 fighter bases).
+- **Confirmed-position residual** — (a)+(b) fixes the visible shake; a live probe on a laggy match
+  certifies the "exact" claim (the fully-robust source is an in-process hook at `FUN_140620F10`, out of scope).
+
+**Explicitly NOT added — captured implicitly (do NOT add fields):** super-freeze/hitstop (sid/atimer/px
+stop advancing), screen-shake (folds into eyeX/eyeY→sx/sy), stage scroll (stage_id + eyeX/eyeY). Optional:
+stage-background zoom `blk+0x6928` (INFERRED, stage-only, low priority); super-aura overlay `char+0x1a4` (low).
+
 ## Sources
 `_marv_re/memory/pl_mem.asm` · `maplecast-flycast/re-catalog/00-README.md` (pool node, owner+0x80, layer@+0x24) ·
 `docs/MVC2-RECONSTRUCTION-SPEC.md` (+0x12E vs +0x40) · `docs/GSTA-MAPPING-HANDOFF.md` (wire ships +0x52D copy) ·
