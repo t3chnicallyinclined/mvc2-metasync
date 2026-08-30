@@ -30,6 +30,27 @@ credentials.json
 # Skin-library sprite RENDERS = character art + palette (ROM-derived). Palette/metadata JSON is kept.
 /web/skins/**/*.png
 
+# ── Tape/replay render: game-derived data (BYOR — never commit; code/docs ARE kept) ──
+# Capture / replay wire + memory-snapshot formats (always game-derived)
+**/*.zcst
+**/*.mcrr
+**/*.mctele
+**/*.blk
+**/*.rrtape
+**/*.rr4
+# Tape render inputs + rendered game pixels + ROM-derived stage/HUD assets
+/web/tapecanvas/tape.json
+/web/tapecanvas/**/*.png
+/web/tapecanvas/hud/
+/web/tapecanvas/stages/
+/web/tapecanvas/__pycache__/
+# replay-kit live captures + dumped game sprite banks
+/replay-kit/fight_live.*
+/replay-kit/hud_bank/
+/replay-kit/hud_bank_dump.json
+/replay-kit/hud_descriptors.json
+/replay-kit/__pycache__/
+
 # ── Claude local overrides (permissions) ──
 .claude/settings.local.json
 

@@ -1,5 +1,9 @@
 # MvC2 Steam-Tape Capture Manifest — the complete data contract
 
+> **⚡ CURRENT STATUS — 2026-08-30:** this capture schema is current; the RENDER side now works via
+> resim → real-TA → WebGPU. **→ [`docs/RENDER-ACCURACY-PROGRAM.md`](RENDER-ACCURACY-PROGRAM.md) is the SSOT
+> for how the render is done.**
+
 > **Purpose:** the definitive, no-guessing list of exactly what the agent must read so a browser replay
 > is pixel-perfect. Every field is CONFIRMED with a cited offset, or listed under OPEN with how to close
 > it — nothing inferred silently. Produced by the sh4-re expert from `marvelous2` + `re_kb` + the block map,

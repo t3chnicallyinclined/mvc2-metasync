@@ -1,0 +1,139 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Resim TA Player — WebGPU (.zcst)</title>
+<style>
+  :root { color-scheme: dark; }
+  body { font:13px/1.4 system-ui,sans-serif; background:#0b0e14; color:#dfe4ea; margin:0; padding:14px; }
+  h1 { font-size:15px; margin:0 0 8px; }
+  #wrap { display:inline-block; }
+  canvas { display:block; width:960px; height:720px; image-rendering:pixelated; background:#000; border:1px solid #2b313c; border-radius:6px; }
+  #bar { display:flex; align-items:center; gap:10px; margin-top:10px; }
+  button { border:1px solid #3a4250; background:#1b2029; color:#cfd6df; border-radius:6px; padding:6px 14px; cursor:pointer; font-size:13px; }
+  button:hover { background:#2b6cb0; border-color:#3b82c4; color:#fff; }
+  button:disabled { opacity:.5; cursor:default; }
+  input[type=range] { flex:1; min-width:400px; }
+  #fnum { font-variant-numeric:tabular-nums; color:#8fd0ff; min-width:150px; }
+  #status { margin:8px 0; color:#9fb0c3; }
+  .ok { color:#5fd97a; } .bad { color:#ff6b6b; }
+  .hint { color:#7c8794; font-size:11px; margin-top:6px; max-width:960px; }
+</style>
+</head>
+<body>
+<h1>Resim TA Player — real serverPublish TA on WebGPU (tapecanvas vendored pvr2)</h1>
+<div id="status">initializing…</div>
+<div id="wrap">
+  <canvas id="c" width="640" height="480"></canvas>
+  <div id="bar">
+    <button id="play" disabled>▶ Play</button>
+    <input id="scrub" type="range" min="0" max="0" value="0" step="1" disabled>
+    <span id="fnum">frame — / —</span>
+  </div>
+</div>
+<div class="hint">
+  Path: <b>fetch(.zcst)</b> → FrameDecoder.applyFrame → TAParser.parse → PVR2Renderer.renderFrame(canvas) — the exact
+  pipeline validated headless in <code>render_ta_wire.mjs</code>. Play advances one TA frame per animation frame;
+  drag the scrubber to seek (a backward seek re-decodes from the last keyframe, ~1s). Chrome/Edge with WebGPU required.
+  Override the source with <code>?src=/path/to/file.zcst</code>.
+</div>
+
+<script type="module">
+import { FrameDecoder }   from './renderer/frame-decoder.mjs?v=1';
+import { TAParser }       from './renderer/ta-parser.mjs?v=1';
+import { TextureManager } from './renderer/texture-manager.mjs?v=1';
+import { PVR2Renderer }   from './renderer/pvr2-renderer.mjs?v=1';
+
+const SRC = new URLSearchParams(location.search).get('src')
+          || '/maplecast-flycast/build-headless-win/render_ta_wire.zcst';
+const statusEl = document.getElementById('status');
+const canvas   = document.getElementById('c');
+const playBtn  = document.getElementById('play');
+const scrub    = document.getElementById('scrub');
+const fnum     = document.getElementById('fnum');
+const setStatus = (t, cls) => { statusEl.textContent = t; statusEl.className = cls || ''; };
+
+// ---- 1) WebGPU init — mirrors webgpu-test.html (R.init(canvas) + TextureManager(R.dev)) ----
+if (!navigator.gpu) { setStatus('WebGPU not available — use Chrome/Edge with WebGPU enabled.', 'bad'); throw new Error('no webgpu'); }
+const R = new PVR2Renderer();
+let D, T, P;
+try {
+  await R.init(canvas);
+  D = new FrameDecoder(); P = new TAParser(); T = new TextureManager(R.dev);
+  setStatus('WebGPU OK — fetching .zcst…', 'ok');
+} catch (e) { setStatus('WebGPU init failed: ' + e.message, 'bad'); throw e; }
+
+// ---- 2) fetch + split the wire ([u32 len][ZCST msg]…), len=0 robust (== render_ta_wire.mjs) ----
+let file, dv, msgs = [];
+try {
+  const resp = await fetch(SRC);
+  if (!resp.ok) throw new Error('HTTP ' + resp.status + ' for ' + SRC);
+  file = new Uint8Array(await resp.arrayBuffer());
+  dv = new DataView(file.buffer, file.byteOffset, file.byteLength);
+} catch (e) { setStatus('fetch failed: ' + e.message + ' (is the static server serving projects root?)', 'bad'); throw e; }
+{
+  const looksFramed = file.length >= 4 && dv.getUint32(0, true) + 4 <= file.length && dv.getUint32(0, true) > 8;
+  if (looksFramed) {
+    let off = 0;
+    while (off + 4 <= file.length) {
+      const len = dv.getUint32(off, true); off += 4;
+      if (len === 0) continue;
+      if (off + len > file.length) break;
+      msgs.push(file.subarray(off, off + len)); off += len;
+    }
+  } else msgs.push(file);
+}
+
+// ---- 3) index pass: count TA frames (throwaway decoder) ----
+setStatus(`decoded ${(file.length/1048576).toFixed(1)}MB, ${msgs.length} messages — indexing TA frames…`);
+let nFrames = 0;
+{
+  const D0 = new FrameDecoder();
+  for (const m of msgs) { let fr = null; try { fr = D0.applyFrame(m); } catch (e) {} if (D0.syncPending) D0.syncPending = false; if (fr) nFrames++; }
+}
+if (!nFrames) { setStatus('no renderable TA frames in ' + SRC, 'bad'); throw new Error('no frames'); }
+scrub.max = nFrames - 1; scrub.disabled = false; playBtn.disabled = false;
+setStatus(`ready — ${nFrames} TA frames, ${(file.length/1048576).toFixed(1)}MB`, 'ok');
+
+// ---- 4) decode + render (== webgpu-test.html per-frame block, base TA path) ----
+let decPos = 0, curTa = -1;
+function render(fr, full) {
+  if (full) T.setDirtyPages(null, true); else T.setDirtyPages(fr.dirtyPageList, fr.pvrDirty);
+  if (full || !T._pal || fr.vramDirty || fr.pvrDirty) T.updatePalette(D.pvrRegs);
+  const g = P.parse(fr.taBuffer, fr.taSize);
+  try { P.fillBGP(g, D.pvrRegs, D.vram); } catch (e) {}
+  R.renderFrame(g, T, fr.pvrSnapshot, D.vram, {}, null);   // rt=null -> draws to canvas + submits
+}
+// advance the decoder to TA-frame `target`; render it. full-invalidate the texcache on any seek.
+function seekTo(target) {
+  const full = target !== curTa + 1;         // continuous play = incremental; jump/back = full
+  if (target < curTa) { D = new FrameDecoder(); decPos = 0; curTa = -1; }
+  let fr = null;
+  while (curTa < target && decPos < msgs.length) {
+    let r = null; try { r = D.applyFrame(msgs[decPos]); } catch (e) {}
+    decPos++; if (D.syncPending) D.syncPending = false;
+    if (r) { curTa++; fr = r; }
+  }
+  if (fr) { render(fr, full); fnum.textContent = `frame ${curTa} / ${nFrames - 1}`; scrub.value = curTa; }
+  return fr;
+}
+
+// ---- 5) controls ----
+let playing = false, raf = 0;
+function loop() {
+  if (!playing) return;
+  if (curTa >= nFrames - 1) { stop(); return; }
+  seekTo(curTa + 1);
+  raf = requestAnimationFrame(loop);
+}
+function start() { if (playing) return; playing = true; playBtn.textContent = '⏸ Pause'; if (curTa >= nFrames - 1) { seekTo(0); } raf = requestAnimationFrame(loop); }
+function stop() { playing = false; playBtn.textContent = '▶ Play'; cancelAnimationFrame(raf); }
+playBtn.onclick = () => playing ? stop() : start();
+scrub.oninput = () => { stop(); seekTo(+scrub.value); };
+
+// first frame
+seekTo(0);
+</script>
+</body>
+</html>

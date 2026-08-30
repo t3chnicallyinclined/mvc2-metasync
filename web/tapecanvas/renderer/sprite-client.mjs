@@ -1692,6 +1692,19 @@ export class SpriteClient {
     // is present, else the legacy per-cid group heuristic.
     let sawObjLayer = false;
     const LAYER_BIG = 1e5;   // dominates max partZ (part counts are small, <<1e5); float-exact
+    // FALLBACK layer for a BODY whose slot-table draw_layer is UNAVAILABLE (0xFF). During a
+    // super-freeze / hyper-combo cinematic the engine pulls ALL fighters OUT of the slot table
+    // for ~12 sustained frames (draw_layer=0xFF; measured idx 7400-7411 of the 59598061 tape).
+    // The old `zBase*100` fallback then collapsed those bodies to z≈0 — BEHIND every layer-0
+    // background effect AND interleaved with them by part count (the reported "effects in front
+    // of / behind the fighters" super-freeze bug). Bodies occupy layers 3-6 in 99.2% of tape
+    // frames (modal 5/6, n=31121); default an unknown-layer body to 5 IN THE LAYER SCALE so it
+    // stays in its normal fighter band, ABOVE layer-0/1/2 background effects. Effects/satellites
+    // always carry a real 0..15 o.type layer (never 0xFF), so this never fires for them.
+    // window._bodyLayerFallback=false reverts to the legacy zBase*100 collapse (A/B).
+    const FALLBACK_BODY_LAYER = 5;
+    const bodyLayerFix = (typeof window === 'undefined') ? true
+                       : (window._bodyLayerFallback !== undefined ? !!window._bodyLayerFallback : true);
 
     // owner: { cid, exx, eyy, facing, slot, zBase, layer?, sclX, sclY, pal12d, pal12e, blend?, fx? }
     const emitAssembly = (owner, sid) => {
@@ -1906,6 +1919,8 @@ export class SpriteClient {
           if (owner.engZ != null) { z = owner.engZ * 1e6 + partZ; }        // engine 1/W (authoritative)
           else if (owner.layer != null && owner.layer !== 0xFF) {          // DEFECT #2: per-object layer bucket
             z = owner.layer * LAYER_BIG + partZ; sawObjLayer = true;       // game 16-layer walk (lower = behind)
+          } else if (bodyLayerFix && owner.isBody && owner.layer === 0xFF) { // super-freeze: body pulled out of slot table
+            z = FALLBACK_BODY_LAYER * LAYER_BIG + partZ; sawObjLayer = true; // keep body in its fighter band, not z≈0
           } else { z = (owner.zBase || 0) * 100 + partZ; }                 // legacy type-based fallback
           // SHADER V-FLIP: the atlas stores parts bottom-up, so correct the texture V
           // for EVERY part (emitFlipY, default ON) XOR the per-record geometry Y-mirror
@@ -2010,6 +2025,8 @@ export class SpriteClient {
         if (owner.engZ != null) { z = owner.engZ * 1e6 + (r.z || 0); }     // engine 1/W (node+0xE8) depth
         else if (owner.layer != null && owner.layer !== 0xFF) {            // DEFECT #2: per-object layer bucket
           z = owner.layer * LAYER_BIG + (r.z || 0); sawObjLayer = true;
+        } else if (bodyLayerFix && owner.isBody && owner.layer === 0xFF) { // super-freeze: body pulled out of slot table
+          z = FALLBACK_BODY_LAYER * LAYER_BIG + (r.z || 0); sawObjLayer = true;
         } else { z = (owner.zBase || 0) * 100 + (r.z || 0); }              // legacy type-based fallback
         const palRow = palRowOf(r.pal || 0, owner.pal12d || 0, owner.pal12e || 0);
         const item = { charId: owner.fx ? -1 : owner.cid, slot: owner.slot, z,
@@ -2101,7 +2118,7 @@ export class SpriteClient {
       // all 33 legit sid-149 parts). Off restores the pure validated body path (_bodyGarbleGuard).
       const bodyGuard = (typeof window === 'undefined') ? true
                       : (window._bodyGarbleGuard !== undefined ? !!window._bodyGarbleGuard : true);
-      emitAssembly({ cid: sl.char_id, exx, eyy, facing: sl.facing, slot: s, zBase: 0,
+      emitAssembly({ cid: sl.char_id, exx, eyy, facing: sl.facing, slot: s, zBase: 0, isBody: true,
                      engZ: (sl.engZ != null ? sl.engZ : undefined),   // engine 1/W depth (node+0xE8)
                      layer: (sl.draw_layer != null ? sl.draw_layer : undefined), // DEFECT #2: body's own draw layer
                      sclX: sl.scaleX, sclY: sl.scaleY, pal12d: sl.pal12d, pal12e: sl.pal12e,

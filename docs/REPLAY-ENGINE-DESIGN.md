@@ -1,5 +1,12 @@
 # MvC2 REPLAY ENGINE — system design
 
+> **⚡ CURRENT STATUS — 2026-08-30: the resim → real-TA → WebGPU render pipeline WORKS.** OUR resim's real
+> `serverPublish` TA renders clean (bodies + effects + additive blend + 3D stage + HUD) on the tapecanvas
+> WebGPU renderer, no flycast mirror — interactive player `web/tapecanvas/play_zcst.html`.
+> **→ [`docs/RENDER-ACCURACY-PROGRAM.md`](RENDER-ACCURACY-PROGRAM.md) is the SSOT for how it's done.**
+> This doc is the original **Path-A state-tape/emitter** design (still the ships-today fallback); the
+> shipping ground-truth render is the real-TA path above.
+
 > **Lead:** Steam RE (synthesis). **Contributors:** mvc2-sprite-render-expert (capture + sprite pipeline),
 > mvc2-sh4-re-expert (memory/offset ground truth), flycast-internals-expert (render architecture),
 > gsta-verification-harness (proof), senior-re-generalist (skeptic).

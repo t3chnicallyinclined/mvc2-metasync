@@ -1,5 +1,11 @@
 # Steam-Tape → Canvas Replay — Workstream Handoff
 
+> **⚡ SUPERSEDED AS ENTRY POINT — 2026-08-30.** The current workstream anchor is
+> **[`docs/RENDER-ACCURACY-PROGRAM.md`](RENDER-ACCURACY-PROGRAM.md)** (the SSOT — read it first). The
+> resim → real-TA → WebGPU render pipeline now WORKS: OUR resim's real `serverPublish` TA renders clean on
+> the tapecanvas WebGPU renderer, interactive player `web/tapecanvas/play_zcst.html`. This doc remains the
+> 2026-08-27 handoff/history.
+
 > **Purpose:** the single anti-drift anchor for "render a Steam MvC2 tape on canvas."
 > Read this first every session. Update it (and commit) at the end of every session.
 > _Started: 2026-08-27._

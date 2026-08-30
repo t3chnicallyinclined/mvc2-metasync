@@ -48,7 +48,7 @@
   <label>frame <input id="scrub" type="range" min="0" max="0" value="600"></label>
   <span id="fno" class="tag">—</span>
   <label>speed <select id="speed"><option>0.25</option><option>0.5</option><option selected>1</option><option>2</option><option>4</option><option>8</option></select></label>
-  <label><input type="checkbox" id="fx"> effects</label>
+  <label><input type="checkbox" id="fx" checked> effects</label>
   <label><input type="checkbox" id="hitflash" checked> hit-flash</label>
   <button id="shot">save PNG</button>
 </div>
@@ -67,7 +67,7 @@ const log = (m) => { logEl.textContent += m + '\n'; logEl.scrollTop = logEl.scro
 
 let SpriteClient, SpriteGPU, TapeAdapter, loadTapeJson, HudClient, StageClient, PVR2Renderer;
 try {
-  const V = '?v=stage3d1';   // HUD hidden; REAL 3D STG00 stage ON (behind fighters) — characters + 3D stage
+  const V = '?v=sharp2';   // guards off (real cells) + 0xFF-body layer fallback (super-freeze effect ordering) + per-char body/effect palette bank (Iceman re-baked --bank 1)
   ({ SpriteClient } = await import(`${RENDERER}/sprite-client.mjs${V}`));
   ({ SpriteGPU }    = await import(`${RENDERER}/sprite-gpu.mjs${V}`));
   ({ HudClient }    = await import(`${RENDERER}/hud-client.mjs${V}`));
@@ -100,7 +100,17 @@ window._emitZByLayer = true;     // draw_layer group sort (spec §4) — NO engZ
 SC.predict = false;              // frozen tape frame — no extrapolation
 SC.objectsOn = false;            // effects/satellites gated OFF (default)
 SC.hitFlashOn = true;            // victim hit-flash (render-only; tint driven by tape hitstun)
-window._fxGarbleGuard = true;    // suppress offline-decode banded effect cells (Cable plasma fix)
+// GARBLE GUARDS OFF (2026-08-29). The "offline-decode dead end" was a DECODER BUG (the old
+// word-oriented loc_8c03552a with 4094-B back-refs that underflowed into the 0x0CE60000
+// scratch), NOT impossible. The correct routine is loc_8c0354c0 — byte-oriented, self-contained
+// 16-B window — used by tools/extract_gfx1_atlas.py, VALIDATED bit-exact vs 6 live Ryu captures.
+// Proven here: decoding EVERY part of PL0F (3815) and PL17 (4031) gives 0 underflow + 0 short —
+// the scratch-residue failure mode never occurs; the atlas is universally clean (and pixel-
+// identical to a fresh re-extract). The row-band _isDegeneratePart heuristic was therefore
+// deleting LEGIT banded effect art (plasma/aura/energy gradients decode with 5-8 colors) and
+// punching HOLES. Render the game's real cells. (rr-sprite-render-pipeline VINDICATED.)
+window._fxGarbleGuard = false;   // effects: show the real (clean-decoded) banded cells
+window._bodyGarbleGuard = false; // bodies: attack-pose beam/projectile cells decode clean too
 SC.setCharBase(ATLAS);           // lazy per-char PLxx_parts.png/_asm.json fetch
 
 let gpuOK = false, device = null, stageR = null;

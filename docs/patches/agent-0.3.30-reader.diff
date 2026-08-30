@@ -1,0 +1,275 @@
+--- a/src/reader.rs
++++ b/src/reader.rs
+@@ -120,6 +120,35 @@
+ const CALIB_MAX_FRAMES:      usize = 16;        // 0.3.29: self-describing blob keeps this many effect-frames
+ const CALIB_PREFIX_LEN:      usize = 0x1c0;     // 0.3.29: raw node prefix H+0x00..0x1C0 dumped for offline offset-derivation
+ const H_CATEGORY:            usize = 0x03;      // node category → render-list/blend class (NOT the texture bank)
++
++// ── 0.3.30: 3D-CLASS (NaomiLib list 5-13) EFFECT capture — the "separate list walk" ──────────────────
++// The SECOND (3D / NaomiLib) render machine draws the impact-hit sparks — cat8 rings, cat7 victim-anchored
++// sparks, and the bank10 `loc_8c100968` list-7 sparks — by walking LIST HEADS (marvelous2 walker
++// `loc_8c030410` bank03:447: head = *(0x8C287A5C + idx*4), node.next @ +0x0C, gate u8(node+0x12C)!=0 &&
++// *(node+0x84)!=0), NOT the 2D slot table at blk+0x2f4d0. So `harvest_objs` (0.3.29) never sees them — the
++// 0.3.29 whole-tape scan captured 0 cat 5-13 nodes. This is the item OWNED-RENDER-BUILD-SPEC.md §4 deferred.
++//
++// RAW-PREFIX SELF-DESCRIBING (per Tris's directive, exactly how the 0.3.29 calib blob works): the Steam
++// list-head table offset is INFERRED and AMBIGUOUS — DC 0x8C287A5C maps to blk+0x23E3C (via Δ0x8C263C20)
++// OR blk+0x2F14C (via Δ0x8C258910), two OVERLAPPING mvc2-dc-steam-block-map ranges — and the 3D node field
++// offsets (MVP matrix +0x88, model +0x84, flags +0xCC, alpha +0x74, color +0x78/7C/80, owner +0x28,
++// cat +0x03, list +0x24 — re_kb finding:3d_draw_emit_map) are INFERRED (they may be +0x44-shifted on Steam
++// like the render cluster). So DUMP RAW and pin them OFFLINE — NO new live probe. Bounded HARD: a speculative
++// future capture that rides the held legacy-final or gets trimmed once the oracle proves it out.
++const CALIB3D_MAX_FRAMES:   usize = 8;      // keep at most this many 3D-effect frames (half the objs-calib budget)
++const CALIB3D_MAX_ATTEMPTS: u32   = 240;    // stop walking after this many battle frames even if none captured (anti-runaway)
++const CALIB3D_PREFIX_LEN:   usize = 0x1c0;  // 448-B node window — covers +0x88 matrix + +0xCC flags AND their +0x44-shifted Steam positions
++const CALIB3D_MAX_NODES:    usize = 24;     // per-frame captured-node cap (across all lists + candidates)
++const CALIB3D_MAX_HOPS:     usize = 32;     // per-list linked-list hop cap (anti-cycle / anti-garbage)
++const CALIB3D_NODE_NEXT:    usize = 0x0c;   // node.next ptr (finding:3d_draw_emit_map — walker advances +0x0C)
++const CALIB3D_LIST_LO:      usize = 5;      // 3D-class list index / category range (NaomiLib lists 5..=13)
++const CALIB3D_LIST_HI:      usize = 13;
++const CALIB3D_HEAD_STRIDE:  usize = 8;      // INFERRED Steam list-head entry stride (native ptr width; DC = 4)
++const CALIB3D_HEAD_DUMP:    usize = 0x80;   // raw bytes dumped per candidate head table (14 entries × 8 = 112 ≤ 128)
++// Candidate blk-relative offsets of the DC 3D list-head table (0x8C287A5C). BOTH are captured raw in the
++// envelope `head3d` dump; offline analysis identifies which words are real list-head pointers → pins the
++// exact Steam offset + stride, so the walk below being wrong only costs a (bounded, safe) miss.
++const CALIB3D_HEAD_CANDS: [usize; 2] = [0x23e3c, 0x2f14c];
+ // 0.3.29 — effect-node offsets CORRECTED from live fxprobe.py (Storm proj + triple super, 2 runs). ROOT CAUSE of
+ // the three wrong offsets: the render cluster maps DC→Steam at a CONFIRMED +0x44 delta (5 anchors: screen
+ // 0xE0→0x124, screen_y 0xE4→0x128, drawgate 0x12C→0x170, sid 0x144→0x188, hitflash 0x12E→0x172). The old
+@@ -1312,12 +1341,20 @@
+     calib: Vec<(u32, Vec<Vec<u8>>)>,
+     battle_blk: u64,        // 0.3.29: blk at battle start → fighter_bases = blk+0x3DB8+i*0x738 (offline owner ground-truth)
+     tie_ggpo_frame: i32,    // 0.3.29: GGPO Sync::_last_confirmed_frame read at battle start (pairs with start_sim_frame)
++    // 0.3.30 — 3D-class (NaomiLib list 5-13) effect capture. calib3d = first CALIB3D_MAX_FRAMES 3D-effect
++    //   frames, each drawn node's raw H+0x00..0x1C0 prefix (self-describing, pinned OFFLINE); head3d = a
++    //   ONE-shot raw dump of the candidate list-head table regions (pins the Steam enumeration offset offline);
++    //   calib3d_seen = walk-attempt counter (hard runaway bound, CALIB3D_MAX_ATTEMPTS).
++    calib3d: Vec<(u32, Vec<Vec<u8>>)>,
++    head3d: Vec<u8>,
++    calib3d_seen: u32,
+ }
+ impl Default for GsCapture {
+     fn default() -> Self { GsCapture { frames: std::collections::BTreeMap::new(), frame_addr: 0, synthetic: false, assist: [0; 6], costume: [0; 6], local_pn: 255, set_start: None, last_update: None,
+                                        seat_map: [-1; 4], rollbacks: 0, build_id: String::new(), stage_id: 0, anchor: None, anchor_blk: 0, anchor_arena: 0, anchor_frame: 0, anchor_hash: 0,
+                                        select_in: Vec::new(), start_sim_frame: 0, confirmed_in: std::collections::BTreeMap::new(), objs: std::collections::BTreeMap::new(),
+-                                       calib: Vec::new(), battle_blk: 0, tie_ggpo_frame: -1 } }
++                                       calib: Vec::new(), battle_blk: 0, tie_ggpo_frame: -1,
++                                       calib3d: Vec::new(), head3d: Vec::new(), calib3d_seen: 0 } }
+ }
+ fn gs_capture() -> &'static Mutex<GsCapture> {
+     static S: OnceLock<Mutex<GsCapture>> = OnceLock::new();
+@@ -1332,7 +1369,8 @@
+                     anchor_hash: u64, select_in: Vec<(u32, u32, u32)>, start_sim_frame: u32,
+                     confirmed_in: std::collections::BTreeMap<u32, [u32; 2]>,
+                     objs: std::collections::BTreeMap<u32, Vec<ObjNode>>,
+-                    calib: Vec<(u32, Vec<Vec<u8>>)>, battle_blk: u64, tie_ggpo_frame: i32 }
++                    calib: Vec<(u32, Vec<Vec<u8>>)>, battle_blk: u64, tie_ggpo_frame: i32,
++                    calib3d: Vec<(u32, Vec<Vec<u8>>)>, head3d: Vec<u8> }   // 0.3.30
+ // Return the buffered game IFF it was actively updating within the last few seconds (i.e. it IS the game
+ // that just ended). This guards against attaching a stale/other game's buffer to a late (pending-flush) win.
+ fn gamestate_snapshot() -> Option<GsSnapshot> {
+@@ -1344,7 +1382,8 @@
+                       anchor: c.anchor.clone(), anchor_blk: c.anchor_blk, anchor_arena: c.anchor_arena, anchor_frame: c.anchor_frame,
+                       anchor_hash: c.anchor_hash, select_in: c.select_in.clone(),
+                       start_sim_frame: c.start_sim_frame, confirmed_in: c.confirmed_in.clone(), objs: c.objs.clone(),
+-                      calib: c.calib.clone(), battle_blk: c.battle_blk, tie_ggpo_frame: c.tie_ggpo_frame })
++                      calib: c.calib.clone(), battle_blk: c.battle_blk, tie_ggpo_frame: c.tie_ggpo_frame,
++                      calib3d: c.calib3d.clone(), head3d: c.head3d.clone() })   // 0.3.30
+ }
+ 
+ fn le32(b: &[u8], o: usize) -> u32 { u32::from_le_bytes([b[o], b[o + 1], b[o + 2], b[o + 3]]) }
+@@ -1727,6 +1766,57 @@
+     }
+ }
+ 
++// 0.3.30: walk the 3D / NaomiLib render machine's effect lists (5..=13) and capture each drawn 3D-class
++// node's RAW 448-B prefix (self-describing — see the CALIB3D_* block). This is the render machine
++// `harvest_objs` cannot reach: the 2D slot table (blk+0x2f4d0) holds none of these (0.3.29 confirmed 0
++// cat 5-13). Read-only RPM; every read of a GUESSED pointer fails safe (`read_at` → None). Bounded HARD:
++// ≤2 candidate head tables × 9 lists × CALIB3D_MAX_HOPS, capped at CALIB3D_MAX_NODES prefixes per call.
++unsafe fn harvest_3d(h: &mem::Proc, blk: usize, out: &mut Vec<Vec<u8>>) {
++    let u64_at = |a: usize| read_at(h, a, 8).filter(|b| b.len() >= 8)
++        .map(|b| u64::from_le_bytes([b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7]]) as usize);
++    let sane = |p: usize| p > 0x10000 && p < 0x7fff_ffff_ffff;
++    let rd_u64 = |buf: &[u8], o: usize| -> usize {
++        u64::from_le_bytes([buf[o], buf[o+1], buf[o+2], buf[o+3], buf[o+4], buf[o+5], buf[o+6], buf[o+7]]) as usize };
++    let mut seen: Vec<usize> = Vec::new();                          // per-call cycle / dedup guard (bounded)
++    'cands: for &hb in CALIB3D_HEAD_CANDS.iter() {
++        for idx in CALIB3D_LIST_LO..=CALIB3D_LIST_HI {
++            let head = match u64_at(blk + hb + idx * CALIB3D_HEAD_STRIDE) { Some(p) if sane(p) => p, _ => continue };
++            let mut node = head;
++            let mut hops = 0usize;
++            while sane(node) && hops < CALIB3D_MAX_HOPS {
++                hops += 1;
++                if seen.contains(&node) { break; }                 // cycle / already walked this node
++                seen.push(node);
++                let buf = match read_at(h, node, CALIB3D_PREFIX_LEN).filter(|b| b.len() >= CALIB3D_PREFIX_LEN) { Some(b) => b, None => break };
++                let cat = buf[H_CATEGORY] as usize;
++                // 3D-node structural gate (finding:3d_draw_emit_map): a drawn node has a model/POL pointer set.
++                // Check BOTH the DC slot (+0x84) and its +0x44-shifted Steam candidate (+0xC8), since the node
++                // layout's Steam delta is unconfirmed — the raw prefix pins it offline regardless.
++                let model_ok = sane(rd_u64(&buf, 0x84)) || sane(rd_u64(&buf, 0xc8));
++                if cat >= CALIB3D_LIST_LO && cat <= CALIB3D_LIST_HI && model_ok {
++                    out.push(buf[..CALIB3D_PREFIX_LEN].to_vec());
++                    if out.len() >= CALIB3D_MAX_NODES { break 'cands; }
++                }
++                node = u64_at(node + CALIB3D_NODE_NEXT).unwrap_or(0);
++            }
++        }
++    }
++}
++
++// 0.3.30: dump the candidate 3D list-head table regions ONCE at battle start (envelope). Offline analysis
++// finds which words are real list-head pointers → pins the true Steam list-head offset + stride, so a wrong
++// walk above costs only a (bounded, safe) miss. Format: for each candidate [u32 blk_off][u16 len][len bytes].
++unsafe fn dump_3d_heads(h: &mem::Proc, blk: usize) -> Vec<u8> {
++    let mut b = Vec::new();
++    for &hb in CALIB3D_HEAD_CANDS.iter() {
++        let region = read_at(h, blk + hb, CALIB3D_HEAD_DUMP).unwrap_or_default();
++        b.extend_from_slice(&(hb as u32).to_le_bytes());
++        b.extend_from_slice(&(region.len() as u16).to_le_bytes());
++        b.extend_from_slice(&region);
++    }
++    b
++}
++
+ // 0.3.24: pin the GAME BUILD a tape was recorded against. Re-simulation is deterministic for the
+ // IDENTICAL build ONLY, and Steam auto-updates — Fightcade hit exactly this and solved it by gating
+ // each replay on a version number. We take the loaded module's PE TimeDateStamp + SizeOfImage: they
+@@ -1835,6 +1925,9 @@
+                 c.confirmed_in.clear();   // 0.3.26: this game owns its confirmed-input buffer
+                 c.objs.clear();           // 0.3.27: and its per-frame object-pool (effects) buffer
+                 c.calib.clear();          // 0.3.29: and its self-describing effect-node calibration blob
++                c.calib3d.clear();        // 0.3.30: and its 3D-class (NaomiLib list 5-13) effect calibration blob
++                c.head3d.clear();
++                c.calib3d_seen = 0;
+                 c.frame_addr = fc.unwrap_or(0);
+                 c.synthetic = fc.is_none();
+                 c.assist = assist;
+@@ -1864,6 +1957,9 @@
+                 // instant (Sync::_last_confirmed_frame). Pairs with start_sim_frame as ggpo_sim_tie so the
+                 // confirmed_in↔frames clock offset pins exactly. Best-effort: -1 if the GGPO session isn't up.
+                 c.battle_blk = base.checked_sub(BLK_BACK).unwrap_or(0) as u64;
++                // 0.3.30: one-shot raw dump of the candidate 3D list-head table regions → offline pins the
++                //   Steam enumeration offset for the NaomiLib list walk (see dump_3d_heads / CALIB3D_*).
++                if let Some(blk) = base.checked_sub(BLK_BACK) { c.head3d = unsafe { dump_3d_heads(h, blk) }; }
+                 c.tie_ggpo_frame = if exe_base != 0 {
+                     match unsafe { read_at(h, exe_base + GGPO_SESSION_OFF, 8) }.filter(|b| b.len() >= 8) {
+                         Some(b) => {
+@@ -1944,6 +2040,16 @@
+                             let mut calib_nodes: Vec<Vec<u8>> = Vec::new();
+                             unsafe { harvest_objs(h, base, &mut objs, &mut flayers, if want_calib { Some(&mut calib_nodes) } else { None }); }
+                             row.layer = flayers;
++                            // 0.3.30: the SEPARATE 3D / NaomiLib list walk (cat 5-13 impact sparks harvest_objs
++                            // cannot reach). Bounded HARD — only while we still need frames AND under the runaway
++                            // attempt cap; RPM reads, done before the lock. want_3d is only ever true for a few
++                            // frames, so the 333Hz poller add is negligible.
++                            let want_3d = { let c = gs_capture().lock().unwrap();
++                                            c.calib3d.len() < CALIB3D_MAX_FRAMES && c.calib3d_seen < CALIB3D_MAX_ATTEMPTS };
++                            let mut nodes3d: Vec<Vec<u8>> = Vec::new();
++                            if want_3d {
++                                if let Some(blk) = base.checked_sub(BLK_BACK) { unsafe { harvest_3d(h, blk, &mut nodes3d); } }
++                            }
+                             {
+                                 let mut c = gs_capture().lock().unwrap();
+                                 // LAST-WRITE-WINS: a rollback re-visits an earlier frame → overwrites it with the
+@@ -1956,6 +2062,13 @@
+                                     if !calib_nodes.is_empty() && c.calib.len() < CALIB_MAX_FRAMES {
+                                         c.calib.push((frame, calib_nodes));   // 0.3.29: first N effect-frames, raw prefixes
+                                     }
++                                    // 0.3.30: 3D-class walk bookkeeping. Count every ATTEMPT (runaway bound), keep only
++                                    // frames that actually yielded a 3D-class node — "first N frames CONTAINING drawn
++                                    // 3D-class nodes", mirroring the 0.3.29 calib gate.
++                                    if want_3d { c.calib3d_seen = c.calib3d_seen.saturating_add(1); }
++                                    if !nodes3d.is_empty() && c.calib3d.len() < CALIB3D_MAX_FRAMES {
++                                        c.calib3d.push((frame, nodes3d));
++                                    }
+                                     c.last_update = Some(std::time::Instant::now());
+                                 }
+                             }
+@@ -2130,6 +2243,25 @@
+         b
+     };
+     let calib_b64 = b64_encode(&gzip_bytes(&calib_raw));
++    // 0.3.30 CALIB3D BLOB (self-describing, 3D-class): first CALIB3D_MAX_FRAMES frames that contained a drawn
++    //   NaomiLib-list (5-13) effect node, each node's raw prefix H+0x00..0x1C0 (448 B). Same wire shape as
++    //   `calib`: [u32 frame][u16 node_count][node_count × 448B prefix]. The 3D node offsets (MVP +0x88 /
++    //   model +0x84 / flags +0xCC / alpha +0x74 / color +0x78-80 / owner +0x28 / cat +0x03 / list +0x24) are
++    //   INFERRED (may be +0x44-shifted on Steam) → pinned OFFLINE from these raw prefixes, no live probe.
++    let calib3d_raw: Vec<u8> = {
++        let mut b = Vec::new();
++        for (f, nodes) in &gs.calib3d {
++            let n = nodes.len().min(0xffff);
++            b.extend_from_slice(&f.to_le_bytes());
++            b.extend_from_slice(&(n as u16).to_le_bytes());
++            for pfx in nodes.iter().take(n) { b.extend_from_slice(pfx); }
++        }
++        b
++    };
++    let calib3d_b64 = b64_encode(&gzip_bytes(&calib3d_raw));
++    // 0.3.30 HEAD3D: one-shot raw dump of the candidate 3D list-head table regions (blk+0x23E3C / blk+0x2F14C)
++    //   → offline pins the true Steam list-head offset + stride for the NaomiLib walk. [u32 blk_off][u16 len][bytes]×2.
++    let head3d_b64 = b64_encode(&gzip_bytes(&gs.head3d));
+     // 0.3.29 fighter_bases: the six absolute node addrs at battle start (blk+0x3DB8+i*0x738) → the offline
+     //   owner ground-truth the calibration blob is diffed against. battle_blk==0 means it wasn't captured.
+     let fighter_bases: Vec<u64> = (0..6).map(|i| gs.battle_blk.wrapping_add((BLK_H0_OFF + i * STRIDE) as u64)).collect();
+@@ -2176,6 +2308,14 @@
+         // GGPO<->sim clock tie-point. See docs/OWNED-RENDER-BUILD-SPEC.md "0.3.29 CAPTURE DELTA".
+         "calib": calib_b64, "calib_frames": gs.calib.len(),
+         "calib_enc": "gzip+base64 of per-frame [u32 frame, u16 node_count, node_count x 448B raw node prefix H+0x00..0x1C0 (cat=prefix[0x03])]",
++        // 0.3.30 3D-class (NaomiLib list 5-13) effect capture — the SEPARATE list walk harvest_objs cannot
++        // reach (impact hit sparks: cat8 rings + cat7 victim-anchored + bank10 list-7). RAW-PREFIX self-describing:
++        // node field offsets are INFERRED (may be +0x44-shifted on Steam) → pinned OFFLINE. head3d dumps the
++        // candidate list-head tables so the Steam enumeration offset (blk+0x23E3C vs 0x2F14C, AMBIGUOUS) pins too.
++        "calib3d": calib3d_b64, "calib3d_frames": gs.calib3d.len(),
++        "calib3d_enc": "gzip+base64 of per-frame [u32 frame, u16 node_count, node_count x 448B raw 3D-node prefix H+0x00..0x1C0 (cat=prefix[0x03]); NaomiLib list-walk, offsets INFERRED, pin OFFLINE]",
++        "head3d": head3d_b64,
++        "head3d_enc": "gzip+base64 of [u32 blk_off, u16 len, len bytes] per candidate 3D list-head table (0x23E3C, 0x2F14C); raw, pins the Steam list-head offset+stride OFFLINE",
+         "fighter_bases": fighter_bases, "battle_blk": gs.battle_blk,
+         "ggpo_sim_tie": { "sim_frame": gs.start_sim_frame, "ggpo_frame": gs.tie_ggpo_frame },
+         "start_sim_frame": gs.start_sim_frame,
+@@ -4337,4 +4477,44 @@
+         assert_eq!((s.bc_slot, s.bc_hits), (0, 12), "biggest combo owned by slot 0");
+         assert!(s.swing.len() >= 2 && s.swing[0] == 0 && *s.swing.last().unwrap() > 0, "momentum ends P1-positive");
+     }
++
++    // 0.3.30: pin the 3D-class (NaomiLib list 5-13) capture. (1) the raw prefix window must cover every
++    // 3D-node field the offline pinner reads — at BOTH its inferred DC offset AND the +0x44-shifted Steam
++    // candidate; (2) the calib3d wire framing ([u32 frame][u16 count][count × PREFIX_LEN]) must round-trip.
++    #[test]
++    fn calib3d_prefix_covers_offsets_and_frames_roundtrip() {
++        // every documented 3D-node offset (finding:3d_draw_emit_map) and its possible +0x44 Steam shift
++        // must fall inside the captured prefix — otherwise the field can't be pinned offline.
++        for dc in [0x03usize, 0x24, 0x28, 0x74, 0x78, 0x7c, 0x80, 0x84, 0x88 /*..0xC8 matrix*/, 0xc8, 0xcc] {
++            assert!(dc + 4 <= CALIB3D_PREFIX_LEN, "DC offset {dc:#x} outside prefix");
++            assert!(dc + 0x44 + 4 <= CALIB3D_PREFIX_LEN, "+0x44-shifted offset {:#x} outside prefix", dc + 0x44);
++        }
++        // the matrix (+0x88, 16 floats = 0x40) and its +0x44 shift must also fit whole.
++        assert!(0x88 + 0x40 <= CALIB3D_PREFIX_LEN && 0x88 + 0x44 + 0x40 <= CALIB3D_PREFIX_LEN, "MVP matrix window overruns prefix");
++
++        // wire framing round-trip (same shape harvest→emit produces): frame 10 with 2 nodes, frame 11 with 1.
++        let n0 = vec![7u8; CALIB3D_PREFIX_LEN];
++        let n1 = vec![9u8; CALIB3D_PREFIX_LEN];
++        let n2 = vec![5u8; CALIB3D_PREFIX_LEN];
++        let calib3d: Vec<(u32, Vec<Vec<u8>>)> = vec![(10, vec![n0.clone(), n1.clone()]), (11, vec![n2.clone()])];
++        let mut raw = Vec::new();
++        for (f, nodes) in &calib3d {
++            let n = nodes.len().min(0xffff);
++            raw.extend_from_slice(&f.to_le_bytes());
++            raw.extend_from_slice(&(n as u16).to_le_bytes());
++            for pfx in nodes.iter().take(n) { raw.extend_from_slice(pfx); }
++        }
++        // decode
++        let mut off = 0usize;
++        let mut decoded: Vec<(u32, usize)> = Vec::new();
++        while off + 6 <= raw.len() {
++            let f = u32::from_le_bytes([raw[off], raw[off+1], raw[off+2], raw[off+3]]);
++            let cnt = u16::from_le_bytes([raw[off+4], raw[off+5]]) as usize;
++            off += 6 + cnt * CALIB3D_PREFIX_LEN;
++            decoded.push((f, cnt));
++        }
++        assert_eq!(off, raw.len(), "framing consumed exactly");
++        assert_eq!(decoded, vec![(10, 2), (11, 1)], "frame/count round-trip");
++        assert!(CALIB3D_MAX_FRAMES <= CALIB_MAX_FRAMES && CALIB3D_MAX_NODES > 0 && CALIB3D_MAX_HOPS > 0, "3D bounds sane");
++    }
+ }

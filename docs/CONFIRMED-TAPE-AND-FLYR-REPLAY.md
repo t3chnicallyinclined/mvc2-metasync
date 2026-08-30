@@ -1,5 +1,12 @@
 # Confirmed-input tape + `.flyr` replay — the pixel-perfect path, grounded
 
+> **⚡ CURRENT STATUS — 2026-08-30: the resim → real-TA → WebGPU render pipeline WORKS.** The resim now
+> drives that render (correct match, real `serverPublish` TA → tapecanvas WebGPU, `web/tapecanvas/play_zcst.html`).
+> **→ [`docs/RENDER-ACCURACY-PROGRAM.md`](RENDER-ACCURACY-PROGRAM.md) is the SSOT.** ⚠ Corrections since this
+> doc: resim runs on the **DC GDI** (not NAOMI); reach the match by **cold-boot MENUNAV** (savestate-restore
+> stalls the headless render loop); `.flyr`/dojo is not our tooling — we use `MAPLECAST_MIRROR_SERVER` →
+> `.zcst`. Faithful early; the exact-through-super determinism cert (B2c) is still open.
+
 > Written 2026-08-27. This is the convergence of two independent efforts: the flycast-NAOMI
 > **determinism test** (gsta-verification-harness) and the **GGPO/dojo replay source study**
 > (flycast-internals-expert). They agree exactly. This is not a guess — it is dojo's own recipe.

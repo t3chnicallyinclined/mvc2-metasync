@@ -1,0 +1,302 @@
+--- a/src/reader.rs
++++ b/src/reader.rs
+@@ -117,13 +117,22 @@
+ const N_LAYERS:              usize = 16;
+ const DRAWLIST_MAX_PER_LAYER: usize = 0x60;     // engine cap per layer
+ const OBJS_CAP_PER_FRAME:    usize = 64;        // active pool is a handful; cap for tape-size safety
++const CALIB_MAX_FRAMES:      usize = 16;        // 0.3.29: self-describing blob keeps this many effect-frames
++const CALIB_PREFIX_LEN:      usize = 0x1c0;     // 0.3.29: raw node prefix H+0x00..0x1C0 dumped for offline offset-derivation
+ const H_CATEGORY:            usize = 0x03;      // node category → render-list/blend class (NOT the texture bank)
+-// 0.3.28: owner-ptr Steam offset is ladder-ambiguous (DC +0x80 spans δ0x1C→δ0x44) → SCAN both candidates
+-// against the six fighter bases; owner-less globals match neither (route by category, that is correct).
+-const H_OWNER_A:             usize = 0x9c;      // owner-ptr candidate A (DC +0x80, δ0x1C), u64
+-const H_OWNER_B:             usize = 0xc4;      // owner-ptr candidate B (DC +0x80, δ0x44), u64
+-const H_GFX1_PTR:            usize = 0x1a8;     // DC +0x15C Dat_GFX1 → Steam H+0x1A8 (u64, CONFIRMED via loader
+-                                                //   FUN_14060D100): the effect-atlas binding key + is_effect signal
++// 0.3.29 — effect-node offsets CORRECTED from live fxprobe.py (Storm proj + triple super, 2 runs). ROOT CAUSE of
++// the three wrong offsets: the render cluster maps DC→Steam at a CONFIRMED +0x44 delta (5 anchors: screen
++// 0xE0→0x124, screen_y 0xE4→0x128, drawgate 0x12C→0x170, sid 0x144→0x188, hitflash 0x12E→0x172). The old
++// H_GFX1_PTR=0x1a8 was δ0x4C = DC+0x164 = Dat_Pal (a PALETTE handle) — precisely why it never resolved (0/23742).
++const H_OBJ_OWNER:           usize = 0x28;      // u64 == owning fighter's H-base (blk+0x3DB8+i*0x738). CONFIRMED
++                                                //   live 48/52 & 40/40 (misses = ownerless super-flash → 0xFF).
++                                                //   Replaces the failing H+0x9c/0xc4 owner scan.
++const H_GFX1:                usize = 0x1a0;     // Dat_GFX1 handle (DC +0x15C, +0x44). CONFIRMED delta + clusters by
++                                                //   effect type live. Small recompile handle, NOT a 0x0CED pointer.
++const H_GFX2:                usize = 0x1a4;     // Dat_GFX2 handle (DC +0x160, +0x44). the (GFX2,sel=sid) bank the
++                                                //   sprite-class part-assembly path keys on; shipped alongside sid.
++// DROPPED 0.3.29: H_GFX1_PTR=0x1a8 (=Dat_Pal) and the blk+0x6CE8 / [0x0CED0000] value-test — that model dir keys
++// ONLY 3D-class effects (cat 5-13, NaomiLib); none were captured. Sprite-class (cat 1-4) render via GFX2+sid.
+ 
+ // ── (2) battle-globals + meter (relative to the array base `ram`) ──
+ // The DC BattleState struct transfers BYTE-FAITHFUL to array+0x2e5dc (MET_BARS/FILL are that base +0x5a/+0x7c;
+@@ -1130,7 +1139,7 @@
+ // screen_x = 320 + (world_x − eyeX), screen_y = ground − world_y, exact to sub-pixel on drawn objects.
+ // ⚠ consumers gating on that camera identity: use a ~8px threshold, NOT tight — real frames sit 0.0–0.7px
+ // off, stale ones 215px+ (a 0.5px cut silently dropped 80% of a character's frames in testing).
+-const GS_SCHEMA: &str = "[frame,p1_in,p2_in,kcode,hp[6],px[6],py[6],p1_meter,p2_meter,meter_fill,combo_dealt[6],combo_recv[6],vx[6],vy[6],red_hp[6],facing[6],hitstun[6],drawn[6],sid[6],atimer[6],eyeX,eyeY,ground,seat_in[2],sx[6],sy[6],zx[6],zy[6],flash[6],glow[6],layer[6],timer]";
++const GS_SCHEMA: &str = "[frame,p1_in,p2_in,kcode,hp[6],px[6],py[6],p1_meter,p2_meter,meter_fill,combo_dealt[6],combo_recv[6],vx[6],vy[6],red_hp[6],facing[6],hitstun[6],drawn[6],sid[6],atimer[6],eyeX,eyeY,ground,seat_in[2],sx[6],sy[6],zx[6],zy[6],flash[6],glow[6],layer[6],timer,p2_meter_fill,round_no]";
+ 
+ fn gs_now_ms() -> u64 { std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0) }
+ 
+@@ -1250,15 +1259,20 @@
+     glow:  [u8; 6],    // H+0x5C char_pal_effect — super-freeze brighten / palette tint
+     layer: [u8; 6],    // draw-list layer index per fighter (0..15), from the object walk; 0xFF = not on the list
+     timer: u8,         // round timer 0..99 (blk battle-state +BG_TIMER)
++    // 0.3.29 — APPENDED (positional consumers of every column above are unaffected):
++    p2_mfill: u16,     // P2 meter fine-fill (MET_FILL+2). mfill above is P1 → fixes the single-shared-meter_fill gap.
++    round_no: u8,      // game index within the set (blk battle-state +OFF_ROUND)
+ }
+ // 0.3.27: one drawn OBJECT-POOL node (effect/projectile/cape/super) captured from the draw list. Read
+ // through the fighter H-offsets (node = fighter-struct prefix). Fighters are excluded (they are in `frames`).
+ // owner = the fighter slot 0..5 that owns this node, or 0xFF if none (global super / stage effect).
+ #[derive(Clone)]
+ struct ObjNode { sid: u16, sx: i16, sy: i16, zx: u16, face: u8, cat: u8, owner: u8, layer: u8,
+-                 // 0.3.28: the effect-atlas binding key (H+0x1A8 GFX1 ptr) — the renderer resolves texture idx
+-                 // from this (sid does NOT index the FX atlas); low32 is the client key. u64 (arena pointer).
+-                 gfx: u64 }
++                 // 0.3.29: the effect graphics-bank handles the renderer resolves the atlas from. Sprite-class
++                 // (cat 1-4) render like a body via the (GFX2, sel=sid) part-assembly, so BOTH the bank handle
++                 // and sid are needed — sid alone is ambiguous (effect sids overlap the body sid space).
++                 gfx1: u32,   // Dat_GFX1 handle (H+0x1A0) — clusters by effect type
++                 gfx2: u32 }  // Dat_GFX2 handle (H+0x1A4) — the part-assembly bank
+ struct GsCapture {
+     frames: std::collections::BTreeMap<u32, GsRow>, // frame_counter -> row (last-write-wins, sorted)
+     frame_addr: usize,                              // located guest frame counter (0 = synthetic index)
+@@ -1293,11 +1307,17 @@
+     confirmed_in: std::collections::BTreeMap<u32, [u32; 2]>,
+     // 0.3.27: per-frame drawn object-pool nodes (effects/projectiles/supers), from the engine draw list.
+     objs: std::collections::BTreeMap<u32, Vec<ObjNode>>,
++    // 0.3.29 self-describing calibration: first CALIB_MAX_FRAMES effect-frames, each node's raw prefix
++    //   H+0x00..0x1C0 (cat = prefix[H_CATEGORY]) → derive gfx/scale/owner OFFLINE from any uploaded match.
++    calib: Vec<(u32, Vec<Vec<u8>>)>,
++    battle_blk: u64,        // 0.3.29: blk at battle start → fighter_bases = blk+0x3DB8+i*0x738 (offline owner ground-truth)
++    tie_ggpo_frame: i32,    // 0.3.29: GGPO Sync::_last_confirmed_frame read at battle start (pairs with start_sim_frame)
+ }
+ impl Default for GsCapture {
+     fn default() -> Self { GsCapture { frames: std::collections::BTreeMap::new(), frame_addr: 0, synthetic: false, assist: [0; 6], costume: [0; 6], local_pn: 255, set_start: None, last_update: None,
+                                        seat_map: [-1; 4], rollbacks: 0, build_id: String::new(), stage_id: 0, anchor: None, anchor_blk: 0, anchor_arena: 0, anchor_frame: 0, anchor_hash: 0,
+-                                       select_in: Vec::new(), start_sim_frame: 0, confirmed_in: std::collections::BTreeMap::new(), objs: std::collections::BTreeMap::new() } }
++                                       select_in: Vec::new(), start_sim_frame: 0, confirmed_in: std::collections::BTreeMap::new(), objs: std::collections::BTreeMap::new(),
++                                       calib: Vec::new(), battle_blk: 0, tie_ggpo_frame: -1 } }
+ }
+ fn gs_capture() -> &'static Mutex<GsCapture> {
+     static S: OnceLock<Mutex<GsCapture>> = OnceLock::new();
+@@ -1311,7 +1331,8 @@
+                     anchor: Option<Vec<u8>>, anchor_blk: u64, anchor_arena: u64, anchor_frame: u32,
+                     anchor_hash: u64, select_in: Vec<(u32, u32, u32)>, start_sim_frame: u32,
+                     confirmed_in: std::collections::BTreeMap<u32, [u32; 2]>,
+-                    objs: std::collections::BTreeMap<u32, Vec<ObjNode>> }
++                    objs: std::collections::BTreeMap<u32, Vec<ObjNode>>,
++                    calib: Vec<(u32, Vec<Vec<u8>>)>, battle_blk: u64, tie_ggpo_frame: i32 }
+ // Return the buffered game IFF it was actively updating within the last few seconds (i.e. it IS the game
+ // that just ended). This guards against attaching a stale/other game's buffer to a late (pending-flush) win.
+ fn gamestate_snapshot() -> Option<GsSnapshot> {
+@@ -1322,7 +1343,8 @@
+                       seat_map: c.seat_map, rollbacks: c.rollbacks, build_id: c.build_id.clone(), stage_id: c.stage_id,
+                       anchor: c.anchor.clone(), anchor_blk: c.anchor_blk, anchor_arena: c.anchor_arena, anchor_frame: c.anchor_frame,
+                       anchor_hash: c.anchor_hash, select_in: c.select_in.clone(),
+-                      start_sim_frame: c.start_sim_frame, confirmed_in: c.confirmed_in.clone(), objs: c.objs.clone() })
++                      start_sim_frame: c.start_sim_frame, confirmed_in: c.confirmed_in.clone(), objs: c.objs.clone(),
++                      calib: c.calib.clone(), battle_blk: c.battle_blk, tie_ggpo_frame: c.tie_ggpo_frame })
+ }
+ 
+ fn le32(b: &[u8], o: usize) -> u32 { u32::from_le_bytes([b[o], b[o + 1], b[o + 2], b[o + 3]]) }
+@@ -1485,6 +1507,9 @@
+         glow:  [o[0][H_SUPERGLOW], o[1][H_SUPERGLOW], o[2][H_SUPERGLOW], o[3][H_SUPERGLOW], o[4][H_SUPERGLOW], o[5][H_SUPERGLOW]],
+         layer: [0xFF; 6],
+         timer: rpm_u8(h, base + OFF_BG_TIMER).unwrap_or(0),
++        // 0.3.29: P2 meter fine-fill (the second u16 of the 4-byte MET_FILL window) + the set game index.
++        p2_mfill: rpm_u16(h, base + MET_FILL + 2).unwrap_or(0),
++        round_no: rpm_u8(h, base + OFF_ROUND).unwrap_or(0),
+     })
+ }
+ 
+@@ -1663,10 +1688,11 @@
+ // THIS frame, in the engine's own layer order. Fighters are skipped (they are captured in `frames`). A pool
+ // node reads through the SAME H-offsets as a fighter (node = fighter-struct prefix). Read-only RPM. `base`
+ // is the fighter-array base (blk + BLK_BACK), so blk = base − BLK_BACK.
+-unsafe fn harvest_objs(h: &mem::Proc, base: usize, out: &mut Vec<ObjNode>, flayers: &mut [u8; 6]) {
++unsafe fn harvest_objs(h: &mem::Proc, base: usize, out: &mut Vec<ObjNode>, flayers: &mut [u8; 6],
++                       mut calib: Option<&mut Vec<Vec<u8>>>) {
+     let blk = match base.checked_sub(BLK_BACK) { Some(b) => b, None => return };
+     let mut fighters = [0usize; 6];
+-    for i in 0..6 { fighters[i] = blk + BLK_H0_OFF + i * STRIDE; }   // fighter node addresses (= draw-list handles)
++    for i in 0..6 { fighters[i] = blk + BLK_H0_OFF + i * STRIDE; }   // fighter node addrs (= draw-list handles AND owner targets)
+     let u64_at = |a: usize| read_at(h, a, 8).filter(|b| b.len() >= 8)
+         .map(|b| u64::from_le_bytes([b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7]]) as usize);
+     let rd_u64 = |buf: &[u8], o: usize| -> u64 {
+@@ -1676,21 +1702,26 @@
+         for i in 0..count {
+             let handle = match u64_at(blk + DRAWLIST_OFF + l * DRAWLIST_LAYER + i * 8) { Some(v) if v > 0x10000 => v, _ => continue };
+             if let Some(slot) = fighters.iter().position(|&f| f == handle) { flayers[slot] = l as u8; continue; }  // fighter → record its layer, skip
+-            let buf = match read_at(h, handle, 0x1b0).filter(|b| b.len() >= 0x1b0) { Some(b) => b, None => continue };  // 0x1b0 covers +0x1A8 GFX ptr
++            // 0.3.29: read CALIB_PREFIX_LEN (0x1C0) — covers owner (0x28), gfx1/gfx2 (0x1A0/0x1A4) AND the raw
++            // calibration prefix H+0x00..0x1C0 in ONE read (was 0x1b0).
++            let buf = match read_at(h, handle, CALIB_PREFIX_LEN).filter(|b| b.len() >= CALIB_PREFIX_LEN) { Some(b) => b, None => continue };
+             if buf[H_DRAWN] == 0 { continue; }                                // not actually rendered this frame
+             let sid = u16le(&buf, H_SPRITE_ID);
+             if sid == 0 { continue; }                                         // inactive node
+-            // owner: scan BOTH ladder candidates against the fighter bases; 0xFF = ownerless global (route by cat).
+-            let (oa, ob) = (rd_u64(&buf, H_OWNER_A) as usize, rd_u64(&buf, H_OWNER_B) as usize);
+-            let owner = fighters.iter().position(|&f| f == oa || f == ob).map(|p| p as u8).unwrap_or(0xFF);
++            // 0.3.29 owner (CONFIRMED live fxprobe): u64 @ H+0x28 == the owning fighter's H-base; 0xFF = ownerless global.
++            let ow = rd_u64(&buf, H_OBJ_OWNER) as usize;
++            let owner = fighters.iter().position(|&f| f == ow).map(|p| p as u8).unwrap_or(0xFF);
+             out.push(ObjNode {
+                 sid,
+                 sx: lef32(&buf, H_SCREEN_X).round().clamp(-32768.0, 32767.0) as i16,
+                 sy: lef32(&buf, H_SCREEN_Y).round().clamp(-32768.0, 32767.0) as i16,
+-                zx: (lef32(&buf, H_SCALE_X).clamp(0.0, 15.999) * 4096.0) as u16,   // fixed 12.4
++                zx: (lef32(&buf, H_SCALE_X).clamp(0.0, 15.999) * 4096.0) as u16,   // scale ×4096 (decode ÷4096, NOT ÷16)
+                 face: buf[H_FACING], cat: buf[H_CATEGORY], owner, layer: l as u8,
+-                gfx: rd_u64(&buf, H_GFX1_PTR),                                // H+0x1A8 effect-atlas binding key
++                gfx1: le32(&buf, H_GFX1),                                     // Dat_GFX1 handle (H+0x1A0)
++                gfx2: le32(&buf, H_GFX2),                                     // Dat_GFX2 handle (H+0x1A4)
+             });
++            // 0.3.29 calibration: keep this drawn node's raw prefix (cat = prefix[H_CATEGORY]) for offline derivation.
++            if let Some(cal) = calib.as_mut() { cal.push(buf[..CALIB_PREFIX_LEN].to_vec()); }
+             if out.len() >= OBJS_CAP_PER_FRAME { return; }
+         }
+     }
+@@ -1803,6 +1834,7 @@
+                 c.frames.clear();
+                 c.confirmed_in.clear();   // 0.3.26: this game owns its confirmed-input buffer
+                 c.objs.clear();           // 0.3.27: and its per-frame object-pool (effects) buffer
++                c.calib.clear();          // 0.3.29: and its self-describing effect-node calibration blob
+                 c.frame_addr = fc.unwrap_or(0);
+                 c.synthetic = fc.is_none();
+                 c.assist = assist;
+@@ -1828,6 +1860,21 @@
+                 // shipping it would hand a server a savestate for the wrong fight.
+                 c.start_sim_frame = base.checked_sub(BLK_BACK)
+                     .and_then(|blk| unsafe { rpm_u32(h, blk + BLK_FRAME_OFF) }).unwrap_or(0);
++                // 0.3.29 ENVELOPE: blk at battle start (→ fighter_bases offline) + the GGPO frontier at the SAME
++                // instant (Sync::_last_confirmed_frame). Pairs with start_sim_frame as ggpo_sim_tie so the
++                // confirmed_in↔frames clock offset pins exactly. Best-effort: -1 if the GGPO session isn't up.
++                c.battle_blk = base.checked_sub(BLK_BACK).unwrap_or(0) as u64;
++                c.tie_ggpo_frame = if exe_base != 0 {
++                    match unsafe { read_at(h, exe_base + GGPO_SESSION_OFF, 8) }.filter(|b| b.len() >= 8) {
++                        Some(b) => {
++                            let sess = u64::from_le_bytes([b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7]]) as usize;
++                            if sess > 0x10000 && sess < 0x7fff_ffff_ffff {
++                                unsafe { rpm_u32(h, sess + GGPO_SYNC_OFF + SYNC_LASTCONF_OFF) }.map(|v| v as i32).unwrap_or(-1)
++                            } else { -1 }
++                        }
++                        None => -1,
++                    }
++                } else { -1 };
+                 // ⚠ c.anchor and c.select_in are deliberately NOT cleared here — both were captured at
+                 //   the character select that PRECEDED this match and belong to it. The next char-select
+                 //   visit clears and refills them.
+@@ -1875,7 +1922,7 @@
+                             if let Some(mut rr) = unsafe { read_gs_row(h, base, cf, exe_base) } {
+                                 let mut ro = Vec::new();
+                                 let mut rl = [0xFFu8; 6];
+-                                unsafe { harvest_objs(h, base, &mut ro, &mut rl); }
++                                unsafe { harvest_objs(h, base, &mut ro, &mut rl, None); }   // 0.3.29: no calib on rollback re-reads
+                                 rr.layer = rl;
+                                 let mut c = gs_capture().lock().unwrap();
+                                 if c.frames.len() < GS_CAP || c.frames.contains_key(&cf) {
+@@ -1892,7 +1939,10 @@
+                             // layers, from ONE draw-list walk — RPM reads, done before the lock.
+                             let mut objs = Vec::new();
+                             let mut flayers = [0xFFu8; 6];
+-                            unsafe { harvest_objs(h, base, &mut objs, &mut flayers); }
++                            // 0.3.29: collect the self-describing calibration prefix only while we still need frames.
++                            let want_calib = { gs_capture().lock().unwrap().calib.len() < CALIB_MAX_FRAMES };
++                            let mut calib_nodes: Vec<Vec<u8>> = Vec::new();
++                            unsafe { harvest_objs(h, base, &mut objs, &mut flayers, if want_calib { Some(&mut calib_nodes) } else { None }); }
+                             row.layer = flayers;
+                             {
+                                 let mut c = gs_capture().lock().unwrap();
+@@ -1902,6 +1952,9 @@
+                                     c.frames.insert(frame, row.clone());
+                                     if !objs.is_empty() && (c.objs.len() < GS_CAP || c.objs.contains_key(&frame)) {
+                                         c.objs.insert(frame, objs);   // 0.3.27: per-frame effects, keyed like frames
++                                    }
++                                    if !calib_nodes.is_empty() && c.calib.len() < CALIB_MAX_FRAMES {
++                                        c.calib.push((frame, calib_nodes));   // 0.3.29: first N effect-frames, raw prefixes
+                                     }
+                                     c.last_update = Some(std::time::Instant::now());
+                                 }
+@@ -2016,7 +2069,8 @@
+         r.vx, r.vy, r.rhp, r.face, r.hitstun, r.act,
+         r.sid, r.atimer, r.eye_x, r.eye_y, r.ground, r.seat_in,
+         r.sx, r.sy, r.zx, r.zy,
+-        r.flash, r.glow, r.layer, r.timer
++        r.flash, r.glow, r.layer, r.timer,
++        r.p2_mfill, r.round_no   // 0.3.29 — appended
+     ])).collect();
+     // the complete artifact that lands on disk (server writes the gunzip-able bytes verbatim)
+     let assist_p1 = [gs.assist[0], gs.assist[2], gs.assist[4]];
+@@ -2039,8 +2093,9 @@
+         .flat_map(|(f, ab)| [f.to_le_bytes(), ab[0].to_le_bytes(), ab[1].to_le_bytes()])
+         .flatten().collect();
+     let confirmed_b64 = b64_encode(&gzip_bytes(&confirmed_raw));
+-    // 0.3.27: per-frame drawn object-pool (effects). Flat: for each frame with objects,
+-    //   [u32 frame][u16 count][count × {u16 sid, i16 sx, i16 sy, u16 zx(12.4), u8 face, u8 cat, u8 owner, u8 layer}].
++    // 0.3.29: per-frame drawn object-pool (effects). Flat: for each frame with objects,
++    //   [u32 frame][u16 count][count × 20B {u16 sid, i16 sx, i16 sy, u16 zx(×4096), u8 face, u8 cat, u8 owner,
++    //   u8 layer, u32 gfx1(H+0x1A0 Dat_GFX1 handle), u32 gfx2(H+0x1A4 Dat_GFX2 handle)}].
+     let objs_raw: Vec<u8> = {
+         let mut b = Vec::new();
+         for (f, nodes) in &gs.objs {
+@@ -2053,12 +2108,31 @@
+                 b.extend_from_slice(&nd.sy.to_le_bytes());
+                 b.extend_from_slice(&nd.zx.to_le_bytes());
+                 b.push(nd.face); b.push(nd.cat); b.push(nd.owner); b.push(nd.layer);
+-                b.extend_from_slice(&(nd.gfx as u32).to_le_bytes());   // 0.3.28: effect-atlas binding key (low32 of H+0x1A8)
++                b.extend_from_slice(&nd.gfx1.to_le_bytes());   // 0.3.29: Dat_GFX1 handle (H+0x1A0)
++                b.extend_from_slice(&nd.gfx2.to_le_bytes());   // 0.3.29: Dat_GFX2 handle (H+0x1A4)
+             }
+         }
+         b
+     };
+     let objs_b64 = b64_encode(&gzip_bytes(&objs_raw));
++    // 0.3.29 CALIBRATION BLOB (self-describing): first CALIB_MAX_FRAMES effect-frames, each drawn node's raw
++    //   prefix H+0x00..0x1C0 (cat = prefix[0x03]). Lets gfx/scale/owner be re-derived OFFLINE from any uploaded
++    //   match — no live session — and survive a build shifting an offset. Format:
++    //   [u32 frame][u16 node_count][node_count × 448B prefix].
++    let calib_raw: Vec<u8> = {
++        let mut b = Vec::new();
++        for (f, nodes) in &gs.calib {
++            let n = nodes.len().min(0xffff);
++            b.extend_from_slice(&f.to_le_bytes());
++            b.extend_from_slice(&(n as u16).to_le_bytes());
++            for pfx in nodes.iter().take(n) { b.extend_from_slice(pfx); }
++        }
++        b
++    };
++    let calib_b64 = b64_encode(&gzip_bytes(&calib_raw));
++    // 0.3.29 fighter_bases: the six absolute node addrs at battle start (blk+0x3DB8+i*0x738) → the offline
++    //   owner ground-truth the calibration blob is diffed against. battle_blk==0 means it wasn't captured.
++    let fighter_bases: Vec<u64> = (0..6).map(|i| gs.battle_blk.wrapping_add((BLK_H0_OFF + i * STRIDE) as u64)).collect();
+     let anchor_hash_hex = format!("{:016x}", gs.anchor_hash);
+     let record = serde_json::json!({
+         "id": id, "match_key": match_key, "reporter": reporter, "side": side,
+@@ -2097,7 +2171,13 @@
+         // draw list, in layer order (z = layer). owner = fighter slot 0..5 or 0xFF. The renderer draws these
+         // via onOBJS (own-origin anchor) — no reconstruction. Fighters are NOT here (they are in `frames`).
+         "objs": objs_b64, "objs_frames": gs.objs.len(),
+-        "objs_enc": "gzip+base64 of per-frame [u32 frame, u16 count, count x {u16 sid, i16 sx, i16 sy, u16 zx(12.4 fixed), u8 face, u8 cat(render/blend class), u8 owner(slot|0xFF), u8 layer, u32 gfx(low32 of H+0x1A8 effect-atlas key)}]",
++        "objs_enc": "gzip+base64 of per-frame [u32 frame, u16 count, count x 20B {u16 sid, i16 sx, i16 sy, u16 zx(scale x4096; decode /4096), u8 face, u8 cat(render/blend class), u8 owner(slot|0xFF), u8 layer, u32 gfx1(H+0x1A0 Dat_GFX1 handle), u32 gfx2(H+0x1A4 Dat_GFX2 handle)}]",
++        // 0.3.29 self-describing calibration blob (raw effect-node prefixes) + offline owner ground-truth + the
++        // GGPO<->sim clock tie-point. See docs/OWNED-RENDER-BUILD-SPEC.md "0.3.29 CAPTURE DELTA".
++        "calib": calib_b64, "calib_frames": gs.calib.len(),
++        "calib_enc": "gzip+base64 of per-frame [u32 frame, u16 node_count, node_count x 448B raw node prefix H+0x00..0x1C0 (cat=prefix[0x03])]",
++        "fighter_bases": fighter_bases, "battle_blk": gs.battle_blk,
++        "ggpo_sim_tie": { "sim_frame": gs.start_sim_frame, "ggpo_frame": gs.tie_ggpo_frame },
+         "start_sim_frame": gs.start_sim_frame,
+         // continuity: frame_gaps > 0 means input frames are MISSING and a re-simulation will diverge;
+         // truncated means GS_CAP stopped accepting new frames and the tail of the match is absent.
+@@ -4229,7 +4309,9 @@
+     fn row(frame: u32, hp: [u16; 6], hitstun: [u8; 6], cd: [u16; 6], m1: u8, m2: u8, mfill: u16) -> GsRow {
+         GsRow { frame, p1_in: 0, p2_in: 0, kcode: 0, hp, px: [0.0; 6], py: [0.0; 6], m1, m2, mfill,
+                 cd, cr: [0; 6], vx: [0.0; 6], vy: [0.0; 6], rhp: [0; 6], face: [0; 6], hitstun, act: [0; 6],
+-                sid: [0; 6], atimer: [0; 6], eye_x: 0.0, eye_y: 0.0, ground: 0.0, seat_in: [0; 2] }
++                sid: [0; 6], atimer: [0; 6], eye_x: 0.0, eye_y: 0.0, ground: 0.0, seat_in: [0; 2],
++                sx: [0.0; 6], sy: [0.0; 6], zx: [0.0; 6], zy: [0.0; 6],
++                flash: [0; 6], glow: [0; 6], layer: [0xFF; 6], timer: 0, p2_mfill: 0, round_no: 0 }
+     }
+     #[test]
+     fn attribution_sides_chip_ko() {
