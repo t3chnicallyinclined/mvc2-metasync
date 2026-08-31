@@ -1,0 +1,190 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Path A — MvC2 tape STATE render (real sprites, WebGPU)</title>
+<!--
+  PATH A DEMO — render a REAL captured match from its per-frame STATE, using the game's REAL
+  extracted sprites. Same modules + flags as gpu.html (headless-verified in _verify_state.mjs):
+    tape (tape-adapter loadTapeJson) -> SpriteClient EMITTER buildAssemblyDrawList -> SpriteGPU
+    (WebGPU, 640x480 NEAREST) over the REAL 3D STG00 stage (stage-client + a 2nd pvr2 renderer,
+    Option-B camera from tape eyeX/eyeY) + sprite-class effects (0.3.29 objs) + victim hit-flash.
+  No new renderer — all modules live in ./renderer/ (vendored). This page is glue + demo chrome.
+
+  DEFAULT TAPE: tape_59601369.json = a rollback-0 clean tape (Storm/... vs ...), STG00, 3571 fr,
+  2413 obj-frames. Convert any tapes-kept tape with replay-kit/tape_to_gpujson.py.
+  Knobs: ?tape=<url> ?frame=<N> ?stage=<N> ?left=<name> ?right=<name>
+-->
+<style>
+  html,body{margin:0;background:#0a0c10;color:#c9d3df;font:13px/1.4 system-ui,sans-serif}
+  h1{font-size:15px;text-align:center;margin:12px 0 4px}
+  h1 small{color:#7c8794;font-weight:400}
+  #stage{position:relative;width:960px;height:720px;margin:8px auto;background:#000;
+         box-shadow:0 0 0 1px #2a2f3a;border-radius:6px;overflow:hidden}
+  #stage canvas{position:absolute;left:0;top:0;width:960px;height:720px;image-rendering:pixelated}
+  #ovl{position:absolute;inset:0;pointer-events:none;font-family:"Arial Narrow","Roboto Condensed",system-ui,sans-serif}
+  #ovl .nm{position:absolute;top:8px;padding:3px 12px;font-size:20px;font-weight:800;color:#fff;
+           text-shadow:0 2px 4px #000,0 0 3px #000;white-space:nowrap;max-width:40%;overflow:hidden;
+           text-overflow:ellipsis;background:linear-gradient(180deg,rgba(10,14,20,.85),rgba(10,14,20,.35));border-radius:5px}
+  #ovl .nm.left{left:10px;border-left:4px solid #ff3b30}
+  #ovl .nm.right{right:10px;border-right:4px solid #2b8cff;text-align:right}
+  #ovl .brand{position:absolute;left:50%;bottom:8px;transform:translateX(-50%);font-size:11px;font-weight:700;
+              letter-spacing:3px;color:#ffd24d;text-shadow:0 1px 2px #000;opacity:.9}
+  #bar{max-width:960px;margin:8px auto;display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+  #bar button,#bar label{background:#1b2029;border:1px solid #333c49;color:#c9d3df;padding:5px 10px;border-radius:5px;cursor:pointer}
+  #bar button:hover{background:#2b6cb0;border-color:#3b82c4;color:#fff}
+  #scrub{flex:1;min-width:340px}
+  #fno{font-variant-numeric:tabular-nums;color:#8fd0ff;min-width:230px}
+  #log{max-width:960px;margin:6px auto;white-space:pre-wrap;font:12px/1.35 ui-monospace,monospace;color:#7f93a8;
+       max-height:120px;overflow:auto;border:1px solid #222a34;padding:6px;border-radius:4px}
+</style>
+</head>
+<body>
+<h1>Path A — real tape STATE → real game sprites on WebGPU <small>(emitter + 3D stage + effects)</small></h1>
+<div id="stage">
+  <canvas id="cstage" width="640" height="480"></canvas>
+  <canvas id="cbody"  width="640" height="480"></canvas>
+  <div id="ovl">
+    <span class="nm left"  id="pL">PLAYER 1</span>
+    <span class="nm right" id="pR">PLAYER 2</span>
+    <span class="brand">RETRO RECEIPTS ▸ PATH A REPLAY</span>
+  </div>
+</div>
+<div id="bar">
+  <button id="play">▶ play</button>
+  <label>frame <input id="scrub" type="range" min="0" max="0" value="0"></label>
+  <span id="fno">—</span>
+  <label>speed <select id="speed"><option>0.25</option><option>0.5</option><option selected>1</option><option>2</option><option>4</option></select></label>
+  <label><input type="checkbox" id="fx" checked> effects</label>
+  <label><input type="checkbox" id="hitflash" checked> hit-flash</label>
+  <button id="shot">save PNG</button>
+</div>
+<div id="log"></div>
+
+<script type="module">
+const qs = new URLSearchParams(location.search);
+const RENDERER = qs.get('renderer') || './renderer';
+const ATLAS    = qs.get('atlas')    || '/maplecast-flycast/web/test-atlas/chars';
+const TAPE     = qs.get('tape')     || './tape_59601369.json';
+const START    = +(qs.get('frame') || 870);
+const logEl = document.getElementById('log');
+const log = (m) => { logEl.textContent += m + '\n'; logEl.scrollTop = logEl.scrollHeight; };
+
+// player labels (?left=/?right= override; tape carries char-id teams, not display names)
+document.getElementById('pL').textContent = qs.get('left')  || 'PLAYER 1';
+document.getElementById('pR').textContent = qs.get('right') || 'PLAYER 2';
+
+let SpriteClient, SpriteGPU, TapeAdapter, loadTapeJson, StageClient, PVR2Renderer;
+try {
+  const V = '?v=sharp2';   // same module rev the headless gate + gpu.html use
+  ({ SpriteClient } = await import(`${RENDERER}/sprite-client.mjs${V}`));
+  ({ SpriteGPU }    = await import(`${RENDERER}/sprite-gpu.mjs${V}`));
+  ({ StageClient }  = await import(`${RENDERER}/stage-client.mjs${V}`));
+  ({ PVR2Renderer } = await import(`${RENDERER}/pvr2-renderer.mjs${V}`));
+  ({ TapeAdapter, loadTapeJson } = await import(`./tape-adapter.mjs${V}`));
+} catch (e) { log('module import FAILED: ' + e.message); throw e; }
+
+const cstage = document.getElementById('cstage');
+const cbody  = document.getElementById('cbody');
+const STAGE  = new StageClient(new URL('./stages/', import.meta.url).href); window._stage = STAGE;
+
+const SC = new SpriteClient(); window._sc = SC;
+const SG = new SpriteGPU();    window._sg = SG;
+SC.assemblyMode = true;          // EMITTER (parts) path — the validated body renderer
+window._emitterPort = true;      // faithful loc_8c033e90 emitter port
+window._emitZByLayer = true;     // draw_layer group sort (spec §4)
+SC.predict = false;              // frozen tape frame — no extrapolation
+SC.objectsOn = false;
+SC.hitFlashOn = true;
+window._fxGarbleGuard = false;   // render the game's real (clean-decoded) effect cells
+window._bodyGarbleGuard = false;
+SC.setCharBase(ATLAS);
+
+let device = null, stageR = null, gpuOK = false;
+if (!navigator.gpu) { log('WebGPU not available — use Chrome/Edge.'); }
+else try {
+  const adapter = await navigator.gpu.requestAdapter();
+  device = await adapter.requestDevice();
+  gpuOK = SG.init(device, cbody, 'premultiplied');    // transparent clear -> 3D stage shows through
+  stageR = new PVR2Renderer(); stageR.initShared(cstage, device);
+  STAGE.attachDevice(device); window._stageR = stageR;
+  log(gpuOK ? 'WebGPU ready' : 'WebGPU init failed — bodies will not draw');
+} catch (e) { log('no WebGPU: ' + e.message); }
+
+const AD = await loadTapeJson(TAPE); window._ad = AD;
+log(`tape: ${AD.frameCount} frames · p1=${JSON.stringify(AD.p1_team)} p2=${JSON.stringify(AD.p2_team)} · objRecBytes=${AD.objRecBytes} · stage_id=${AD.stage_id}`);
+const scrub = document.getElementById('scrub');
+scrub.max = AD.frameCount - 1; scrub.value = Math.min(START, AD.frameCount - 1);
+
+const STAGE_ID = (qs.get('stage') != null) ? +qs.get('stage') : (AD.stage_id != null ? +AD.stage_id : -1);
+if (STAGE_ID >= 0) STAGE.setStage(STAGE_ID).then(ok => {
+  log(`stage_id ${STAGE_ID} -> STG${STAGE.hexIdx?.() ?? ''} ${ok ? '3D stage loaded' : 'no stage asset'}`);
+  if (ok && !playing) renderFrame(+scrub.value);
+});
+
+function syncAtlases() {
+  if (!SG.ok) return;
+  for (const cid in SC.asmChars) {
+    const c = SC.asmChars[cid];
+    if (c && c.img && !SG.chars[cid]) { SG.setAtlas(cid, c.img); if (c.pal128) SG.setCharPalette(cid, c.pal128); }
+    if (c && c.idxImg && c.lut && !SG.idxChars[cid]) { SG.setIndexedAtlas(cid, c.idxImg); SG.setCharLUT(cid, c.lut); }
+  }
+}
+const _loadedCids = new Set(); let _rerenderT = 0;
+function scheduleRerender() { clearTimeout(_rerenderT); _rerenderT = setTimeout(() => { if (!playing) renderFrame(+scrub.value); }, 60); }
+function loadCharCb(sc, cid) {
+  const p = sc.loadAsmChar(cid);
+  if (!_loadedCids.has(cid)) { _loadedCids.add(cid); Promise.resolve(p).then(scheduleRerender).catch(() => {}); }
+  return p;
+}
+
+function renderFrame(fi) {
+  AD.effectsOn = document.getElementById('fx').checked && AD.objRecBytes >= 20;
+  SC.objectsOn = AD.effectsOn;
+  SC.hitFlashOn = document.getElementById('hitflash').checked;
+  AD.applyFrame(SC, fi, { load: loadCharCb });
+  syncAtlases();
+  const row = AD.frames[fi];
+  if (STAGE_ID >= 0 && row && stageR && STAGE.ready) { STAGE.setCamB(row[20], row[21]); STAGE.render(stageR); }
+  const drawList = SC.buildAssemblyDrawList(640, 480);
+  if (SG.ok) { try { SG.render(drawList, {}, null, [], null); } catch (e) { log('SG.render: ' + e.message); } }
+  document.getElementById('fno').textContent =
+    `idx ${fi} · game ${row ? row[0] : '?'} · sprites ${drawList.length} · fx ${(AD._lastObjs && AD._lastObjs.drawn) | 0}`;
+}
+
+const GAME_DT = 1000 / 60;
+let playing = false, raf = 0, lastT = 0, acc = 0;
+function tick(now) {
+  if (!playing) return;
+  if (!lastT) { lastT = now; raf = requestAnimationFrame(tick); return; }
+  const speed = +document.getElementById('speed').value;
+  acc += (now - lastT) * speed; lastT = now;
+  let fi = +scrub.value, adv = 0;
+  while (acc >= GAME_DT) { acc -= GAME_DT; fi++; adv++; if (fi >= AD.frameCount) fi = 0; }
+  if (acc > GAME_DT * 4) acc = 0;
+  if (adv) { scrub.value = fi; renderFrame(fi); }
+  raf = requestAnimationFrame(tick);
+}
+document.getElementById('play').onclick = (e) => {
+  playing = !playing; e.target.textContent = playing ? '⏸ pause' : '▶ play';
+  lastT = 0; acc = 0;
+  if (playing) raf = requestAnimationFrame(tick); else cancelAnimationFrame(raf);
+};
+scrub.oninput = () => { if (!playing) renderFrame(+scrub.value); };
+document.getElementById('fx').onchange = () => renderFrame(+scrub.value);
+document.getElementById('hitflash').onchange = () => renderFrame(+scrub.value);
+document.getElementById('shot').onclick = () => {
+  const c = document.createElement('canvas'); c.width = 640; c.height = 480;
+  const x = c.getContext('2d'); x.fillStyle = '#000'; x.fillRect(0, 0, 640, 480);
+  x.drawImage(cstage, 0, 0); x.drawImage(cbody, 0, 0);
+  const a = document.createElement('a'); a.download = `pathA_f${scrub.value}.png`; a.href = c.toDataURL('image/png'); a.click();
+};
+
+renderFrame(+scrub.value);
+setTimeout(() => renderFrame(+scrub.value), 400);
+setTimeout(() => renderFrame(+scrub.value), 1200);
+log('ready — drag the frame slider or press play.');
+</script>
+</body>
+</html>

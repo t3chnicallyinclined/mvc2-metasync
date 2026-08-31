@@ -412,6 +412,243 @@ window** to prove the run wasn't a neutral re-run. KILL = any divergence at/afte
   — decides whether faithful full-TA replay = "restore full blk + feed inputs, capture the engine's TA", or
   whether we drive the render from the recorded state each frame (state-injection — Tris's idea, no drift).
 
+- **2026-08-30 — ⭐ DRIFT LOCALIZED: cross-core FLOAT rounding (not RNG, not inputs). STATE-INJECTION required.**
+  Frame-exact B2 re-run on the CLEAN tape (`…59598769…`) with assists ON + measured alignment: **bit-exact on
+  ALL 6 fighters through f1223** (intro, neutral, first assist entrance, first combat hits f1217/f1235) →
+  **input/assist/init reconstruction is COMPLETE + correct** (the old "diverge at first assist" was the wrong
+  assist_type; the poke fixed it). FIRST divergence f1224: char15.px off by **exactly 1 float32 ULP** (1.5e-5),
+  then char44.vx 1 ULP as a constant offset — DC SH4 vs Steam x86-64 rounding. Benign until the **first super**,
+  which amplifies it across a hit-decision boundary → HP cascades → a different match. ⟹ **no input/assist/init/
+  RNG fix can close a 1-ULP float gap; free-run resim is NOT viable for a full faithful match. STATE-INJECTION
+  (drive the engine with the recorded per-frame state — Tris's idea) is the required path** (caveat: the tape
+  doesn't record every effect sub-state → effects need separate handling). Optional bounded pre-experiment
+  (flycast-internals, LOW probability): match flycast SH4 float to the recompile (rounding mode / FSRRA-FTRV /
+  disable fast-math dynarec); if it goes bit-exact through the first super, free-run becomes viable.
+  ⚙ Methodology to record: per-tape **slot remap** (this tape `{0:0,2:2,4:4,1:5,3:1,5:3}` — P2 point in slot 5);
+  `MAPLECAST_ASSIST` is **per-CHARACTER** (`0,1,1;0,1,1`), not per-tape-slot; **gframe alignment** `tape_frame =
+  gframe − 654` (TELE_OUT skips records during supers/round-transitions — align by the DC game-frame, not rec index).
+
+- **2026-08-30 — ⭐ STATE-INJECTION designed + STAGED (turnkey; blocked only on a 2-object flycast rebuild).**
+  The mechanism ALREADY EXISTS compiled in: `maplecast_gamestate::writeGameState` (roster `0x8C268340`, stride
+  `0x5A4`) + `MAPLECAST_STATE_REPLICA`. **RE gap** (inject-vs-kept-live): pos/vel/screenpos/facing+xflip(`0x1D2`)/
+  sprite_id(`0x144`)/anim_timer/hp+red/scale/assist(`0x4C9`)/camera/globals INJECT faithfully from the tape;
+  anim_state/special_id/palette/hit-flash/overlay + sub_anim_phase(`0x502`)+char_link(`0x00C`) kept as live SH4
+  values (read-overlay-write); **effects/object-pool + per-node HUD sprites = the residual gap** (node-synthesis,
+  follow-up; bars/numbers still render off injected meter/hp/timer). ⚠ INFERRED (sh4-re to confirm at build): the
+  draw may sample roster `0x268340` (what writeGameState targets; state_replica proved 99.7%) vs on-screen array
+  `0x2D7088` — first suspect if injected bodies don't move. **Mechanism CHOSEN:** a per-vblank `applyStateInject()`
+  hook inside a normal `MIRROR_SERVER` resim — writeGameState writes only RAM (not VRAM), so the VRAM memwatch
+  stays ON and the existing capture pipeline yields a clean `.zcst`. (External WPM = NOT VIABLE — no frame-step in
+  the control WS; built-in STATE_REPLICA works no-rebuild but disables the memwatch → PNG only, no `.zcst`.)
+  **STAGED** in `tools/render-replica-poc/`: `state_inject.patch` (3 additive hunks at the assist-poke site
+  `emulator.cpp:2204`), `tape_to_gsta_inject.py`, pre-produced `inject_59598769.gsta` (5147 recs, full) +
+  `inject_59598769_super.gsta` (2600 recs, through the first super), `state_inject_build_run.txt`,
+  `spotcheck_inject.py`. **Proof (stream-level):** injection stream is byte-faithful to the tape at post-super
+  gframe 3279 + 4920 (px/py/sid/hp/facing identical, all 6 fighters) → **drift-free by construction** past the
+  1-ULP wall. REMAINING: a 2-object `ninja flycast.exe` rebuild (blocked from this isolated worktree — same wall
+  as the assist poke + the wenzel deploy) → capture → render on `play_zcst.html`; the live-pixel gate (rendered
+  `.zcst` diffed vs the tape) is the build session's job. Open hazards for that session: multi-round transitions
+  under FREEZE (SH4 KO/round-intro logic firing off injected hp=0) — why the single-round `_super.gsta` is scoped.
+
+- **2026-08-31 — rise3 = the flycast resim/render build host (GO, live-verified).** rise3 = `ns1012691` @
+  **15.204.141.58** (OVH, Ubuntu 22.04, passwordless sudo via `~/.ssh/ovh_maplecast` user `ubuntu`); dev0ps =
+  65.109.77.178 (Hetzner, current prod). CONFIRMED GO for the headless flycast resim: **no GPU needed** (NO_REND
+  null renderer; `.zcst` = CPU TA-list + VRAM memwatch), toolchain present (gcc11 / cmake3.22 / ninja / node22),
+  and a **working `build-headless/flycast` already builds + runs** at `/home/ubuntu/src/maplecast-flycast` (branch
+  `feat/executor-pool-spawn`, HEAD f6ff8964b — USE THIS TREE; `/home/ubuntu/projects/maplecast-flycast` is NOT
+  build-ready, submodules uninit). **ROM present** at `/home/ubuntu/roms/mvc2.gdi` (+tracks; boots via HLE BIOS →
+  no BYOR gap, nothing to copy). 25.9 GiB free, Ryzen 5900X / 24t, 381 G disk free. ⚠ rise3 NOT prod yet but
+  **cutover ~2026-09-01** + a live-predict flycast (PID 1130, warm-standby, floats CCD 0-23, no systemd unit) runs
+  — keep the state-inject build INCREMENTAL (not a from-scratch 24-core compile), moderate `-j`, ideally CCD-pin
+  the resim opposite the predictor. The existing binary already has a FREE-RUN offline replay
+  (`MAPLECAST_REPLAY_IN/OUT` + `maplecast_replay::spawnMatchWrite`, compiled-but-not-yet-exercised on Linux) — but
+  the drift-free demo still needs `state_inject.patch` (+ the assist hook) applied + an incremental rebuild here.
+
+- **2026-08-31 — rise3 build BLOCKED: its build tree is a stale/stripped branch; the inject+autoselect subsystem
+  is UNCOMMITTED-local-only.** rise3's `/home/ubuntu/src/maplecast-flycast` (`feat/executor-pool-spawn`) and
+  `/home/ubuntu/projects/...` (`feat/play-page`) both LACK `maplecast_autoselect.*`, `applyAssist`,
+  MAPLECAST_AUTOSELECT/MENUNAV/MOVIE_IN/STATE_INJECT, `maplecast_replay`, SAVE/LOAD_AT_FRAME, TELE_OUT (verified by
+  grep on source + `grep -ao` on the binary → only HEADLESS_AUTOLOAD/MIRROR_SERVER/STATE_REPLICA). ⟹ the full
+  match-entry+injection subsystem exists ONLY as **uncommitted working-tree edits on the local Windows box** — no
+  branch has it, so `state_inject.patch` (anchored on autoselect + applyAssist) can't apply on rise3. Confirmed
+  compatible on rise3: `maplecast_gamestate.*` byte-identical (writeGameState/readGameState/deserialize, WIRE=376),
+  vblank graft site emulator.cpp:2115, GPU-less MIRROR_SERVER capture, savestate format (V62). ⚠ CROSS-BUILD
+  savestate RESTORE-STALLS (threaded: renderEnd.Wait() never clears; single-threaded: 1 frame then idle) — only a
+  rise3-NATIVE state loads clean, but rise3's build can't autoselect a roster (circular). rise3 default roster =
+  [42,52,44]/[23,23,23] (Storm/Sentinel/Mag vs Cable), NOT tape 59598769's [42,44,50]/[15,23,44]. Staged on rise3
+  at `/home/ubuntu/inject_run/` (gsta + capture + patch + a roster savestate). ⟹ producing the injected `.zcst`
+  needs the FULL subsystem source on a box + a real (non-incremental) build; from an isolated session only rise3 is
+  reachable (local repo write blocked). **PREREQUISITE regardless: commit the subsystem to a branch** (fragile as
+  local-only edits). DECISION PENDING: non-isolated local build (commit+build+demo now, rise3 builds clean post-
+  cutover) vs full gcc build on rise3 now (heavy compile / cutover-eve / MSVC→gcc porting risk).
+
+- **2026-08-31 — DECISION: build the injection binary LOCALLY (non-isolated Windows), commit-first.** Tris chose
+  the local build over a from-scratch gcc build on rise3 (the latter = heavy compile on the predictor box the eve
+  of cutover + MSVC→gcc porting risk). VERIFIED the local tree is ready: `emulator.cpp:51` includes
+  `maplecast_autoselect.h` and `applyAssist()` is at `emulator.cpp:2204` — the exact anchor `state_inject.patch`
+  needs, so it applies cleanly locally (unlike rise3's stripped tree). ROM local at `C:\roms\roms\mvc2.gdi`, MSVC
+  toolchain present. Locally we cold-boot the roster via autoselect MENUNAV — no savestate needed (that was rise3's
+  constraint). EXECUTION = `tools/render-replica-poc/state_inject_build_run.txt`, now with **step 0 (commit the
+  uncommitted subsystem to branch `feat/render-accuracy-inject` — fixes the local-only fragility)** and **step 6
+  (push it → enables a clean `git fetch+checkout` rise3 build after cutover, no working-tree scp)**. ⚠ Needs a
+  NON-worktree-isolated session in `maplecast-flycast` (this render worktree can't commit/build there). Flow:
+  commit → `git apply state_inject.patch` → `ninja flycast.exe` → run (MENUNAV 42,44,50;15,23,44 + STATE_INJECT
+  inject_59598769_super.gsta + MIRROR_SERVER :7300, NO MOVIE_IN) → `capture_mirror_full.mjs` →
+  `render_ta_wire_inject_super.zcst` → render on `play_zcst.html` + spot-check post-super vs tape → push branch.
+
+- **2026-08-31 — ⚠⚠ RAW STATE-INJECTION EMPIRICALLY FALSIFIED (built + run on rise3).** The naive "inject recorded
+  fields each frame → drift-free by construction" does NOT hold — the running game rejects partial pokes. Two
+  measured failure modes (flycast-internals, live on rise3): (1) poking `sprite_id` (0x144) → **100,990 "SH4
+  exception when blocked"** faults — the tape lacks `anim_pointer` (0x168)/`animation_state` (0x1D0), so a lone
+  sprite_id poke desyncs the anim lookup → fault; dropping sprite_id → crash=0 (cause confirmed). (2) position-only
+  injection → **render STALLS** (no GSTA/OBJS after FIRST inject). ⟹ the earlier "drift-free by construction" was an
+  UNPROVEN design argument, now falsified for the raw form. The one injector that IS stable —
+  `maplecast_state_replica` (99.7%, handles anim-context + warmup + gating) — **disables the VRAM memwatch so it
+  cannot emit a `.zcst`**. THAT tension is the real problem. ⟹ **the local `state_inject.patch` build would hit the
+  SAME wall — NOT a turnkey demo.** Real fix = sh4-re + sprite-render domain: (a) the full anim-context fields needed
+  to inject sprite_id safely, (b) why position injection stalls + how to hold `in_match`, (c) likely inject at the
+  STARTRENDER oracle-hook (`maplecast_oracle_hook::mc_sidLatch`, emu-thread, after-update/before-draw) not vblank.
+  Reconciled live: savestate autoload = `dc_loadstate(slot0)` at emulator.cpp:836 (XDG dir, not ROM dir); restore-safe
+  states need control-WS `savestate_save` (frame-top, clean pend_rend), NOT `MAPLECAST_SAVE_AT_FRAME`; roster-matched
+  state produced (char_ids 42,15,44,23,50,44 = tape 59598769). rise3 left pristine (predictor PID 1130 healthy);
+  staged `/home/ubuntu/inject_run/`. Fastest FAITHFUL-demo candidate to evaluate: `state_replica` → PNG/video
+  (stable, drift-free, anim-correct) IF a build can rasterize it — sidesteps the `.zcst`-capture problem entirely.
+
+- **2026-08-31 — EVALUATING (Tris's pivot): capture STEAM's OWN render stream, drop the flycast resim entirely.**
+  Rationale: the drift exists ONLY because we resim on flycast (DC) — Steam replays ITSELF bit-exactly
+  (`STEAM-GGPO-DETERMINISM.md §2.3`, restore `blk` + inputs), so a Steam-native render capture has NO cross-core
+  float AND no injection. Plan: do ALL RE on the STEAM x86-64 binary (Ghidra; `mvc_dump.bin` — retail exe is PACKED)
+  to find where it issues per-frame render/GPU commands, hook + capture that stream while driving a bit-exact
+  self-replay, then replay in the browser king.html-style (WebGPU). DC/flycast experts = INFERENCE only. ⚠ KB
+  constraints to honor (don't re-derive): Steam spectate = GGPO inputs-only (re-sim, no frame stream); prior "Steam
+  has no DC-TA FIFO / draw fn not standalone-callable" (`rr-sprite-render-pipeline`, `mvc-mame-naomi-render-verdict`)
+  closed the DC-TA door but did NOT map Steam's native renderer. senior-re-generalist LEADS the feasibility RE
+  (consults sh4-re + sprite-render); FALSIFIABLE VERDICT + candidate capture hook required BEFORE any build.
+
+- **2026-08-31 — VERDICT (senior-re-generalist, Ghidra on `mvc2_dump.bin`): STEAM-native render capture = NO-GO.
+  STAY ON PATH 1 (flycast — we own the build).** Steam's renderer is **Capcom MT Framework on Direct3D 11**
+  (CONFIRMED: imports `D3D11CreateDeviceAndSwapChain`/`D3DReflect`; strings `AppShaderPackage`/`ID3D11Texture2D`/
+  bloom params) — NOT a PVR2 rasterizer, NOT a DC TA display list. Per-frame path: `FUN_140620F10` walks the
+  16-layer draw list (`blk+0x2f4d0`) → `FUN_1406129F0`/`140612F70` decompress the twiddled 4bpp parts → upload to
+  D3D11 textures → issue textured-quad **D3D11** draws. ⚠ Only the SOURCE ART is PVR/NAOMI-shaped; the RENDER is
+  native D3D11 — `REPLAY-ENGINE-DESIGN.md:113-114`'s "PVR submit → D3D11" gloss is WRONG (asset-format vs
+  render-arch conflation; the trap the pivot rested on — CORRECT THAT DOC). NO passive capturable stream (no TA
+  FIFO, no confirmed PVR para-list in RAM — INFERRED-strong; the 32-byte-stride heap probe was never run = the ONE
+  disproof test that could move the verdict). Capture ⟹ in-process DLL injection into Capcom's DRM'd binary, and it
+  does NOT feed our pvr2 renderer (a byte-exact DC-PVR2 port): case-a = the STATE we already read (emitter path,
+  +1 blend bit only); case-b = MT-Framework D3D11 VBs needing a from-scratch browser renderer targeting Steam's
+  bloom'd look, which ISN'T the program's ground truth (the gate is the flycast DC-PVR2 TA-mirror). Bit-exact
+  self-replay is real but SIM-layer + bounded (rollback≠replay; RNG-through-super open; render/shell state outside
+  `blk`, restore garbles the frame). ⟹ the pivot swaps the SOLVED half (render — we own flycast, pixel-perfect incl.
+  the Storm super) for the UNSOLVED half. **PATH 1 next steps:** (i) bounded FLOAT-MATCH experiment (flycast
+  rounding-mode / FSRRA-FTRV / disable fast-math dynarec → free-run bit-exact through the super; low-prob but cheap;
+  NO injection if it hits), else (ii) inject at STARTRENDER (`maplecast_oracle_hook::mc_sidLatch`, after-update/
+  before-draw) WITH the missing anim-context (`anim_pointer 0x168` + `animation_state 0x1D0` = the 100,990-fault
+  cause). **⚠ GATE G-PIXEL** (frozen-frame browser-vs-TA-mirror region diff, `MAPLECAST_GSTA_SHOT_EVERY=1`) does NOT
+  exist yet — no path may claim "pixel-perfect" until it's built + passes; the current "99%" is eyeballed, unmeasured.
+
+- **2026-08-31 — ⭐ PRODUCT DECISION (Tris): a faithful FIXED VIDEO is enough for the replay — no re-render / no
+  skins needed.** ⟹ DROP the flycast resim / TA-stream / determinism-fight for the replay use case. New path: run
+  the REAL Steam MvC2 on a rendering-capable host, drive a BIT-EXACT self-replay of the tape (restore `blk` + feed
+  the tape's inputs — NO cross-core float, it's the real binary), capture the framebuffer (D3D11 `Present` hook) →
+  video → serve to the browser as a plain video. Massive simplification: the real game renders (pixel-perfect by
+  definition) + self-replays deterministically (same binary). 3 components: (1) DRIVE the replay (blk-restore +
+  GGPO input-ring drive — RE exists: `STEAM-GGPO-DETERMINISM.md §2.3` + `rr-ggpo-input-ring`; tool state TBD), (2)
+  framebuffer CAPTURE (Present hook → video encode), (3) WHERE it renders (needs GPU/WARP — user's Windows box for
+  the demo; GPU-shared container per `mvc-hosting-virtualization` for prod). ⚠ THE risk to verify: is Steam
+  self-replay bit-exact THROUGH A SUPER? (RNG-through-super open; `verify.py rng` inconclusive — but same-binary
+  self-replay + `srand(1)` at battle-init argues YES.) Verify EMPIRICALLY by comparing the replay video to the known
+  match. Tradeoff accepted: a video loses custom skins / 3D re-render / overlays. senior-re-generalist scoping the
+  fastest demo + build-vs-have inventory.
+
+- **2026-08-31 — ⭐⭐ VIDEO-DEMO PLAN SCOPED (senior-re-generalist, grounded in `replay-kit`): GO, ~zero new code,
+  on Tris's box.** The DRIVE half is TURNKEY + on disk: `replay-kit/rrtape4.py` (`rec`/`play`/`ab`) + `REC4.cmd`/
+  `PLAY4.cmd`/`AB.cmd` do the whole Steam self-replay — restore a **char-select** blk anchor (`savestate.py`/
+  `restore_blk.py`, portable) + drive inputs via the offline LATCH `IN0 = G+0x218` (NOT the read-only GGPO ring; it
+  NOPs the 2 pad stores at `0x14003A33B/35F`, `inputrec.py:35-51`). The only genuine build is FRAMEBUFFER CAPTURE (a
+  D3D11 `Present` hook — reuse the proven injector `hook/d3dhook.dll` + `retour`; it currently hooks palette uploads,
+  NOT the backbuffer) — **but the demo needs ZERO code: external capture (Win Game Bar / OBS / `ffmpeg gdigrab`)
+  records the window while `PLAY4` self-replays.** ⚠ KEY CORRECTION: use a **FRESH match Tris records**, NOT the
+  historical agent tapes (`59598769`/`59604428`) — those carry a battle-state anchor (`anchor_frame:3`) that is NOT
+  cross-process portable (557 asset-image pointers; crashed twice); the rig anchors at char-select (portable) + runs
+  battle-init in-process → `srand(1)` reseed → deterministic through supers. DETERMINISM GATE is self-serving:
+  `PLAY4` verifies every 30-frame checkpoint incl. a **CRC32 of the whole blk** vs the recorded game → "VERIFIED: N
+  checkpoints matched exactly" = per-frame byte proof the super replayed; `AB` (A==C) is the generator-agnostic
+  clincher. Ship the video ONLY on a VERIFIED tape → we MEASURE faithfulness, never guess. FASTEST DEMO: (1) Steam→
+  char-select, (2) `REC4.cmd` play a match w/ a super, (3) `PLAY4.cmd` → require VERIFIED, (4) screen-record +
+  `PLAY4.cmd` again → mp4, (5) serve as plain video. All ELEVATED. Steps 1-3,5 = HAVE; step-4 capture = external
+  record (have) or Present-hook (build later). sh4-re sign-off pending: Steam battle-init ≡ DC `srand(1)` (AB
+  substitutes empirically); exact `Present` site in `mvc2_dump.bin`.
+
+- **2026-08-31 — DIVERGENCE RESOLVED = benign +21 frame-phase artifact (senior-re-generalist, code-grounded); use
+  AB not PLAY.** The first live `PLAY4` "DIVERGED at 11640 (45/45 CRC differ)" is NOT a match divergence: (1) 11640
+  is DEEP in char-select (match-start 12789); (2) every NAMED fighter field matched all 45 checkpoints (only the
+  `blk CRC` line printed, none of the per-slot hp/pos/vel/sid lines `compare()` emits — rrtape4.py:341-359); (3)
+  root cause CONFIRMED arithmetic-exact — `restore_anchor` writes full state incl. frame counter (blk+0x3CC8)=11614,
+  then `time.sleep(0.35)` (rrtape4.py:411) lets the thawed sim free-run 0.35s×60 = **21.0** frames → base=11635,
+  drift +21. Inputs are drift-compensated (`fed 1376/1377`, named fields align), but `blk_crc` includes
+  counter-DERIVED presentation state — rotating char-preview floats `blk+0x1e000..0x2a000` ("Presentation only; safe
+  to ignore or carry", STEAM-GGPO-DETERMINISM.md:123-124) + menu/cursor timers — which differ by 21 at every
+  checkpoint. Recording is zero-drift (live), replay is +21 ⟹ `play`-vs-recording CRC ALWAYS mismatches regardless
+  of match determinism = WRONG GATE. ✅ CORRECT GATE = **`AB.cmd`** (`rrtape4.py ab` :549-619): two REPLAYS (both
+  +21 → frame-phase CANCELS) asking the real question — does anything OUTSIDE blk survive the restore + change the
+  match. **A==C ⟹ determinism proven (super incl.) → green-light capture.** ⚠ `--ff` NEVER valid for a verify
+  (rrtape4.py:435-436). Optional hardening: fixed-frame-target wait instead of the wall-clock sleep, and/or exclude
+  the preview region from blk_crc. ⭐ KEY: **the demo VIDEO does NOT depend on this CRC** — inputs align + named
+  fields reproduce ⟹ match footage is faithful; capture from match-start (also skips the char-select shell garble).
+  sh4-re confirming the diverging bytes = 100% the cosmetic preview region (moot if AB says A==C).
+- **END-GOAL (Tris, restated):** browser-streamable replays ANYONE can watch in-browser. The framebuffer **VIDEO
+  fully delivers this** (every browser plays video, no renderer, pixel-perfect) = simplest complete form. Extracting
+  Steam's RENDER COMMANDS (smaller / re-renderable / skins / camera) is a LATER optimization and needs a browser-side
+  renderer since Steam draws in **D3D11** (the deferred harder path) — NOT required for "anyone streams in-browser."
+
+- **2026-08-31 (sh4-re CONFIRMS from the disasm side — both experts now agree):** the diverging bytes are
+  free-running char-select AMBIENT state inside the CRC but outside the fighter digest — the satellite object pool
+  (`blk+0x6dd8..0x2ded8`, holds the rotating 3-D preview models incl. the `0x1e000..0x2a000` floats), the draw list
+  (`blk+0x2f4d0`), cursor/menu timers, bg animation — all `f(frame_counter)`, offset +21 by construction. Battle-init
+  RESET is CONFIRMED in the DC disasm: `loc_8c03dcd8` (bank03), gated on gameflow state `+0x4C==5`, calls init/reset
+  then `srand(1)` (`loc_8c11e770`, r4=1) hard-writing `RngVal @ 0x8c16bc2c = 1` BEFORE the match reads RNG → the
+  match RNG stream is independent of char-select; fighters re-init from asset data; preview pool freed. ⟹ a
+  char-select divergence CANNOT reach the match sim. Named fighter fields matched all 45 checkpoints INCL. in-match
+  frames past 12789 ⟹ the match sim reproduces bit-exact. ⚠ ONE caveat: this proves the SIM; ambient animation still
+  renders +21 off-phase under restore — irrelevant to a fighter/HUD video, but for pixel-exact STAGE/effect phase,
+  pin `FC_OFF=0x3CC8`+mirror post-restore, or use a from-frame-0 resim. VIDEO of the match = faithful (fighters
+  exact; background = same stage, harmless phase offset).
+
+- **2026-08-31 (EMPIRICAL byte-localization — senior-re, offline from `curA.blk`/`curB.blk`): char-select diff =
+  467/211,736 bytes (0.22%), 100% cosmetic, ZERO sim fields.** Diffing two real char-select blk snapshots: changed
+  bytes = frame-counter+mirror (`0x3CC8`/`0x3CD4`, CRC-excluded), input words (tape-fed), char-select cursor/CID/
+  anim-timer, RENDER attrs (`0x32BD4/E8`), and — dominant ~430B — the **object-pool preview-model nodes
+  (`0x1E000..0x2A000`**, pool base blk+0x6dd8 stride 0x280, `loc_8c044dce`). NONE of worldXY/velXY/screenXY/sprite/
+  HP changed → char-select CRC diff is cosmetic, byte-level confirmed. ⚠ STILL OPEN (MEASURE, don't assume): MATCH/
+  SUPER determinism — during a match the SAME pool holds RNG-driven effects, so a super-frame CRC diff needs a test.
+  TOOLS: `AB.cmd` (A==C ⟹ self-consistent) fast; NEW `replay-kit/blk_localize.py` (`cap A`+`cap C` at [11640,
+  post-super frame] → `diff` → flags SIM vs pool-effect) = definitive offset-level super test. Current tape m033020
+  = ~200-frame match (short, likely no super) → record a proper super match to test + for the demo.
+
+- **2026-08-31 (Tris's catch — IMPORTANT gotcha): training MODIFIERS break (anchor+inputs)→match determinism.**
+  Recording with training **meter regen** ON injected meter OUTSIDE the captured inputs → on replay (anchor=char-
+  select, meter 0) the regen didn't reproduce → a triple-meter super the recorded inputs called for had no meter →
+  match divergence (meter is NOT in the named-field digest → surfaces only in the whole-blk CRC, consistent with
+  "named fields match, CRC differs"). ⟹ RECORD CLEAN: no meter regen / infinite health / any training modifier that
+  changes the sim outside the controller inputs; build meter naturally through combat so the super is a pure
+  consequence of reproduced inputs. Also: DON'T restart the game between record + replay (this run's arena moved
+  +0x1900000 = the untested relocation branch R2, plus RPM 299 / process-not-found from closing the game). (Open: is
+  the training-regen SETTING in blk[0..0x33B18)? if yes it'd reproduce; clean-record sidesteps it — sh4-re can
+  confirm.) NB the reported "DIVERGED @540" is STILL the char-select cosmetic artifact (540 < match-start 1424);
+  PLAY4 stops at first divergence so the meter divergence wasn't even reached — use AB.
+
+- **2026-08-31 — ⭐ DECISION (Tris): PATH A — render the tape's saved per-frame STATE on the WebGPU CANVAS with real
+  extracted sprites.** Chosen over B (Steam D3D11 draw-capture + a new browser renderer = pixel-perfect but a big
+  net-new build) and C (screen-record video = flat, NOT a canvas render, the detour). Path A = re-renderable in the
+  browser, real game art, and REUSES what we built (rr-owned-tape-render, `sprite-client` emitter path, `sprite-gpu`,
+  the PLxx atlases, the 3-D stage render). The saved STATE is ALREADY captured (agent tapes carry per-frame render
+  state — tape-v2 columns drawn/sid/eyeX/eyeY/ground + objs + camera; ⚠ HUD list-0x0B is NOT in the tape → separate
+  handling). flycast-TA is OUT (renders a DIVERGED match, not the real one); Steam-video set aside (flat). OPEN WORK:
+  refine the DRAW toward pixel-perfect with the game's REAL blend/layer data (blend modes, layering, effects, HUD) —
+  render ONLY real extracted assets (Tris's hard rule, no approximations). NEXT: sprite-render expert renders a real
+  tape's state on the canvas (viewable demo) + the precise gap list.
+
 ## 7. OPEN QUESTIONS PARKING LOT
 - Does the Option-B camera focal 812.357 stay constant across a superjump? (Oracle probe
   `0x8C26A518+0x20` + `blk+0x6990/0x6994`) — Track A7 dependency.

@@ -1,0 +1,171 @@
+From: flycast-internals-expert — MAPLECAST_STATE_INJECT (tape-driven state injection)
+Subject: [PATCH] autoselect: per-vblank read-overlay-write of a tape's recorded
+         per-frame fighter state so the engine draws the REAL TA drift-free.
+
+WHY THIS EXISTS (the settled 2026-08-30 finding)
+  Free-run resim is bit-exact through the opening but diverges at the first super
+  by a 1-ULP cross-core float rounding difference (DC SH4 vs Steam x86-64) that
+  amplifies. No input/assist/init/RNG fix closes a 1-ULP gap. So we do NOT compute
+  forward — we INJECT the tape's recorded per-frame state each frame and let the
+  game's own draw code build the TA. No computation => no drift.
+
+WHY A HOOK AND NOT MAPLECAST_STATE_REPLICA
+  MAPLECAST_STATE_REPLICA already does this injection (writeGameState at frame top),
+  BUT it disables the mirror-SERVER's VRAM dirty-page memwatch (emulator.cpp:1712-1715
+  `if (!isClient() && !state_replica::active()) memwatch::protect()`), so a
+  state-replica instance renders locally but CANNOT emit a .zcst (no serverPublish
+  VRAM deltas). writeGameState writes only RAM (fighter structs @0x8C268340), which
+  does NOT conflict with the VRAM memwatch. So we run the injection as a per-vblank
+  hook INSIDE a normal MAPLECAST_MIRROR_SERVER resim (memwatch ON) — the existing
+  capture pipeline (capture_mirror_full.mjs) then yields a clean .zcst unchanged.
+
+WHY READ-OVERLAY-WRITE (not a blanket writeGameState)
+  writeGameState(gs) writes ALL of GameState. The tape does NOT carry every field
+  (animation_state 0x1D0, special_move_id 0x1E9, palette_id 0x52D, overlay_1a4 0x1A4,
+  pal_12d 0x12D, pal_12e 0x12E). A blanket write with 0-filled non-tape fields would
+  CLOBBER the SH4's live values (wrong palette, dead animation). So we readGameState()
+  first, overlay ONLY the tape-backed fields, then writeGameState() — non-tape fields
+  keep their live SH4 value (idempotent write-back). Reuses deserialize + readGameState
+  + writeGameState VERBATIM (rule 12). Plus one direct write of the authoritative xflip
+  0x1D2 (writeGameState omits it — it stops at overlay_1a4 +0x1A4).
+
+INJECT TIMING
+  Hooked at emulator.cpp:2204 (Emulator::vblank), the SAME site as applyAssist (proven
+  per-vblank RAM poke that the match reads). The vblank event fires before the SH4 runs
+  the game's per-frame update+draw ISR, so the injected structs reach THIS frame's draw.
+  FREEZE pins kcode/lt/rt to neutral each in-match frame so the local SH4 cannot advance
+  the fight — injection is the only mover (identical to maplecast_state_replica.cpp:156).
+
+INPUT FILE
+  MAPLECAST_STATE_INJECT=<path>.gsta produced by tools/render-replica-poc/
+  tape_to_gsta_inject.py. Layout: 'GSI1' + u32 n + n*(u32 dc_game_frame + 376-byte GSTA).
+  The 376-byte payload is EXACTLY maplecast_gamestate::serialize()'s layout, so the hook
+  reuses deserialize() with no new parser.
+
+SCOPE / HAZARDS (document, iterate in the build session)
+  - v1 injects sequentially from the first IN_MATCH frame (one record per vblank). Best
+    tested on a SINGLE-ROUND span (use inject_59598769_super.gsta, rows 0..2600, through
+    the first super) before the full 5147-row multi-round file. Multi-round transitions
+    (KO/round-intro) under FREEZE are the known open hazard — the SH4 may run its own
+    KO/round logic from the injected hp=0; may need a round-transition gate (sh4-re).
+  - anim SUB-cell (0x502 sub_anim_phase, 0x1D0 animation_state) is NOT injected; sprite_id
+    (0x144) is the resolved body cell and is injected, so bodies track. Residual anim
+    jitter is possible (measured region — see maplecast_gamestate.h:31-34).
+  - EFFECTS/HUD are follow-ups: the object pool (sparks/supers/capes) is NOT injected here
+    (that is writeObjects/OBJF + the node-synthesis gap); HUD list-0x0B is driven from the
+    injected meter/health/timer globals.
+
+Apply from the maplecast-flycast repo root:
+    git apply /c/Users/trist/projects/mvc-live-skins-quarters/tools/render-replica-poc/state_inject.patch
+(If git apply rejects the @@ line counts — as happened with assist_poke.patch — apply the
+3 hunks by hand with the Edit tool. Each is additive; the anchors are unique.)
+
+--- a/core/network/maplecast_autoselect.h
++++ b/core/network/maplecast_autoselect.h
+@@
+ // MAPLECAST_ASSIST ... applyAssist();
+ void applyAssist();
++// MAPLECAST_STATE_INJECT=<file.gsta> — per-vblank read-overlay-write of a tape's
++// recorded per-frame fighter state (tools/render-replica-poc/tape_to_gsta_inject.py).
++// FREEZE-pins local inputs and snaps the tape-backed fields into RAM each in-match
++// vblank so the game's own draw code renders the tape's truth drift-free. No-op unless
++// MAPLECAST_STATE_INJECT is set. Call once per vblank from the emu loop.
++void applyStateInject();
+ }
+
+--- a/core/network/maplecast_autoselect.cpp
++++ b/core/network/maplecast_autoselect.cpp
+@@ (top of file, after the existing #includes)
+ #include "maplecast_autoselect.h"
+ #include "hw/sh4/sh4_mem.h"
++#include "maplecast_gamestate.h"
+ #include <cstdlib>
+ #include <cstring>
+ #include <cstdio>
+ #include <vector>
+ #include <array>
++
++// The authoritative input globals the game reads at vblank (FREEZE pins them).
++extern u32 kcode[4];
++extern u16 rt[4], lt[4];
+
+@@ (inside the anonymous namespace, next to g_assist et al.)
+ int  g_assist[2][3] = {{-1,-1,-1},{-1,-1,-1}};
+ bool g_assistParsed=false, g_assistActive=false;
++
++// ---- MAPLECAST_STATE_INJECT: tape-driven per-frame state injection ----
++// GSI1 file = 'GSI1' + u32 count + count*(u32 dc_game_frame + 376-byte GSTA).
++std::vector<uint8_t> g_siBuf;
++uint32_t g_siCount=0, g_siCursor=0;
++bool     g_siParsed=false, g_siActive=false, g_siFreeze=true;
++constexpr int SI_STRIDE = 380;                 // u32 frame + 376 GSTA
++// DC CHAR_BASE (interleaved P1=0/2/4 P2=1/3/5); writeGameState omits 0x1D2 (xflip).
++constexpr uint32_t SI_CHAR_BASE[6] =
++    {0x8C268340,0x8C2688E4,0x8C268E88,0x8C26942C,0x8C2699D0,0x8C269F74};
++constexpr uint32_t SI_OFF_FACING_1D2 = 0x1D2;
++
++void parseInjectEnv(){
++    g_siParsed=true;
++    const char* e=std::getenv("MAPLECAST_STATE_INJECT");
++    if(!e||!*e) return;
++    FILE* f=fopen(e,"rb");
++    if(!f){ printf("[state-inject] cannot open %s\n", e); return; }
++    fseek(f,0,SEEK_END); long n=ftell(f); fseek(f,0,SEEK_SET);
++    if(n<8){ fclose(f); printf("[state-inject] file too small\n"); return; }
++    g_siBuf.resize((size_t)n);
++    if(fread(g_siBuf.data(),1,(size_t)n,f)!=(size_t)n){ fclose(f); g_siBuf.clear(); return; }
++    fclose(f);
++    if(memcmp(g_siBuf.data(),"GSI1",4)!=0){ printf("[state-inject] bad magic\n"); g_siBuf.clear(); return; }
++    memcpy(&g_siCount, g_siBuf.data()+4, 4);
++    if((size_t)n < 8 + (size_t)g_siCount*SI_STRIDE){ printf("[state-inject] truncated file\n"); g_siBuf.clear(); return; }
++    g_siFreeze = (std::getenv("MAPLECAST_STATE_INJECT_NO_FREEZE")==nullptr);
++    g_siActive = (g_siCount>0);
++    printf("[state-inject] %u records freeze=%d source=%s\n",(unsigned)g_siCount,(int)g_siFreeze,e);
++    fflush(stdout);
++}
+
+@@ (inside `namespace maplecast_autoselect`, right after applyAssist's closing brace)
+ }  // end applyAssist
++
++// MAPLECAST_STATE_INJECT — see header. Read-overlay-write the current tape record
++// each in-match vblank; FREEZE the local inputs so injection is the only mover.
++void applyStateInject(){
++    if(!g_siParsed) parseInjectEnv();
++    if(!g_siActive) return;
++    if(rd8(IN_MATCH)==0) return;                 // let autoselect drive char-select first
++    if(g_siFreeze){ for(int i=0;i<4;i++){ kcode[i]=0xFFFFFFFFu; lt[i]=0; rt[i]=0; } }
++    if(g_siCursor>=g_siCount) return;            // stream exhausted — hold the last pose
++    const uint8_t* gsta = g_siBuf.data() + 8 + (size_t)g_siCursor*SI_STRIDE + 4; // skip u32 frame
++
++    maplecast_gamestate::GameState tape{}; maplecast_gamestate::deserialize(gsta,376,tape);
++    maplecast_gamestate::GameState live{}; maplecast_gamestate::readGameState(live); // keep non-tape fields
++
++    // overlay ONLY the tape-backed fields (globals)
++    live.camera_x=tape.camera_x; live.camera_y=tape.camera_y; live.game_timer=tape.game_timer;
++    live.p1_meter_level=tape.p1_meter_level; live.p2_meter_level=tape.p2_meter_level;
++    live.p1_meter_fill=tape.p1_meter_fill;   live.p2_meter_fill=tape.p2_meter_fill;
++    for(int i=0;i<6;i++){
++        maplecast_gamestate::CharacterState& L=live.chars[i];
++        const maplecast_gamestate::CharacterState& T=tape.chars[i];
++        L.pos_x=T.pos_x; L.pos_y=T.pos_y; L.screen_x=T.screen_x; L.screen_y=T.screen_y;
++        L.vel_x=T.vel_x; L.vel_y=T.vel_y; L.facing_right=T.facing_right;
++        L.sprite_id=T.sprite_id; L.anim_timer=T.anim_timer;
++        L.health=T.health; L.red_health=T.red_health; L.assist_type=T.assist_type;
++        L.sprite_scale_x=T.sprite_scale_x; L.sprite_scale_y=T.sprite_scale_y;
++        // KEPT LIVE: character_id, palette_id, animation_state, special_move_id,
++        //            pal_12d, pal_12e, overlay_1a4, active.
++    }
++    maplecast_gamestate::writeGameState(live);
++    for(int i=0;i<6;i++) wr8(SI_CHAR_BASE[i]+SI_OFF_FACING_1D2, tape.chars[i].facing_right);
++
++    if(g_siCursor==0){ printf("[state-inject] FIRST inject @IN_MATCH records=%u\n",(unsigned)g_siCount); fflush(stdout); }
++    ++g_siCursor;
++}
+
+--- a/core/emulator.cpp
++++ b/core/emulator.cpp
+@@ -2204,3 +2204,4 @@
+ 		maplecast_autoselect::applyAssist();   // MAPLECAST_ASSIST: set tape's assist types early in-match
++		maplecast_autoselect::applyStateInject();  // MAPLECAST_STATE_INJECT: tape state-injection (drift-free render)
+ 		const bool _asHold = maplecast_autoselect::active() && maplecast_autoselect::holdMoviePace();
+ 		if (maplecast_replay::playbackActive() && !_asHold) g_moviePaceFrame++;

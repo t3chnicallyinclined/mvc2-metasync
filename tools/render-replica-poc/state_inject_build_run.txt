@@ -1,0 +1,79 @@
+MAPLECAST_STATE_INJECT — build + run + capture runbook (produces the drift-free .zcst)
+=======================================================================================
+Prereq: a NON-worktree-isolated session in the maplecast-flycast checkout. THIS capture
+session is isolated to mvc-live-skins-quarters (Write/Edit + git refuse the shared
+maplecast-flycast checkout), so the source edit + rebuild must run there — same handoff
+as assist_poke.patch. Toolchain confirmed present (CMake + ninja + MSVC 2022 + vcpkg,
+build-headless-win/_exec_build.log). The injection FILE is already produced (below).
+
+INPUT ALREADY PRODUCED (this session):
+  tools/render-replica-poc/inject_59598769_super.gsta  (2600 recs, rows 0..2600 = through
+                                                         the first super, SINGLE ROUND) <-- START HERE
+  tools/render-replica-poc/inject_59598769.gsta        (5147 recs, full match, MULTI-ROUND)
+  Clean tape: replay-kit/tapes-kept/..._59598769_...json.gz
+  Roster: P1=[42,44,50]  P2=[15,23,44]  stage 0.  assist_dc=[0,1,1,1,1,0].
+
+0) COMMIT THE SUBSYSTEM FIRST — it currently exists ONLY as uncommitted working-tree edits (fragile;
+   one lost tree and the whole render-accuracy subsystem is gone). Do this before touching anything:
+     cd /c/Users/trist/projects/maplecast-flycast
+     git status                                   # review the autoselect/assist/inject/gamestate edits
+     git checkout -b feat/render-accuracy-inject  # off current HEAD
+     git add -A && git commit -m "render-accuracy: autoselect + assist + state-inject subsystem"
+   Confirmed present in the local tree (this makes the graft applicable): emulator.cpp:51
+   #include maplecast_autoselect.h, and applyAssist() at emulator.cpp:2204 (the state_inject anchor).
+   Committing also unblocks a CLEAN rise3 build later (git fetch+checkout, no working-tree scp).
+
+1) APPLY THE PATCH (from maplecast-flycast repo root):
+     git apply /c/Users/trist/projects/mvc-live-skins-quarters/tools/render-replica-poc/state_inject.patch
+   (or apply the 3 hunks by hand — autoselect.h, autoselect.cpp, emulator.cpp:2204;
+    the assist patch needed hand-apply, this one may too. All hunks are additive.)
+
+2) REBUILD (incremental: 2 obj recompile + relink):
+   - Ensure NO flycast.exe is running (LNK1104 "cannot open flycast.exe" otherwise).
+   - From build-headless-win in an MSVC-env shell (vcvars64):  ninja flycast.exe
+
+3) RUN THE INJECTED RESIM (autoselect -> match, then FREEZE + inject; NO MOVIE_IN):
+     cd /d C:\Users\trist\projects\maplecast-flycast\build-headless-win
+     set MAPLECAST_AUTOSELECT_MENUNAV=1
+     set MAPLECAST_AUTOSELECT=42,44,50;15,23,44
+     set MAPLECAST_STATE_INJECT=C:\Users\trist\projects\mvc-live-skins-quarters\tools\render-replica-poc\inject_59598769_super.gsta
+     set MAPLECAST_MIRROR_SERVER=1
+     set MAPLECAST_SERVER_PORT=7300
+     set MAPLECAST_CONTROL_PORT=7311
+     flycast.exe C:\roms\roms\mvc2.gdi
+   Expect in stdout:
+     [state-inject] NNNN records freeze=1 source=...inject_59598769_super.gsta
+     [state-inject] FIRST inject @IN_MATCH records=NNNN
+   DO NOT set MAPLECAST_MOVIE_IN — the local SH4 is FROZEN; injection drives everything.
+   MAPLECAST_ASSIST is unnecessary (state-inject sets assist_type 0x4C9 each frame).
+
+4) CAPTURE THE .zcst (ZCST-only so 1 msg == 1 game frame):
+     node C:/Users/trist/projects/mvc-live-skins-quarters/tools/render-replica-poc/capture_mirror_full.mjs \
+       --url ws://127.0.0.1:7300/ \
+       --out C:/Users/trist/projects/maplecast-flycast/build-headless-win/render_ta_wire_inject_super.zcst \
+       --max-frames 2700 --end-grace 120 --idle-ms 30000
+   (Full match: use inject_59598769.gsta in step 3, --max-frames 5300 here. Multi-round
+    behaviour under FREEZE is the open hazard — verify round 1 first.)
+
+5) RENDER / SPOT-CHECK (the demo Tris wants — play_zcst.html on WebGPU):
+   - Serve projects root:
+       python -m http.server 8011 --directory C:/Users/trist/projects
+   - Open in Chrome/Edge:
+       http://127.0.0.1:8011/mvc-live-skins-quarters/web/tapecanvas/play_zcst.html?src=/maplecast-flycast/build-headless-win/render_ta_wire_inject_super.zcst
+   - Still-frame spot-check vs the tape's recorded state (post-super faithfulness):
+       node C:/Users/trist/projects/mvc-live-skins-quarters/web/tapecanvas/render_ta_wire.mjs \
+         --mirror C:/Users/trist/projects/maplecast-flycast/build-headless-win/render_ta_wire_inject_super.zcst \
+         --frames 0,1224,2359,last --outdir C:/Users/trist/projects/mvc-live-skins-quarters/scratchpad/inject_super
+     Compare the fighter screen positions/sprites at frames >2359 (the free-run divergence
+     point) against the tape rows (px/py/sid). Injection => they must match the tape, not
+     drift. Use tools/render-replica-poc/spotcheck_inject.py (this session) for the numeric
+     tape-side reference at any row.
+
+6) PUSH THE BRANCH (so rise3 builds clean post-cutover from the committed branch, not a scp'd tree):
+     cd /c/Users/trist/projects/maplecast-flycast && git push -u origin feat/render-accuracy-inject
+
+WHY NOT MAPLECAST_STATE_REPLICA (already in the binary)?  It disables the mirror-server
+VRAM memwatch (emulator.cpp:1712-1715) so it renders locally but cannot emit a .zcst. The
+hook injects RAM only (no VRAM memwatch conflict), so it runs inside a normal MIRROR_SERVER
+resim and the existing capture pipeline works unchanged. (If a framebuffer-only PNG demo is
+acceptable instead of a .zcst, MAPLECAST_STATE_REPLICA needs NO rebuild — see the report.)

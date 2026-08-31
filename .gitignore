@@ -40,7 +40,11 @@ credentials.json
 **/*.rr4
 # Tape render inputs + rendered game pixels + ROM-derived stage/HUD assets
 /web/tapecanvas/tape.json
+/web/tapecanvas/tape_*.json
+/web/tapecanvas/_verify_*.png
 /web/tapecanvas/**/*.png
+# flycast state-injection streams (game-derived per-frame fighter state)
+/tools/render-replica-poc/*.gsta
 /web/tapecanvas/hud/
 /web/tapecanvas/stages/
 /web/tapecanvas/__pycache__/

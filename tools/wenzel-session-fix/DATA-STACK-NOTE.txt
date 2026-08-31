@@ -1,0 +1,11 @@
+Add to RetroReceipts-server/docs/DATA-STACK.md (SSOT / session-identity section) ON DEPLOY:
+
+- Session fragmentation (display-fixed 2026-08-30). A physical set can bind to TWO client-minted
+  session ids (`s_<self>_<opp>_<ts>`, one per reporter; the server keeps the FIRST non-empty
+  report's id per game — routes.rs session grouping), so a per-game report-arrival race scatters
+  the set. The set-card readers now UNION sibling ids via `stats::merged_session_ids` (same
+  unordered pair + same mode + disjoint match_index + <=20min-adjacent), so `session_stats`
+  (-> /skinsync/session, the in-app SessionModal, and the ogimg PNG fight card) and `og_preview`
+  show the whole set. `matches.json` is UNTOUCHED — it stays fragmented at rest and fully
+  re-derivable; this is a read-time repair only. Root fix (both clients minting ONE canonical
+  shared session id, e.g. `s_<lo>_<hi>_g<game0-seq>`) is still owed to the agent lane.
