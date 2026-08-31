@@ -2213,45 +2213,79 @@ export class SpriteClient {
         if (fxItem) { out.push(fxItem); drawn++; } else skipSel++;
         continue;
       }
-      // Require a LIVE, ACTIVE owner body of the SAME char_id. A pool sat is part of its owner's
-      // GFX2 only when an active body of that cid is present; without one (global super / dead
-      // afterimage / cid==0 effect) the owner-atlas pairing is invalid -> skip (no garble).
+      // OWNED / CASTER-BANK SATELLITE (cape / projectile / assist). BLACKHEART-ASSIST FIX
+      // (step 4, 2026-08-31): resolve the atlas by the node's OWN GFX2 bank identity (o.cid — the
+      // tape-adapter already resolved it from owner/gfx; the caster's assembly holds the effect
+      // cell 100%, re_kb finding:replica_live_satellite_gfx_residency) INDEPENDENT of owner-body
+      // liveness. The old code hard-required an ACTIVE same-cid body and SKIPPED otherwise, so an
+      // assist projectile that OUTLIVES (or precedes) its caster — Blackheart's Inferno demons
+      // still falling after Blackheart leaves (idx 3131: cat4 owner3/cid53 sel 0x260 present,
+      // slot-3 body inactive) — was dropped. Now the owner slot, WHEN active, only supplies the
+      // facing/scale + the layer TIE-BREAK; it never gates the draw.
       let osl = null;
-      for (let s = 0; s < 6; s++) if (this.slot[s].active && this.slot[s].char_id === o.cid) { osl = this.slot[s]; break; }
-      if (!osl) { skipSel++; continue; }
-      // The sel MUST exist in the owner body's assembly table. If it does not, the old code
-      // counted it "missing" and drew nothing — but a COLLIDING sel (a real body pose index that
-      // happens to equal this node's sel) drew the wrong pose at the foot. Gate on a real hit so
-      // only an actually-owned cape/assist pose draws; anything else is left to the engine walker.
-      const oc = this.asmChars[o.cid];
-      const recs = oc && oc.asm && (oc.asm[o.sid] || oc.asm[o.sid & 0xffff] || oc.asm[String(o.sid)]);
-      if (!recs || !recs.length) { skipSel++; continue; }
-      let ox = osl.screen_x, oy = osl.screen_y;
-      if (this.predict !== false) { const dt = Math.min(now - osl.t, 33); if (dt > 0) { ox += osl.vx*dt; oy += osl.vy*dt; } }
-      if ((ox === 0 && oy === 0) || ox < -60 || ox > 700) continue;
-      const far = (o.type !== 3) && ((Math.abs(o.x - ox) + Math.abs(o.y - oy)) > 130);
-      const px = far ? o.x : ox, py = far ? o.y : oy;
-      const zBase = (o.type === 1) ? 1 : (o.type === 3 ? -2 : -1);
-      // CAPE/AURA Z-ORDER TIE-BREAK (bug 4: Storm's cape draws ON TOP of her intermittently).
-      // DATA (tape 59601369): an OWNED satellite that hugs its owner shares the body's EXACT
-      // draw_layer 100% of the time (1347/1347 attached owner-0 effects == slot-0's layer). At a
-      // shared layer the global per-part z-sort INTERLEAVES the satellite's parts among the body's
-      // (and, on a partZ tie, the later-emitted satellite lands in front) → the cape pops over the
-      // body. Fix: when the satellite ties its owner's layer, drop it half a bucket so the WHOLE
-      // satellite sits as one contiguous unit just BEHIND the owner body (still above layer L-1).
-      // ⚠ NEEDS sh4-re: the true front/behind of a satellite WITHIN a shared layer is the engine
-      // slot-table sub-index, which the tape does not carry. "Behind" matches the reported defect
-      // (cape-on-top = wrong) and a cape physically hanging behind the fighter; a satellite meant
-      // to sit in front of its owner at the same layer would need that sub-index to place correctly.
-      let satLayer = (o.type != null ? o.type : undefined);
-      const capeTieBehind = (typeof window === 'undefined') ? true : (window._capeTieBehind !== false);
-      if (capeTieBehind && satLayer != null && osl.draw_layer != null && osl.draw_layer !== 0xFF && satLayer === osl.draw_layer) {
-        satLayer = satLayer - 0.5;
+      if (o.owner != null && o.owner < 6 && this.slot[o.owner] && this.slot[o.owner].active
+          && this.slot[o.owner].char_id === o.cid) {
+        osl = this.slot[o.owner];                         // caster body live this frame (tape carries o.owner)
+      } else {
+        for (let s = 0; s < 6; s++) if (this.slot[s].active && this.slot[s].char_id === o.cid) { osl = this.slot[s]; break; }
       }
-      emitAssembly({ cid: o.cid, exx: px, eyy: py, facing: osl.facing, slot: 0, zBase,
-                     engZ: (o.engZ != null ? o.engZ : undefined),   // satellite's OWN engine 1/W (node+0xE8)
-                     layer: satLayer,                                // DEFECT #2 + bug-4 tie-break (see above)
-                     sclX: osl.scaleX, sclY: osl.scaleY, pal12d: osl.pal12d, pal12e: osl.pal12e,
+      // A/B (window._satRequireOwner=true): restore the OLD over-gate (skip a satellite with no
+      // active same-cid body) so a proof can show the Blackheart-assist drop before/after. Default
+      // OFF = the step-4 fix (draw by atlas identity regardless of caster liveness).
+      if (typeof window !== 'undefined' && window._satRequireOwner && !osl) { skipSel++; continue; }
+      // The sel MUST exist in o.cid's OWN assembly table (its GFX2 bank). A miss => the node is a
+      // different cell stream than this atlas holds (ownerless FX-poly / 3D-list node) — leave it
+      // to the effect/3D path, don't slap a colliding body pose. This gate is by ATLAS identity,
+      // not owner liveness (step 4).
+      const oc = this.asmChars[o.cid];
+      if (!oc) { this.loadAsmChar(o.cid); skipSel++; continue; }   // kick the lazy atlas load
+      if (!oc.img) { skipSel++; continue; }
+      const recs = oc.asm && (oc.asm[o.sid] || oc.asm[o.sid & 0xffff] || oc.asm[String(o.sid)]);
+      if (!recs || !recs.length) { skipSel++; continue; }
+      // OWN-ORIGIN ANCHOR (the CONFIRMED rule: a satellite draws at its OWN node+0xE0/+0xE4, NOT
+      // owner-foot-relative — marvelous2 loc_8c030af8 writes the satellite origin exactly like the
+      // body's loc_8c03093c). o.x/o.y IS that origin. This REPLACES the rejected `far` proximity
+      // heuristic (the flip-flop 'auto' that anchored near sats to the owner foot). Verified on the
+      // tape: for an attached sat o.x/o.y == the owner body pos to <1px (idx 41), so the switch is
+      // a no-op for attached capes and CORRECT for detached projectiles/assists.
+      if ((o.x === 0 && o.y === 0) || o.x < -64 || o.x > 704 || o.y < -64 || o.y > 544) continue;
+      const efac = osl ? osl.facing : (o.xflip ? 1 : 0);
+      const eScl = (o.objScale && o.objScale > 0.02) ? (o.objScale / (this.asmScaleX || 1))
+                 : (osl ? undefined : 1);   // own scale; fall back to owner sclX/Y when caster live
+      const zBase = (o.type === 1) ? 1 : (o.type === 3 ? -2 : -1);
+      // STEP 3 — CATEGORY-AS-LAYER FIX. Use the satellite's REAL draw layer, not a category byte.
+      // Prefer the CASTER body's draw_layer (CONFIRMED: an attached satellite shares its owner's
+      // draw_layer, 1347/1347 owner-0 effects == slot-0's layer) when the caster is live; else the
+      // object's own layer byte. NB: on the tape o.type == the OBJS `layer` field (record off+11 =
+      // node+0x24), captured SEPARATELY from o.cat (node+0x03 category) — so o.type here is already
+      // the real layer, NOT the category. ⚠ WIRE-GAP: there is NO per-object node+0x24/+0x31 that is
+      // independent of the caster; a DETACHED assist (osl==null) has only its own o.type layer and no
+      // sub-index tie-break — byte-exact ordering of a detached sat needs a reader/tape change
+      // (carry node+0x24/+0x31/+0xE8 per object). See report.
+      let satLayer = (osl && osl.draw_layer != null && osl.draw_layer !== 0xFF) ? osl.draw_layer
+                   : (o.type != null ? o.type : undefined);
+      let satEngZ = (o.engZ != null ? o.engZ : undefined);
+      // STEP 2 — CAPE TIE = BEHIND. On an engZ OR layer TIE between the satellite and its live owner
+      // body, order the satellite BEHIND (registration: the body registered first writes Z, and the
+      // depth buffer's strict-GREATER blocks the equal-Z cape → body FRONT, cape BEHIND). This now
+      // acts on BOTH depth paths, not just the layer fallback. Override (leave in front) only if the
+      // satellite carries a strictly-smaller own depth (node+0x31/+0xE8) — the tape has none (engZ
+      // undefined) so an attached cape always drops behind on a tie.
+      const capeTieBehind = (typeof window === 'undefined') ? true : (window._capeTieBehind !== false);
+      if (capeTieBehind && osl) {
+        const ownerEngZ = (osl.engZ != null ? osl.engZ : undefined);
+        if (satEngZ != null && ownerEngZ != null) {
+          if (satEngZ >= ownerEngZ) satEngZ = ownerEngZ - 1e-6;   // engZ path: nudge strictly behind on a tie/front
+        } else if (satLayer != null && osl.draw_layer != null && osl.draw_layer !== 0xFF && satLayer === osl.draw_layer) {
+          satLayer = satLayer - 0.5;                               // layer path: drop half a bucket behind
+        }
+      }
+      emitAssembly({ cid: o.cid, exx: o.x, eyy: o.y, facing: efac, slot: 0, zBase,
+                     engZ: satEngZ,                                  // satellite's OWN engine 1/W (node+0xE8), tie-nudged
+                     layer: satLayer,                                // step 2/3: real draw layer + cape tie-break
+                     sclX: (eScl != null ? eScl : (osl ? osl.scaleX : 1)),
+                     sclY: (eScl != null ? eScl : (osl ? osl.scaleY : 1)),
+                     pal12d: (osl ? osl.pal12d : 0), pal12e: (osl ? osl.pal12e : 0),
                      blend: o.blend, fx: false }, o.sid);
     }
 

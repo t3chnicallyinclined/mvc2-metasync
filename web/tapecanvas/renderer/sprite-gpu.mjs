@@ -31,7 +31,8 @@ fn vs(@builtin(vertex_index) vi: u32,
       @location(2) flip: f32,
       @location(3) palBase: f32,
       @location(4) tint: vec3f,     // additive fx tint (hit-flash / super-aura), 0 = none
-      @location(5) flipY: f32) -> VSOut {
+      @location(5) flipY: f32,
+      @location(6) depth: f32) -> VSOut {   // per-part clip Z = f(engine 1/W); LARGER = FRONT (depthCompare GREATER)
   var corners = array<vec2f,6>(
     vec2f(0.,0.), vec2f(1.,0.), vec2f(0.,1.),
     vec2f(0.,1.), vec2f(1.,0.), vec2f(1.,1.));
@@ -42,7 +43,7 @@ fn vs(@builtin(vertex_index) vi: u32,
   var ux = c.x; if (flip  > 0.5) { ux = 1. - c.x; }
   var vy = c.y; if (flipY > 0.5) { vy = 1. - c.y; }
   let uv = vec2f(mix(auv.x, auv.z, ux), mix(auv.y, auv.w, vy));
-  var o: VSOut; o.pos = vec4f(clip, 0., 1.); o.uv = uv; o.palBase = u32(palBase + 0.5); o.tint = tint; return o;
+  var o: VSOut; o.pos = vec4f(clip, depth, 1.); o.uv = uv; o.palBase = u32(palBase + 0.5); o.tint = tint; return o;
 }
 @fragment
 fn fs(i: VSOut) -> @location(0) vec4f {
@@ -111,7 +112,7 @@ const PG: u32 = 16u;   // colors per group (one costume body bank)
 fn vs_lut(@builtin(vertex_index) vi: u32,
           @location(0) dest: vec4f, @location(1) auv: vec4f,
           @location(2) flip: f32, @location(3) grp: f32, @location(4) tint: vec3f,
-          @location(5) flipY: f32) -> VSOut {
+          @location(5) flipY: f32, @location(6) depth: f32) -> VSOut {   // per-part clip Z (see vs)
   var corners = array<vec2f,6>(vec2f(0.,0.),vec2f(1.,0.),vec2f(0.,1.),vec2f(0.,1.),vec2f(1.,0.),vec2f(1.,1.));
   let c = corners[vi];
   let px = dest.x + c.x * dest.z; let py = dest.y + c.y * dest.w;
@@ -119,7 +120,7 @@ fn vs_lut(@builtin(vertex_index) vi: u32,
   var ux = c.x; if (flip  > 0.5) { ux = 1. - c.x; }
   var vy = c.y; if (flipY > 0.5) { vy = 1. - c.y; }
   let uv = vec2f(mix(auv.x, auv.z, ux), mix(auv.y, auv.w, vy));
-  var o: VSOut; o.pos = vec4f(clip,0.,1.); o.uv = uv; o.g = u32(grp + 0.5); o.tint = tint; return o;
+  var o: VSOut; o.pos = vec4f(clip,depth,1.); o.uv = uv; o.g = u32(grp + 0.5); o.tint = tint; return o;
 }
 @fragment
 fn fs_lut(i: VSOut) -> @location(0) vec4f {
@@ -132,8 +133,12 @@ fn fs_lut(i: VSOut) -> @location(0) vec4f {
   return vec4f(rgb, 1.0);
 }`;
 
-const INST_FLOATS = 14;       // dest(4) + auv(4) + flip(1) + palBase(1) + tint(3) + flipY(1)
+const INST_FLOATS = 15;       // dest(4) + auv(4) + flip(1) + palBase(1) + tint(3) + flipY(1) + depth(1)
 const INST_STRIDE = INST_FLOATS * 4;
+// Per-part clip-space depth band (0,1]. depthClear=0.0 + depthCompare GREATER means a part at
+// depth 0 would fail (0 > 0 == false) and never draw, so the FARTHEST rank maps to Z_LO>0 and the
+// nearest to Z_HI. LARGER Z = FRONT-most (wins GREATER). See render() rank-depth.
+const Z_LO = 1 / 4096, Z_HI = 1.0;
 
 export class SpriteGPU {
   constructor() {
@@ -164,6 +169,19 @@ export class SpriteGPU {
       this.fmt = navigator.gpu.getPreferredCanvasFormat();
       this.ctx.configure({ device, format: this.fmt, alphaMode: alphaMode || 'opaque' });
       this.PP = new PostProcessor(); this.PP.init(device, this.fmt);
+      // ROOT FIX (2026-08-31, AUTHORITATIVE RENDER-COMPOSITE MODEL): a REAL z-buffer for the 2D
+      // translucent machine. Mirrors pvr2-renderer.mjs (depth32float, ZWrite ON, GREATER): the
+      // engine's PVR ISP DepthMode=4 (Greater) + ZWrite lets the FRONT-most part (larger Z=1/W)
+      // win per-fragment, so occlusion no longer depends on getting the CPU painter order exactly
+      // right (the whole z/layer/cape bug class lived in that sort↔engine-key gap). Bodies/capes/
+      // projectiles/effects all draw with this; the additive spark/live-fx overlays test 'always'
+      // + no write (they sit on top). The depth texture is the PostProcessor's offscreenDepth
+      // (already created, same size as the color RT) — getRenderTarget().depthView.
+      const DS_TEST = { format: 'depth32float', depthWriteEnabled: true,  depthCompare: 'greater' };
+      const DS_OVER = { format: 'depth32float', depthWriteEnabled: false, depthCompare: 'always'  };
+      // location-6 = per-part clip Z (see INST_FLOATS). Same trailing attribute on every non-spark
+      // vertex layout (RGB body/effect pipes + the LUT costume pipes).
+      const DEPTH_ATTR = { shaderLocation: 6, offset: 56, format: 'float32' };
       this.sampler = device.createSampler({ minFilter: 'nearest', magFilter: 'nearest' });
       this.ubuf = device.createBuffer({ size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
       this.inst = device.createBuffer({ size: this.maxInst * INST_STRIDE, usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST });
@@ -187,9 +205,11 @@ export class SpriteGPU {
             { shaderLocation: 3, offset: 36, format: 'float32' },
             { shaderLocation: 4, offset: 40, format: 'float32x3' },
             { shaderLocation: 5, offset: 52, format: 'float32' },
+            DEPTH_ATTR,
           ]}]},
         fragment: { module: mod, entryPoint: 'fs', targets: [{ format: this.fmt }] },
         primitive: { topology: 'triangle-list' },
+        depthStencil: DS_TEST,
       });
       // Additive variant of the SAME palette pipeline — for fx/super objects whose
       // wire blend byte requests dst=ONE (glow/energy). Same shader, same bind
@@ -204,11 +224,13 @@ export class SpriteGPU {
             { shaderLocation: 3, offset: 36, format: 'float32' },
             { shaderLocation: 4, offset: 40, format: 'float32x3' },
             { shaderLocation: 5, offset: 52, format: 'float32' },
+            DEPTH_ATTR,
           ]}]},
         fragment: { module: mod, entryPoint: 'fs', targets: [{ format: this.fmt,
           blend: { color: { srcFactor: 'src-alpha', dstFactor: 'one', operation: 'add' },
                    alpha: { srcFactor: 'one',       dstFactor: 'one', operation: 'add' } } }] },
         primitive: { topology: 'triangle-list' },
+        depthStencil: DS_TEST,
       });
       // REGULAR-ALPHA variant of the palette pipeline (src-a / 1-src-a) — the MISSING blend
       // (OWNED-RENDER-BUILD-SPEC "alphaPipe" build gap). MvC2's global fragment blend for
@@ -228,11 +250,13 @@ export class SpriteGPU {
             { shaderLocation: 3, offset: 36, format: 'float32' },
             { shaderLocation: 4, offset: 40, format: 'float32x3' },
             { shaderLocation: 5, offset: 52, format: 'float32' },
+            DEPTH_ATTR,
           ]}]},
         fragment: { module: mod, entryPoint: 'fs', targets: [{ format: this.fmt,
           blend: { color: { srcFactor: 'src-alpha', dstFactor: 'one-minus-src-alpha', operation: 'add' },
                    alpha: { srcFactor: 'one',       dstFactor: 'one-minus-src-alpha', operation: 'add' } } }] },
         primitive: { topology: 'triangle-list' },
+        depthStencil: DS_TEST,
       });
       // hit-spark pipeline: additive blend, no palette (bindings 0,1,2)
       this.sparkBgl = device.createBindGroupLayout({ entries: [
@@ -252,6 +276,7 @@ export class SpriteGPU {
           blend: { color: { srcFactor: 'one', dstFactor: 'one', operation: 'add' },
                    alpha: { srcFactor: 'one', dstFactor: 'one', operation: 'add' } } }] },
         primitive: { topology: 'triangle-list' },
+        depthStencil: DS_OVER,   // additive overlays sit on top: test 'always', no write
       });
       this.sparkInst = device.createBuffer({ size: 32 * 36, usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST });
       this.sparkInstData = new Float32Array(32 * 9);
@@ -274,12 +299,14 @@ export class SpriteGPU {
         { shaderLocation: 3, offset: 36, format: 'float32' },
         { shaderLocation: 4, offset: 40, format: 'float32x3' },
         { shaderLocation: 5, offset: 52, format: 'float32' },
+        DEPTH_ATTR,
       ]};
       this.lutPipe = device.createRenderPipeline({
         layout: device.createPipelineLayout({ bindGroupLayouts: [this.lutBgl] }),
         vertex: { module: lutMod, entryPoint: 'vs_lut', buffers: [lutVbuf] },
         fragment: { module: lutMod, entryPoint: 'fs_lut', targets: [{ format: this.fmt }] },
         primitive: { topology: 'triangle-list' },
+        depthStencil: DS_TEST,
       });
       this.lutPipeAdd = device.createRenderPipeline({
         layout: device.createPipelineLayout({ bindGroupLayouts: [this.lutBgl] }),
@@ -288,6 +315,7 @@ export class SpriteGPU {
           blend: { color: { srcFactor: 'src-alpha', dstFactor: 'one', operation: 'add' },
                    alpha: { srcFactor: 'one', dstFactor: 'one', operation: 'add' } } }] },
         primitive: { topology: 'triangle-list' },
+        depthStencil: DS_TEST,
       });
       // REGULAR-ALPHA (src-a / 1-src-a) LUT variant — the exact-costume-palette twin of
       // alphaPipe (a LUT-routed effect part gets MODE-2 alpha, not additive). See alphaPipe.
@@ -298,6 +326,7 @@ export class SpriteGPU {
           blend: { color: { srcFactor: 'src-alpha', dstFactor: 'one-minus-src-alpha', operation: 'add' },
                    alpha: { srcFactor: 'one', dstFactor: 'one-minus-src-alpha', operation: 'add' } } }] },
         primitive: { topology: 'triangle-list' },
+        depthStencil: DS_TEST,
       });
       this.lutBuf = device.createBuffer({ size: this.maxGroups * this.LUT_PG * 16,
         usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
@@ -509,8 +538,28 @@ export class SpriteGPU {
     // (that was Defect #3 — it broke emitter z-order within a mixed group); the additive
     // pipeline is now selected per-run instead. location-3 = palBase (RGB) or LUT group
     // index (LUT); each shader reads its own storage buffer so the value matches the pipe.
+    // PER-PART DEPTH (ROOT FIX). Rank every draw item by its emitter z key (s.z = engine 1/W when
+    // present, else the draw_layer bucket*1e5, with the intra-assembly partZ as the low bits;
+    // LARGER = FRONT-most). Rank -> a distinct, strictly-increasing clip Z in (Z_LO, Z_HI], fed to
+    // the depth32float + GREATER buffer, so the engine's ordering is enforced PER-FRAGMENT
+    // regardless of submission order (kills the sort↔engine-key z/layer/cape bug class). Ranking
+    // (not raw-z normalization) guarantees NO float32 collisions across the huge layer*1e5 span —
+    // e.g. two intra-assembly parts one partZ apart still get distinct depths. window._spriteZBuf
+    // =false ranks by SUBMISSION order instead (= the old last-wins painter) for A/B.
+    const zByDraw = (typeof window !== 'undefined' && window._spriteZBuf === false);
+    const _ord = sprites.map((s, i) => [i, zByDraw ? i : (s.z != null ? s.z : 0)]);
+    // ascending z (farthest/behind first = lowest depth); on a genuine z TIE, break by DESCENDING
+    // emission index so the FIRST-emitted item gets the higher depth = FRONT — the engine's
+    // "first-submitted = frontmost" (body registered before its satellites → body in front on a
+    // shared-Z tie). zByDraw ranks purely by submission order (painter A/B), no ties.
+    _ord.sort((a, b) => (a[1] - b[1]) || (b[0] - a[0]));
+    const _depth = new Float32Array(sprites.length);
+    const _dn = sprites.length + 1;
+    for (let r = 0; r < _ord.length; r++) _depth[_ord[r][0]] = Z_LO + (Z_HI - Z_LO) * ((r + 1) / _dn);
+
     let n = 0, ni = 0; const runs = []; let cur = null;
-    for (const s of sprites) {
+    for (let si = 0; si < sprites.length; si++) {
+      const s = sprites[si];
       const r = routeOf(s); if (!r) continue;
       const lutRun = (r === 'lut');
       let grpVal, bufData, idx, c;
@@ -531,6 +580,7 @@ export class SpriteGPU {
       const t = s.tint;
       bufData[o + 10] = t ? t[0] : 0; bufData[o + 11] = t ? t[1] : 0; bufData[o + 12] = t ? t[2] : 0;
       bufData[o + 13] = s.flipY ? 1 : 0;   // part Y-mirror (flags & 0x8000)
+      bufData[o + 14] = _depth[si];         // per-part clip Z (rank by emitter z; GREATER buffer)
       const blend = blendOf(s), cost = lutRun ? (s.costume | 0) : -1;
       if (cur && cur.lut === lutRun && cur.cid === s.charId && cur.costume === cost && cur.blend === blend) {
         cur.count++;
@@ -596,6 +646,11 @@ export class SpriteGPU {
     const enc = this.dev.createCommandEncoder();
     const pass = enc.beginRenderPass({
       colorAttachments: [{ view: rt.colorView, clearValue: { r:0,g:0,b:0,a:0 }, loadOp: 'clear', storeOp: 'store' }],
+      // ROOT FIX: real z-buffer for the 2D translucent machine (mirrors pvr2-renderer). Clear to
+      // 0.0 so every part (clip Z > 0) passes the GREATER test against the cleared floor on first
+      // draw; FRONT-most parts carry the larger Z and win overlaps. rt.depthView == the
+      // PostProcessor's offscreenDepth (same size as the color RT).
+      depthStencilAttachment: { view: rt.depthView, depthClearValue: 0.0, depthLoadOp: 'clear', depthStoreOp: 'store' },
     });
     // Draw the RUNS IN ORDER (global z/layer from the emitter). Switch pipeline / vertex
     // buffer / bind group only when they change between runs. RGB runs read this.inst

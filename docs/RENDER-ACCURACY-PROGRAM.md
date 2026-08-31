@@ -664,6 +664,30 @@ window** to prove the run wasn't a neutral re-run. KILL = any divergence at/afte
   blend stays a Track-B (real-TA) / submit-hook property = the definitional ceiling. (sh4-re to re_kb-UPSERT
   `finding:emitter_blend_is_runtime_state`.)
 
+- **2026-08-31 — ⭐⭐ AUTHORITATIVE RENDER-COMPOSITE MODEL (sh4-re, disasm-grounded) — the root fix for the recurring
+  z/layer/depth/fog/transparency bug class.** Scene = TWO machines → ONE PVR frame, rendered fixed **OPAQUE → PT →
+  TRANSLUCENT**: the 3D machine (`loc_8c030410`) draws the stage/props **OPAQUE**; the 2D sprite machine
+  (Render_sprites `loc_8c0308c2`, bank03:1200) draws **EVERY body/cape/projectile/effect TRANSLUCENT**. ⟹ the stage
+  is behind all 2D by **LIST-TYPE, not depth** (never depth-fights the deck). Inside TRANSLUCENT = a REAL z-buffer:
+  ISP DepthMode=4 (Greater), ZWrite ON, per-part **Z = 1/W**, W = `node+0xE8` (=0.1·camZ + rparam[layer]) +
+  0.001·partIdx ⟹ **first-submitted = frontmost.** Draw-order key = **(`node+0x24` layer ASC, `node+0x31` depth-byte
+  ASC, then registration order: body BEFORE its satellites)** — the slot table IS the draw list (16 layers @
+  `0x8C287DE0` stride 0x180; registrar `loc_8c04515e` bank04:12166 insertion-sorts by `+0x31`, refuses cat>4).
+  **CAPE = CONFIRMED BEHIND** (owner+satellite share layer + `+0xE8` → exact TIE → body registered first writes Z →
+  strict-Greater blocks the equal-Z cape → body FRONT, cape BEHIND). **FOG = decisively NONE** (zero fog refs in the
+  disasm; body TSP FogCtrl=2=No Fog) → emitter implements NO fog term, stop worrying about it. ⚠ EMITTER DIVERGENCES
+  (`sprite-gpu.mjs` is a PAINTER with NO depth buffer — every z/layer bug lives in the sort↔engine-key gap):
+  (1) ROOT FIX = give it a `depth32float` + feed Z=1/W, depthWrite ON / compare GREATER (what `pvr2-renderer.mjs`
+  already does @ lines 10/338-339/390-396) → kills the whole class; (2) cape tie must act on the engZ path (sort
+  satellite BEFORE owner on tie), not just the layer fallback; (3) `satLayer=o.type` uses CATEGORY (node+0x03) not
+  the real `node+0x24` LAYER — carry the real layer; (4) keep bodies alpha `0x45`, additive only for the gfx1
+  allowlist. WIRE-GAP: carry `node+0x24`/`+0x31`/`+0xE8` per object (reader/tape change) for byte-exact order (engZ
+  already validated available, `sprite-client.mjs:2280`). **Blackheart-assist projectile = ownership/gating, NOT
+  order:** emitter over-gates (`sprite-client.mjs:2216-2228` requires an ACTIVE same-cid body + sid-in-assembly) so an
+  assist projectile that outlives/precedes its caster, is owner-less, is an FX-poly, or is on 3D list-7 gets skipped.
+  Fix = resolve atlas by the node's GFX2 bank (`node+0x160`) regardless of owner liveness + bake Blackheart's full
+  sel range. (→ re_kb UPSERT `finding:render_composite_model`, pending a non-isolated session.)
+
 ## 7. OPEN QUESTIONS PARKING LOT
 - Does the Option-B camera focal 812.357 stay constant across a superjump? (Oracle probe
   `0x8C26A518+0x20` + `blk+0x6990/0x6994`) — Track A7 dependency.

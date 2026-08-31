@@ -83,7 +83,8 @@ const log = (m) => { logEl.textContent += m + '\n'; logEl.scrollTop = logEl.scro
 
 let SpriteClient, SpriteGPU, TapeAdapter, loadTapeJson, StageClient, PVR2Renderer, HudClient;
 try {
-  const V = '?v=bars-cape1';   // bug1 two-layer life bar (hud-pvr2) + bug4 cape z-order (sprite-client)
+  const V = '?v=zbuf-model1';  // AUTHORITATIVE render-composite model: real z-buffer (sprite-gpu) +
+                               // cape-tie + own-origin satellites + Blackheart-assist (sprite-client)
   ({ SpriteClient } = await import(`${RENDERER}/sprite-client.mjs${V}`));
   ({ SpriteGPU }    = await import(`${RENDERER}/sprite-gpu.mjs${V}`));
   ({ StageClient }  = await import(`${RENDERER}/stage-client.mjs${V}`));
