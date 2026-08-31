@@ -688,6 +688,52 @@ window** to prove the run wasn't a neutral re-run. KILL = any divergence at/afte
   Fix = resolve atlas by the node's GFX2 bank (`node+0x160`) regardless of owner liveness + bake Blackheart's full
   sel range. (→ re_kb UPSERT `finding:render_composite_model`, pending a non-isolated session.)
 
+- **2026-08-31 — ⭐ DETACHED-OBJECT PLACEMENT reconciled (sh4-re + senior-re cross-diff): the position is ALREADY
+  CAPTURED; the bug is RENDER/ATLAS, not the tape.** Both experts CONFIRM the game places every object 100% from its
+  OWN node (owner pointer `+0x80/+0x84` NEVER read across `loc_8c030af8`→`loc_8c0344d4`→`loc_8c03462c`, grep-confirmed;
+  DC screen origin `+0xE0/+0xE4`, depth `+0xE8`=0.1·camZ+rparam[layer], per-part pen accumulates the wide spread from
+  the sprite's OWN GFX2 records — no owner). ⚠ senior-re CORRECTION to the "tape missing placement fields" premise =
+  **FALSE.** The reader `harvest_objs` (`RetroReceipts-agent/agent/src/reader.rs:1699-1736`) ALREADY emits each node's
+  OWN screen origin `sx/sy` (Steam `H+0x124/0x128` = DC `+0xE0/+0xE4`, CONFIRMED-both-sides via the live uniform +0x44
+  delta), `zx` scale (H+0x130), `layer`, `cat`, `sid` (H+0x188), `gfx1/gfx2` (H+0x1A0/1A4), `owner` (H+0x28); the
+  renderer already places at `o.sx/o.sy` (`tape-adapter.mjs:263/286`, `sprite-client.mjs:2245`). ⟹ Inferno "wide
+  column → small blob" is a PART-ASSEMBLY that failed to EXPAND: `resolveFxAtlas` resolves by OWNER char / gfx1
+  bankMap (`tape-adapter.mjs:153-159`), NOT the node's OWN gfx2 → wrong/colliding atlas once Blackheart's owner-body
+  leaves + his projectile sel (0x260) not baked. **FIX (Option 2, use-what's-captured): resolve atlas by the node's
+  OWN `gfx2` bank + bake Blackheart's full sel range** (all inputs sx/sy+sid+gfx2 already on the wire; "assembly
+  anchor" is NOT a capture field — origin = sx/sy, spread = sel→GFX2 table in the atlas). The ONE justified capture
+  add = depth `+0xE8`→Steam `H+0x12C` (already inside the reader's 0x1C0 buffer, just not emitted) for Z-ORDER ONLY,
+  and only after the test below. Option 3 (TA/Track-B) RULED OUT (drifting/falsified resim). ⚠ RIGOR — FALSIFICATION
+  TEST FIRST (extend `replay-kit/probe_render_cols.py`): decode a frozen Inferno frame's OBJS, read `o.sx/o.sy` for
+  the Inferno node, diff vs engine ground truth (7200 TA-mirror column anchor / Oracle `+0xE0/+0xE4`). sx/sy≈engine ⟹
+  data correct ⟹ render/atlas layer owns it (expected); sx/sy=garbage ⟹ read the RIGHT existing field (still NOT
+  owner-anchoring). Post-fix gate = G-PIXEL (frozen vs 7200 mirror). NO owner-anchoring either branch.
+
+- **2026-08-31 — ⚠ CORRECTION (sprite-render, direct atlas+render evidence overturns the atlas hypothesis): Blackheart's
+  assist RENDERS CORRECTLY — F3131 was a BAD FRAME, not a bug. The real sprite-object glitches = the LOST EFFECT WIRE
+  (blend/depth/isEffect/drawn), NOT atlas/position.** Falsification test (on-disk, tape 59601369): the Inferno node's
+  own-origin Y matches the engine ground plane to <1px (F3131 node sy=492 vs body-ground 491.6; F3160 434 vs 433.6) →
+  POSITION CONFIRMED correct. The "bottom-left blob" is the ~600px 8-part assembly (sel 0x260 = Blackheart's own summon
+  pose, `PL35_asm`) mid-RISE from below-screen, clipped (bbox x0=−263,y1=543) at F3131; fully visible as a large
+  Blackheart by F3160 (4-panel proof `web/tapecanvas/_proof_bh_annotated.png`). ⟹ **the prior "atlas-by-gfx2 + bake
+  sel range" fix is DISPROVEN** by direct atlas reads: sel 0x260 IS fully baked (8/8 parts, 8 quads), `resolveFxAtlas`
+  keys on the stable owner-SLOT (`o.owner`) not body-liveness (resolves PL35 even after the body leaves), and `gfx2`
+  ships **always 0** (`tape-adapter.mjs:144`) so "resolve by own gfx2" is infeasible without a new field. No assist
+  placement/atlas fix needed. THE REAL GLITCHES (vs the prior LIVE renderer `maplecast-flycast/web/webgpu`): **(B)
+  BLEND is the big one** — the live path's per-object `computeObjectBlend` (listType→additive/alpha/opaque) is DROPPED
+  by `tape_to_gpujson.py`; tape defaults cat-1-4 to 0x45 alpha → genuinely-additive supers/beams/hitsparks render too
+  DIM. (A) `isEffect` (node+0x15c bit0) never set → the FX-atlas single-quad path is DEAD on the tape (effect-polys
+  rebuilt as body assemblies). (E) NO per-object drawn flag → 523/1170 parked pool nodes leak the y>544 cull = phantom
+  projectiles. (C) no `+0xE8` → z approximate. FIX PRIORITY: (1) ship the per-object BLEND byte in the tape (server
+  `computeObjectBlend` exists; converter dropped it) — interim = a gfx1→additive allowlist; (2) per-object DRAWN flag;
+  (3) `+0xE8` depth (defer). STAGE CAMERA = NOT entangled (CONFIRMED): sprites draw at engine screen coords (camera
+  already applied); Option-B camera only scrolls the backdrop under the sprites → the stage can wait, it does NOT
+  cause the sprite glitches. ✅ this is the judge-before-recording loop working — direct evidence overturned a recorded
+  hypothesis; KB corrected same-turn. ⭐ GROUND TRUTH (Tris reference screenshot): Blackheart's assist = a **bright
+  vertical PILLAR** (the Inferno energy column) on the OPPONENT's side of the screen — a bright ADDITIVE effect. The
+  render currently shows it dim/incomplete (dropped effect blend → additive renders as alpha). This is the
+  VERIFICATION TARGET for the effect-wire (blend/isEffect/drawn) fix: the render must reproduce the bright pillar.
+
 ## 7. OPEN QUESTIONS PARKING LOT
 - Does the Option-B camera focal 812.357 stay constant across a superjump? (Oracle probe
   `0x8C26A518+0x20` + `blk+0x6990/0x6994`) — Track A7 dependency.
