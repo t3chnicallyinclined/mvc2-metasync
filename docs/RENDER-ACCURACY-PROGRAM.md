@@ -734,6 +734,23 @@ window** to prove the run wasn't a neutral re-run. KILL = any divergence at/afte
   render currently shows it dim/incomplete (dropped effect blend → additive renders as alpha). This is the
   VERIFICATION TARGET for the effect-wire (blend/isEffect/drawn) fix: the render must reproduce the bright pillar.
 
+- **2026-08-31 — ⚠ EFFECT PILLAR: render plumbing FIXED, but the bright pillar is BLOCKED on a READER capture gap —
+  the current tapes CANNOT render bright effects (verified by rendering, not assumed).** FIXED in-worktree: (1)
+  `sprite-client.mjs` additive branch emitted `blend:0x1` which `_pipeFor` routes to ALPHA not pipeAdd → "additive"
+  silently drew dim alpha (the sh4-re "0x1=additive" note is STALE); now honors `o.blend`/`0x11`→pipeAdd. (2)
+  `tape-adapter.mjs` hardcoded every effect to `0x45` alpha → new `effectBlendByte()` (ports `computeObjectBlend`).
+  Additive routing now ENGAGES (ADD 0→12/36 at the Inferno frames). ⚠ BUT the column still renders DARK not bright:
+  `reader.rs harvest_objs` ships only `{sid,sx,sy,zx,face,cat,owner,layer,gfx1,gfx2}` — **NO is_effect bit, NO
+  per-object blend, and the Inferno's effect-poly CELLS + effect PALETTE were never captured.** Ownerless demon sels
+  resolve to WRONG cells in the char atlases; the shared `fx_atlas` lacks the `0x15xx/0x17xx/0x1bxx` inferno banks;
+  forced onto Blackheart they draw his DARK body palette → additive-of-dark ≈ nothing. ⟹ a truly bright pillar is
+  UNRECONSTRUCTABLE from the current tapes. FIX (STAGED for a non-isolated `RetroReceipts-agent` session — worktree
+  blocks `reader.rs`): add per-node **is_effect** (node ptr `H+0x180..0x1C0` ∈ effect dir `blk+0x6CE8`..+0x10000,
+  `fxprobe.py` recipe) + **blend** (port `computeObjectBlend`); extend the shared FX atlas to the inferno effect banks
+  + route is_effect→FX_CID; then RE-RECORD. The JS already parses the 11th/12th/13th objs elements `[…,blend,is_effect,
+  drawn]` → once the reader emits them the client consumes them with NO further render change. Proof URLs:
+  `play_state.html?frame=716&right=Blackheart` (additive engages, still dim), `…?frame=761&fxown=53` (demon-column preview).
+
 ## 7. OPEN QUESTIONS PARKING LOT
 - Does the Option-B camera focal 812.357 stay constant across a superjump? (Oracle probe
   `0x8C26A518+0x20` + `blk+0x6990/0x6994`) — Track A7 dependency.

@@ -150,13 +150,70 @@ export class TapeAdapter {
   //     fxBankMap key for OWNERLESS nodes (owner=255, ~5.9%: global super-flash) which have no
   //     caster to borrow: gfx1 -> char_id from the calibration blob / a learned map.
   // Returns char_id or null (null = defer; ownerless without a gfx1 bankMap entry).
-  resolveFxAtlas(o) {
+  resolveFxAtlas(o, sc, casters) {
     if (o.owner < 6) return this.charIdForSlot(o.owner);   // OWNER-char atlas (100% coverage)
     if (o.gfx1) {                                           // ownerless -> gfx1 bankMap (calibration)
       const m = this.fxBankMap[o.gfx1] ?? this.fxBankMap['0x' + (o.gfx1 >>> 0).toString(16)];
       if (m != null) return m & 0xff;
     }
-    return null;                                            // ownerless super-flash w/o a bankMap entry
+    // OWNERLESS GLOBAL-EFFECT ATTRIBUTION (interim; the tape carries NO real owner/effect-key
+    // for a global effect-poly node — owner ships 0xFF, server readAllDrawn: "global effects
+    // have none"). The SPAWNER's GFX2 bank holds the effect cell (re_kb
+    // finding:replica_live_satellite_gfx_residency), so attribute the node to the frame's
+    // active effect-CASTER whose loaded assembly ACTUALLY CONTAINS the node's sel. This is not
+    // a blind guess — the sel must resolve in that char's own bank; if ZERO or MULTIPLE casters
+    // resolve it, we DEFER (return null) rather than draw a colliding cell (render-only-real
+    // assets). Only a unique spawner is drawn. The correct general fix = the reader shipping the
+    // resolved owner / an effect-poly content key (staged for reader.rs).
+    if (sc && casters && casters.size && sc.asmChars) {
+      const masked = o.sid & 0x7fff;
+      let hit = null, nHit = 0;
+      for (const cid of casters) {
+        const c = sc.asmChars[cid];
+        const recs = c && c.asm && (c.asm[masked] || c.asm[String(masked)]);
+        if (recs && recs.length) { hit = cid; if (++nHit > 1) break; }
+      }
+      if (nHit === 1) return hit;                          // unambiguous spawner atlas
+    }
+    // PROOF-ONLY escape hatch (window._fxOwnerlessTo=<cid>): force every still-unattributed
+    // global effect onto ONE atlas. NOT shipped behavior — it exists to preview what the demon
+    // column looks like once the STAGED reader ships the resolved owner (the real fix). Only used
+    // by the before/after proof harness; unset in production (null -> defer).
+    if (typeof window !== 'undefined' && window._fxOwnerlessTo != null) {
+      const cid = window._fxOwnerlessTo & 0xff;
+      const c = sc && sc.asmChars && sc.asmChars[cid];
+      const masked = o.sid & 0x7fff;
+      const recs = c && c.asm && (c.asm[masked] || c.asm[String(masked)]);
+      if (recs && recs.length) return cid;
+    }
+    return null;                                            // unattributable global flash -> defer
+  }
+
+  // PER-OBJECT PVR BLEND for a sprite-class effect node (0=opaque/PT, 1=alpha, 2=additive on
+  // the listType scale; returned here as the sprite-gpu nibble byte 0x00/0x45/0x11). Ports the
+  // live server computeObjectBlend (maplecast_gamestate.cpp): is_effect => additive, else alpha
+  // for a projectile/effect. PRIORITY:
+  //   (1) o.blend  — the REAL per-object blend byte, IF a future reader ships it (computeObjectBlend
+  //       or the captured bank12 TSP). Wins outright. -> pass straight through.
+  //   (2) o.isEffect — the reader's node+0x15c-in-Effect-Poly bit, IF shipped -> additive.
+  //   (3) INTERIM (today's tape carries neither): the objs stream is 100% sprite-class EFFECT
+  //       nodes (cat 1-4; ~0 cat-0 bodies across 86 tapes), i.e. projectiles / supers / auras /
+  //       energy / hitsparks — the effect-poly draws computeObjectBlend routes ADDITIVE. Verified
+  //       empirically: keying additive on owner==255 alone lit ZERO nodes at the Inferno peak
+  //       (Blackheart's energy is owner-ATTRIBUTED, owner=3) — so the interim promotes the whole
+  //       sprite-class effect stream to additive (0x11 -> sprite-gpu pipeAdd). ⚠ INTERIM COST: the
+  //       caster's own body-cell effect poses (e.g. Blackheart's opaque summon FIGURE, a cape) also
+  //       glow, because the tape has no per-node is_effect to split them — that split is exactly
+  //       what the STAGED reader.rs is_effect bit / real blend byte restores (then (1)/(2) win and
+  //       this heuristic is bypassed). window._fxAdditive=false forces the pre-fix all-alpha
+  //       behavior (the DIM render) for A/B stills.
+  // Returns the sprite-gpu blend byte {0x00 opaque, 0x45 alpha, 0x11 additive}.
+  effectBlendByte(o) {
+    if (o.blend != null) return o.blend & 0xff;                     // (1) real blend byte wins
+    if (o.isEffect != null) return o.isEffect ? 0x11 : 0x45;        // (2) reader is_effect bit
+    const on = (typeof window === 'undefined') ? true
+             : (window._fxAdditive !== undefined ? !!window._fxAdditive : true);
+    return on ? 0x11 : 0x45;                                        // (3) interim: effects additive
   }
 
   _verifySchema(schemaStr) {
@@ -247,10 +304,20 @@ export class TapeAdapter {
     const gframe = row[F.frame] | 0;
     const raw = this.objsByFrame.get(gframe) || [];
     const objects = [];
-    const diag = { total: raw.length, effect: 0, satellite: 0, drawn: 0, gated: 0, threeD: 0, ownerless: 0 };
+    const diag = { total: raw.length, effect: 0, satellite: 0, drawn: 0, gated: 0, threeD: 0, ownerless: 0, additive: 0 };
+    // Active effect-CASTERS this frame = the char_ids of every owner-attributed (owner<6) node in
+    // the objs list, plus every active body slot. Used to attribute an OWNERLESS global effect to
+    // the char whose GFX2 bank holds its cell (resolveFxAtlas — unique-spawner only).
+    const casters = new Set();
+    for (const o of raw) if (o.owner < 6) casters.add(this.charIdForSlot(o.owner));
+    for (let s = 0; s < 6; s++) if (sc.slot[s] && sc.slot[s].active) casters.add(this.charIdForSlot(s));
     for (const o of raw) {
       const masked = o.sid & 0x7fff;
       if (masked === 0 || masked === 0x7fff) continue;
+      // Per-object DRAWN flag (reader-shipped, if present). The engine culls a parked pool node
+      // (node+0x12C==0 / OOB); the tape has no such flag today, so the emitter's own sx/sy>544
+      // cull stands in. Honor an explicit o.drawn==0 when a future reader ships it.
+      if (o.drawn === 0) continue;
       const objScale = (o.zx || 0) / 4096;                 // ÷4096 (0.3.29 fix; 0.3.28 read ÷16 -> 426.625 garbage)
       // 3D-class effects (cat 5-13: drop shadows, 3D sparks, 3D stage) are a SEPARATE NaomiLib
       // list walk — NOT captured this release. OUT OF SCOPE (spec) -> skip.
@@ -272,20 +339,24 @@ export class TapeAdapter {
       // (obj sx/sy). Resolve the atlas from gfx2 (bankMap) else the owner's char.
       diag.effect++;
       if (!this.effectsOn || this.objRecBytes < 20) { diag.gated++; continue; }   // dark on 0.3.28 / when off
-      const cid = this.resolveFxAtlas(o);
-      if (cid == null) { diag.ownerless++; continue; }     // ownerless super-flash w/o a bankMap entry
+      const cid = this.resolveFxAtlas(o, sc, casters);
+      if (cid == null) { diag.ownerless++; continue; }     // unattributable global flash -> defer
+      // PER-OBJECT BLEND (Inferno pillar fix). effectBlendByte() ports the live computeObjectBlend:
+      // is_effect/global => additive (0x11 -> sprite-gpu pipeAdd), owner-attributed caster sprite
+      // => alpha (0x45). Honors a reader-shipped o.blend/o.isEffect when present. `additive` routes
+      // the emitter's ADDITIVE branch (buildEmitterDrawList) so the glow accumulates.
+      const blend = this.effectBlendByte(o);
+      const additive = (blend & 0x0f) === 1;               // dst==ONE nibble => additive pipe
+      if (additive) diag.additive++;
       objects.push({
         // isEffect:false -> the emitter renders it as a part-assembly (the sprite-class path),
-        // keyed by cid's atlas + sel=sid.
-        // BLEND: cat 1-4 sprite objects run MvC2's GLOBAL fragment blend = MODE-2 ALPHA (0x45,
-        // src-a/1-src-a) — the SAME state as the bodies, NOT pure additive (sh4-re: blend is
-        // runtime PVR TSP state, set per-list, not a bakeable per-part field). The old blend:0x1
-        // forced sprite-gpu's additive pipe (src-a/ONE) => effects washed out TOO BRIGHT. Default
-        // to 0x45; honor an explicit per-object blend if a future capture ships one (o.blend).
-        // (Genuinely-additive beams/auras/hitsparks need a gfx1 BODYCAP allowlist — follow-up.)
+        // keyed by cid's atlas + sel=sid. effect_key = gfx1 low-16 (== DC node+0x15c & 0xFFFF, the
+        // live server's effect_key) — carried so the FX-atlas path can resolve it if a reader ever
+        // sets o.isEffect for a shared-Effect-Poly node.
         cid, sid: masked, type: o.layer, x: o.sx, y: o.sy,
         xflip: (o.owner < 6 ? (sc.slot[o.owner].facing ? 1 : 0) : (o.face ? 1 : 0)),
-        isEffect: 0, blend: (o.blend != null ? (o.blend & 0xff) : 0x45), additive: false, objScale,
+        isEffect: (o.isEffect ? 1 : 0), blend, additive, objScale,
+        effect_key: (o.gfx1 >>> 0) & 0xffff,
         gfx1: o.gfx1 >>> 0, gfx2: o.gfx2 >>> 0, owner: o.owner,
         hotDx: 0, hotDy: 0, hasHot: false, engZ: undefined,
       });
@@ -388,12 +459,16 @@ export async function loadTapeJson(url) {
 }
 
 // Build from a pre-decoded tape.json object. objs entries are arrays of 9 (0.3.28), 10
-// (0.3.29, +gfx2) or 11 (+blend) elements:
-//   [sid,sx,sy,zx,face,cat,owner,layer,gfx1(,gfx2(,blend))]
-// The optional 11th element `blend` is the PVR blend byte (src<<4|dst) when a future capture
-// resolves the runtime TSP state per object; absent -> undefined -> tape-adapter defaults
-// cat 1-4 to 0x45 (MODE-2 alpha). Optional t.fxBankMap { "0x..gfx2": char_id } supplies the
-// ownerless-effect handle->atlas calibration.
+// (0.3.29, +gfx2) or 11..13 (+ the staged effect wire) elements:
+//   [sid,sx,sy,zx,face,cat,owner,layer,gfx1(,gfx2(,blend(,is_effect(,drawn))))]
+// The optional trailing elements are the LIVE effect wire the reader currently DROPS
+// (RetroReceipts-agent/agent/src/reader.rs harvest_objs) — staged for a non-isolated session:
+//   [10] blend     = the PVR blend byte (server computeObjectBlend / captured bank12 TSP) — wins.
+//   [11] is_effect = node+0x15c in the Effect Poly bank [0x0CED0000,0x0CEE0000) (=> additive).
+//   [12] drawn     = the engine's per-node visibility gate (node+0x12C!=0 && in-bounds).
+// Absent -> undefined -> tape-adapter's INTERIM classifier (effectBlendByte: global effect =>
+// additive). Optional t.fxBankMap { "0x..gfx2": char_id } supplies the ownerless-effect
+// handle->atlas calibration.
 TapeAdapter.fromJsonObject = function (t) {
   const byFrame = new Map();
   let recBytes = 16;
@@ -404,6 +479,8 @@ TapeAdapter.fromJsonObject = function (t) {
         sid: a[0], sx: a[1], sy: a[2], zx: a[3], face: a[4], cat: a[5], owner: a[6], layer: a[7],
         gfx1: (a[8] >>> 0), gfx2: ((a[9] || 0) >>> 0), gfx: (a[8] >>> 0),
         blend: (a.length >= 11 && a[10] != null) ? (a[10] & 0xff) : undefined,
+        isEffect: (a.length >= 12 && a[11] != null) ? (a[11] ? 1 : 0) : undefined,
+        drawn: (a.length >= 13 && a[12] != null) ? (a[12] | 0) : undefined,
       };
     }));
   }

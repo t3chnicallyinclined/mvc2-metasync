@@ -83,8 +83,9 @@ const log = (m) => { logEl.textContent += m + '\n'; logEl.scrollTop = logEl.scro
 
 let SpriteClient, SpriteGPU, TapeAdapter, loadTapeJson, StageClient, PVR2Renderer, HudClient;
 try {
-  const V = '?v=zbuf-model1';  // AUTHORITATIVE render-composite model: real z-buffer (sprite-gpu) +
-                               // cape-tie + own-origin satellites + Blackheart-assist (sprite-client)
+  const V = '?v=fxblend-additive1';  // effect-wire BLEND fix: per-object additive (tape-adapter
+                               // effectBlendByte) + additive-branch pipe fix (0x1->0x11 pipeAdd) +
+                               // effect_key/is_effect/drawn plumbing + AUTHORITATIVE z-buffer model
   ({ SpriteClient } = await import(`${RENDERER}/sprite-client.mjs${V}`));
   ({ SpriteGPU }    = await import(`${RENDERER}/sprite-gpu.mjs${V}`));
   ({ StageClient }  = await import(`${RENDERER}/stage-client.mjs${V}`));
@@ -119,6 +120,12 @@ SC.objectsOn = false;
 SC.hitFlashOn = true;
 window._fxGarbleGuard = false;   // render the game's real (clean-decoded) effect cells
 window._bodyGarbleGuard = false;
+// EFFECT-WIRE BLEND KNOBS (Inferno pillar). ?fxadd=0 forces the pre-fix DIM alpha (A/B); default
+// = per-object additive (tape-adapter effectBlendByte). ?fxown=<cid> is a PROOF-ONLY preview of
+// the OWNERLESS demon column the STAGED reader owner-field will render — attributes every
+// still-unattributed global effect onto that atlas (e.g. ?fxown=53 for Blackheart's Inferno).
+if (qs.get('fxadd') != null) window._fxAdditive = qs.get('fxadd') !== '0';
+if (qs.get('fxown') != null) window._fxOwnerlessTo = +qs.get('fxown');
 SC.setCharBase(ATLAS);
 
 let device = null, stageR = null, gpuOK = false;

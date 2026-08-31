@@ -2204,7 +2204,13 @@ export class SpriteClient {
                        zBase: (o.type != null ? o.type : 6),
                        layer: (o.type != null ? o.type : undefined),   // DEFECT #2: effect's OWN layer (o.type = wire layer)
                        sclX: eScl, sclY: eScl, pal12d: 0, pal12e: 0,
-                       blend: 0x1, fx: false, fxGuard: guard }, o.sid);
+                       // ADDITIVE BLEND FIX (Inferno pillar). The old `blend:0x1` predates
+                       // sprite-gpu's alphaPipe: _pipeFor(0x01) now routes to alphaPipe (the
+                       // 0xf-nibble==1 default), i.e. REGULAR ALPHA — so this "additive branch"
+                       // silently drew dim alpha. Route to pipeAdd via 0x11 (src-a/ONE additive)
+                       // so is_effect glows accumulate. Honor an explicit per-object blend the
+                       // adapter may set from a reader-shipped computeObjectBlend byte.
+                       blend: (o.blend != null ? (o.blend & 0xff) : 0x11), fx: false, fxGuard: guard }, o.sid);
         continue;
       }
       if (o.isEffect) {
