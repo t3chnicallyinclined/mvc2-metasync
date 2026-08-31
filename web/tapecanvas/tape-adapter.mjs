@@ -209,11 +209,20 @@ export class TapeAdapter {
   //       behavior (the DIM render) for A/B stills.
   // Returns the sprite-gpu blend byte {0x00 opaque, 0x45 alpha, 0x11 additive}.
   effectBlendByte(o) {
-    if (o.blend != null) return o.blend & 0xff;                     // (1) real blend byte wins
+    if (o.blend != null) return o.blend & 0xff;                     // (1) real reader blend byte wins (0.3.32)
     if (o.isEffect != null) return o.isEffect ? 0x11 : 0x45;        // (2) reader is_effect bit
-    const on = (typeof window === 'undefined') ? true
-             : (window._fxAdditive !== undefined ? !!window._fxAdditive : true);
-    return on ? 0x11 : 0x45;                                        // (3) interim: effects additive
+    // (3) INTERIM — gfx1-BANK additive allowlist. GROUNDED in tape 59601369's Inferno frame
+    //     (decoded objs): every glowing energy/beam/demon node carries Dat_GFX1 (gfx1, H+0x1A0)
+    //     in bank 0x15xx / 0x17xx / 0x1bxx (0x1503/0x1513/0x1512/0x1515/0x1511/0x150d/0x150f,
+    //     0x1703/0x1713/0x1714/0x1715, 0x1b04/0x1b18). Those banks are the genuinely-additive
+    //     effect banks; a caster's opaque body/cape satellite is NOT in the list -> stays alpha
+    //     (0x45), so the whole sprite-class stream no longer glows blanket-bright. This is the
+    //     interim until the reader ships the exact per-object blend byte (0.3.32, wins at (1)).
+    //     window._fxAdditive still forces the old blanket A/B (true=all additive, false=all alpha).
+    if (typeof window !== 'undefined' && window._fxAdditive !== undefined)
+      return window._fxAdditive ? 0x11 : 0x45;
+    const bank = (o.gfx1 >>> 8) & 0xff;                             // high byte of the Dat_GFX1 handle
+    return TapeAdapter.FX_ADDITIVE_BANKS.has(bank) ? 0x11 : 0x45;
   }
 
   _verifySchema(schemaStr) {
@@ -429,6 +438,13 @@ export class TapeAdapter {
              recBytes: this.objRecBytes, byCat: cat };
   }
 }
+
+// INTERIM gfx1-bank additive allowlist (effectBlendByte step 3). The high byte of the
+// node's Dat_GFX1 handle (gfx1>>8) identifies the effect bank; these three are the
+// genuinely-additive energy/beam/demon banks CONFIRMED in tape 59601369's Inferno frame.
+// Extend by capturing more supers (each real glow-bank's gfx1>>8). Superseded by the
+// reader's exact per-object blend byte (0.3.32); this only fires when o.blend is absent.
+TapeAdapter.FX_ADDITIVE_BANKS = new Set([0x15, 0x17, 0x1b]);
 
 // ── Browser loaders ─────────────────────────────────────────────────────────────
 // (A) Gzipped raw tape (.json.gz) decoded fully via the platform DecompressionStream.

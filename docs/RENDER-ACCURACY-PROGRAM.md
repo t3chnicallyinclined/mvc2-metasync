@@ -751,6 +751,50 @@ window** to prove the run wasn't a neutral re-run. KILL = any divergence at/afte
   drawn]` → once the reader emits them the client consumes them with NO further render change. Proof URLs:
   `play_state.html?frame=716&right=Blackheart` (additive engages, still dim), `…?frame=761&fxown=53` (demon-column preview).
 
+- **2026-08-31 — ⭐ FULL-PASS CAPTURE-UPGRADE SPEC staged (sprite-render, end-to-end grounded) — the ONE-pass fix for
+  bright effects.** ⚠ KEY finding (why flags alone don't fix the pillar): TWO effect classes — **3D-class**
+  (hitsparks/auras, cat 5-13, `0x0CED` bank) carry color IN the 16-bit texels → is_effect→additive lights them;
+  **sprite-class** (Blackheart Inferno, cat 1-4, gfx1 `0x15/17/1bxx`, PAL4+Dat_Pal) render via the caster
+  part-assembly, and **Steam's recompile replaced the DC `+0x15c`→`0x0CED` pointer with a small handle** so the
+  `blk+0x6CE8` value-test returns **is_effect=0** for them → computeObjectBlend→alpha not additive. ⟹ the pillar's
+  brightness rides on the **FX-ATLAS extension (real effect cells + Dat_Pal) + an offline `fxBankMap` binding**
+  (steam effect_key→DC fx_sprite), NOT just the flag — and the over-capture (ship gfx1+effect_key+is_effect+cat + the
+  self-describing `calib` blob) makes that binding DERIVABLE OFFLINE ⟹ **re-record ONCE.** CAPTURE: objs record
+  **20B→32B, APPEND-ONLY** (old tapes still decode) — appends is_effect, blend(nibble 0x11/0x45/0x00), drawn, atimer,
+  scaleY, effect_key, depth(H+0x12C=DC+0xE8) — all from the existing 0x1C0 buffer (no extra per-node read). STAGED
+  EDITS (explicit before/after): `reader.rs`+`Cargo.toml`→0.3.32 (⚠ non-isolated agent session), `tape_to_gpujson.py`
+  + `tape-adapter.mjs` (this worktree; route is_effect→FX_CID), NO render change (sprite-client/gpu already consume).
+  FX-ATLAS bake = LIVE capture on the maplecast box (`MAPLECAST_DUMP_EFFECTS`+`MAPLECAST_PARTDUMP` → decode_effects /
+  build_replica_effects_atlas / rip_gfx2_assembly --realparts → scp, never commit). ⚠ sh4-re re-confirm at build:
+  Steam H+0x12C=DC+0xE8 depth; the `blk+0x6CE8` value-test cross-build behavior for the Inferno node. VERIFY gate =
+  `webgpu-test.html` DIFF tint (pillar region yellow=match), not eyeball. Execution spans 3 repos + 1 re-record.
+
+- **2026-08-31 — ⭐ DECISION (Tris): finish PATH A to its FULLEST extent, THEN go PATH B.** Path A = state→canvas
+  render with real extracted assets (the pragmatic real-match path; the atlas = a one-time asset library, not per-tape
+  work). Complete it fully — (1) effect wire = the capture upgrade (32B objs record) + FX-atlas extension → bright
+  effects/pillar (in progress; gated on the blk/palette-RAM verification which may shrink the bake); (2) real HUD
+  overlays = assemble the already-captured list-0x0B bank (super meter/TIME/combo) into real sprites, replacing the
+  placeholder gradient; (3) stage Option-A byte-exact camera (fixes the pink-decal framing + tightens the stage);
+  (4) byte-exact ordering (`+0x31` sub-order if a gap remains). THEN Path B = capture Steam's own D3D11 render stream
+  + build a browser renderer for it (true pixel-perfect, no baking ever — but a from-scratch renderer). Path A first.
+
+- **2026-08-31 — ⭐ SIMPLIFICATION (Tris's "is it in blk?" instinct was right): the bright pillar needs NO re-record
+  and (probably) NO live bake — it's a RENDER bug + offline atlas, not a capture gap.** Verification (sprite-render,
+  grounded): (1) **PALETTE = OFFLINE-extractable, NOT in blk** — the asset image (parts+palettes) is a separate 32MiB
+  region `arena+0x8400000` (never rolls back); effect sub-palettes are in the char DatPal at the effect offsets
+  (>0x600: Cable ~0x700, Sentinel ~0xd00, Storm ~0x1200), read by `rip_gfx2_assembly.py --pal`. ⟹ "Inferno draws dark"
+  = a RENDER bug: the emitter used body pal row 0 instead of the **per-part pal row** in the GFX2 record `+4` field
+  `(flags>>4)` (offline data the rip already extracts). "DatPal≠rendered palette" resolves: base=offline DatPal,
+  runtime tint (flash/glow) already in the tape flash/glow columns. (2) **ATLAS decoupled from the re-record** — cells+
+  palette are static per-match ATLAS data, rebuilt anytime, NOT tape data. The 0.3.32 reader upgrade ships only the
+  per-object WIRE (is_effect/blend/depth) = a polish, NOT a pillar blocker. (3) **Cell bake GATED on an offline test**
+  — `rip_gfx2_assembly.py` on PL35 sel 0x260 WITHOUT `--realparts`; if the 8 inferno parts decode coherent (single-tile
+  → likely) NO live bake. ⚠ ONLY genuine live-only case (CONFIRMED): **multi-tile** GFX1 parts (~86%) whose LZSS
+  back-refs index the runtime scratch residue `0x0CE60000` absent from the static file (disasm `loc_8c032854`) — only
+  if sel 0x260 is multi-tile. ⟹ IN-WORKTREE PATH (no re-record): offline-decode-test → render fix (per-part pal row) →
+  extend the FX atlas offline → additive via a gfx1 heuristic → render the CURRENT tape's pillar. ⚠ sh4-re at build:
+  Steam palette base H+0x1B8 vs H+0x1A8; whether sel 0x260 is single-tile.
+
 ## 7. OPEN QUESTIONS PARKING LOT
 - Does the Option-B camera focal 812.357 stay constant across a superjump? (Oracle probe
   `0x8C26A518+0x20` + `blk+0x6990/0x6994`) — Track A7 dependency.
