@@ -1,0 +1,134 @@
+From: flycast-internals-expert — MAPLECAST_ASSIST poke (Part 2)
+Subject: [PATCH] autoselect: poke DC fighter assist_type (+0x4C9) from MAPLECAST_ASSIST
+
+Sets each fighter's assist variant (alpha/beta/gamma = 0/1/2) at the DC fighter
+struct field +0x4C9 so a resim reproduces the tape's assist types. Reuses the
+existing autoselect env/parse plumbing (rule 12). Re-asserts all 6 bytes on each
+early in-match vblank (bounded to the first 600 in-match frames, well past the
+first assist call ~battle-frame 297). Idempotent + zero-risk: the match only READS
++0x4C9 (bank08/bank0f); char-select writes it in place with no battle-init memcpy.
+
+Address = 0x8C268340 + slot*0x5A4 + 0x4C9, slots interleaved P1=0/2/4 P2=1/3/5,
+assist arrays in PICK order (member 0 = point). Verified against tape 59603897:
+  assist_p1=[0,2,2] assist_p2=[1,0,2]  ->  MAPLECAST_ASSIST="0,2,2;1,0,2"
+  slot0=0x268809:0  slot2=0x269351:2  slot4=0x269E99:2
+  slot1=0x268DAD:1  slot3=0x2698F5:0  slot5=0x26A43D:2
+
+⚠ NOTE the hook is a NEW per-vblank call in emulator.cpp (NOT inside holdMoviePace/
+getInput): emulator.cpp:2204 gates holdMoviePace behind active(), which goes false
+the frame after handoff, so a hook there would run at most one in-match frame.
+applyAssist() self-gates on in_match + its own counter and must be called
+unconditionally each vblank.
+
+Apply from the maplecast-flycast repo root:  git apply tools/render-replica-poc/assist_poke.patch
+(paths are repo-relative). Then rebuild (see assist_build_run.txt).
+
+--- a/core/network/maplecast_autoselect.h
++++ b/core/network/maplecast_autoselect.h
+@@ -20,4 +20,9 @@ bool getInput(int player, uint16_t& kcodeLow);
+ // Call once per vblank; drives the state machine off guest RAM. Returns true while the
+ // movie pace clock must stay held (char-select + intro not yet at round start).
+ bool holdMoviePace();
++// MAPLECAST_ASSIST="p1a,p1b,p1c;p2a,p2b,p2c" (0=alpha,1=beta,2=gamma, PICK order:
++// member 0 = point). Re-asserts fighter+0x4C9 (assist_type) for all 6 slots on each
++// early in-match vblank so the tape's assist variants are set before the first assist
++// call. No-op unless MAPLECAST_ASSIST is set. Call once per vblank from the emu loop.
++void applyAssist();
+ }
+--- a/core/network/maplecast_autoselect.cpp
++++ b/core/network/maplecast_autoselect.cpp
+@@ -11,6 +11,7 @@ namespace {
+
+ // ---- guest RAM helpers (same access as the king.html state reader) ----
+ static inline uint8_t rd8(uint32_t guest) { return ::mem_b[guest & 0x1FFFFFF]; }
++static inline void    wr8(uint32_t guest, uint8_t val) { ::mem_b[guest & 0x1FFFFFF] = val; }
+
+ // ---- char-select layout (retail DC / mvsc2), from the disasm spec ----
+ constexpr uint32_t GRID_TBL   = 0x8C161FEC;   // char_id = tbl[row*8+col], 0xFF=empty
+@@ -30,6 +31,15 @@ bool  g_parsed=false, g_active=false, g_observe=false;
+ int   g_team[2][3] = {{-1,-1,-1},{-1,-1,-1}};
+ uint16_t g_input[2] = {NEUTRAL_LOW, NEUTRAL_LOW};
+ uint64_t g_frame=0;                    // our own vblank counter (holdMoviePace ticks it)
++
++// ---- MAPLECAST_ASSIST: per-member assist type (alpha/beta/gamma = 0/1/2) ----
++// DC fighter struct base 0x8C268340, stride 0x5A4, slots interleaved P1=0/2/4 P2=1/3/5;
++// assist_type at +0x4C9 (u8). char-select writes it; the match only READS it (bank08/0f).
++constexpr uint32_t FIGHTER_BASE   = 0x8C268340;
++constexpr uint32_t FIGHTER_STRIDE = 0x5A4;
++constexpr uint32_t OFF_ASSIST     = 0x4C9;
++int  g_assist[2][3] = {{-1,-1,-1},{-1,-1,-1}};
++bool g_assistParsed=false, g_assistActive=false;
+
+ // ---- diagnostics (MAPLECAST_AUTOSELECT_DEBUG=1) ----
+ struct DbgP { int lock, st, col, row, cellAtCur, pick, target, tc, tr, dir; };
+@@ -73,6 +83,29 @@ void parseEnv() {
+         printf("[autoselect] target P1=%d,%d,%d  P2=%d,%d,%d\n",
+                g_team[0][0],g_team[0][1],g_team[0][2],g_team[1][0],g_team[1][1],g_team[1][2]);
+     }
+ }
++
++// MAPLECAST_ASSIST parser — identical grammar to parseEnv (see header).
++void parseAssistEnv() {
++    g_assistParsed=true;
++    const char* e=std::getenv("MAPLECAST_ASSIST");
++    if(!e||!*e) return;
++    int side=0, idx=0; const char* p=e;
++    while(*p && side<2){
++        while(*p==' ') ++p;
++        char* end=nullptr; long v=std::strtol(p,&end,0);
++        if(end==p){ ++p; continue; }
++        if(idx<3) g_assist[side][idx++]=(int)v;
++        p=end;
++        while(*p==' ') ++p;
++        if(*p==';'){ side++; idx=0; ++p; }
++        else if(*p==','){ ++p; }
++    }
++    if(g_assist[0][0]>=0 && g_assist[1][0]>=0){
++        g_assistActive=true;
++        printf("[assist] target P1=%d,%d,%d  P2=%d,%d,%d\n",
++               g_assist[0][0],g_assist[0][1],g_assist[0][2],
++               g_assist[1][0],g_assist[1][1],g_assist[1][2]);
++    }
++}
+
+ // grid geometry: read the live table (no DC/NAOMI ambiguity — read what's really there)
+ inline uint8_t cell(int col,int row){ return rd8(GRID_TBL + (uint32_t)(row*8+col)); }
+@@ -259,6 +292,29 @@ bool getInput(int player, uint16_t& kcodeLow){
+     if(!atCharSelect() && !menuNav()) return false;
+     kcodeLow = g_input[player];
+     return true;
+ }
++
++// MAPLECAST_ASSIST — re-assert all 6 fighters' assist_type each early in-match vblank.
++// Idempotent (the match only READS +0x4C9); bounded to the first 600 in-match frames,
++// well past the first assist call (~battle-frame 297). Called once per vblank from the
++// emu loop OUTSIDE the active() gate (autoselect goes inactive at handoff).
++void applyAssist(){
++    if(!g_assistParsed) parseAssistEnv();
++    if(!g_assistActive) return;
++    if(rd8(IN_MATCH)==0) return;
++    static uint32_t nInMatch=0;
++    if(nInMatch >= 600) return;
++    ++nInMatch;
++    for(int m=0;m<3;m++){
++        if(g_assist[0][m]>=0) wr8(FIGHTER_BASE + (uint32_t)(m*2+0)*FIGHTER_STRIDE + OFF_ASSIST, (uint8_t)g_assist[0][m]);
++        if(g_assist[1][m]>=0) wr8(FIGHTER_BASE + (uint32_t)(m*2+1)*FIGHTER_STRIDE + OFF_ASSIST, (uint8_t)g_assist[1][m]);
++    }
++    if(nInMatch==2){  // read-back confirm (once), after a full write+read cycle
++        printf("[assist] readback slots0/2/4=%u/%u/%u  1/3/5=%u/%u/%u\n",
++            rd8(FIGHTER_BASE+0*FIGHTER_STRIDE+OFF_ASSIST),rd8(FIGHTER_BASE+2*FIGHTER_STRIDE+OFF_ASSIST),rd8(FIGHTER_BASE+4*FIGHTER_STRIDE+OFF_ASSIST),
++            rd8(FIGHTER_BASE+1*FIGHTER_STRIDE+OFF_ASSIST),rd8(FIGHTER_BASE+3*FIGHTER_STRIDE+OFF_ASSIST),rd8(FIGHTER_BASE+5*FIGHTER_STRIDE+OFF_ASSIST));
++        fflush(stdout);
++    }
++}
+
+ } // namespace maplecast_autoselect
+--- a/core/emulator.cpp
++++ b/core/emulator.cpp
+@@ -2201,6 +2201,7 @@
+ 		// AUTOSELECT drives char-select each vblank and HOLDS the movie pace at frame 0
+ 		// through selection + intro, releasing it at round start so the match movie plays
+ 		// from frame 0. holdMoviePace() also ticks the picker's own per-vblank state machine.
++		maplecast_autoselect::applyAssist();   // MAPLECAST_ASSIST: set tape's assist types early in-match
+ 		const bool _asHold = maplecast_autoselect::active() && maplecast_autoselect::holdMoviePace();
+ 		if (maplecast_replay::playbackActive() && !_asHold) g_moviePaceFrame++;

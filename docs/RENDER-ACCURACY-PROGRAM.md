@@ -165,16 +165,33 @@ Paste this section (or link it) into every task prompt. Violating any of these i
   hitstun 255, full knockback)**, on a clean tape with correct point recon; (c) **NO cross-core RNG/float
   divergence signature** — first divergence is X-position-ONLY at assist/dash events = harness recon, not
   engine.
-- **⚠ METHODOLOGY (B2, CONFIRMED):** a determinism gate MUST use a **rollback-free tape** (`rollbacks:0`).
-  Rollback-heavy tapes (`…59602129…`, rollbacks 1909) store PREDICTED sim state with catch-up
-  discontinuities (px +8.75 in one frame while vx=2.917) — unusable as ground truth. Clean tapes:
-  `…59598769…` (5147 fr), `…59601369…` (3571 fr).
+- **⚠ METHODOLOGY (B2, CONFIRMED):** the **B2 determinism GROUND-TRUTH comparison** MUST use a
+  **rollback-free tape** (`rollbacks:0`) — rollback-heavy tapes store PREDICTED sim state with catch-up
+  discontinuities (px +8.75 in one frame while vx=2.917), unusable as the state reference. Clean tapes:
+  `…59598769…`, `…59601369…`.
+  **⚠ SCOPE CORRECTION (Tris, 2026-08-30): this applies ONLY to the determinism comparison — NOT to
+  RENDERING.** For rendering, the resim is driven from `confirmed_in` (the GGPO/blk-RE'd post-rollback
+  stream, keyed to the confirmed frame) and replays the rollbacks forward BY DESIGN, so **rollback-heavy
+  real-match tapes render fine** — the predicted `frames` are never used for the render. Rollback-heaviness
+  is the normal case and is exactly what the confirmed-input RE handles.
 - **⚠ BUG (B2, CONFIRMED) — `tape_to_flycast_movie.py`:** for these tapes the `confirmed_in` triple is
   `(frame, s0=seat1/P2, s1=seat0/P1)` — **seat-swapped** vs the converter's `s0→P1` (line 97); it also
   feeds char-select-era frames (no `in_match` skip). P1(local) correlates to `conf[f-1].s1` at 99.56% (+2f
   apply-delay). Fix (or use `p1_in`/`p2_in` for clean tapes) before the next B2 run.
 - **DC fighter-struct field offsets** (`pl_mem.asm`, base `0x8C268340 + slot*0x5A4`): x_pos `+0x34`,
   y_pos `+0x38`, x_vel `+0x5c`, y_vel `+0x60`, xflip `+0x1d2`, health `+0x420`.
+- **Assist type — RESOLVED (read + poke, 2026-08-30).** Steam READ offset **`+0x4e9`** (agent `sync.rs:55`,
+  `STEAM-RE-NOTES:67`, live); DC POKE offset **`+0x4C9`** (sh4-re, DIRECT from the DC disasm: `pl_mem.asm:289`
+  `assist_type 0x04c9`; char-select SET-site `bank03.asm:27540` (mod-3 → 0/1/2); in-match READ-sites
+  bank08/bank0f — every `0x4C9` access accounted for). ⚠ DC `+0x4C9` ≠ Steam `+0x4e9`; they do NOT map via
+  the block-map — both correct for their build. u8, α/β/γ=0/1/2, fixed at char-select; sticks (char-select
+  writes in place, no battle-init memcpy, match only READS). **POKE recipe** (DC base `0x8C268340`, stride
+  `0x5A4`, `+0x4C9`; masked `mem_b[addr & 0x1FFFFFF]`): re-assert the 6 slot bytes every in-match frame
+  (idempotent, read-only match constant — zero desync) from the char-select→match handoff
+  (`in_match 0x8C289624 != 0`, `maplecast_autoselect.cpp:173/257`) until the first assist call. Impl = sibling
+  env `MAPLECAST_ASSIST="p1a,p1b,p1c;p2a,p2b,p2c"` parsed like `MAPLECAST_AUTOSELECT`, applied via a `wr8`
+  mirror of `rd8`. Slots P1=0/2/4, P2=1/3/5. ⚠ Verify tape `assist[i]`↔`char[i]` is in PICK order (same
+  order concern as B2a).
 - **Steam cannot capture its own TA without a per-client PVR-submit hook** (`REPLAY-ENGINE-DESIGN.md:105-112`
   §2e) ⟹ resim is the mechanism to obtain the real TA from a tape.
 - **Reconstruction's 3 residuals** (why it can't be exact): (1) per-parcel **blend** UNLOCATED as a struct
@@ -261,7 +278,7 @@ color; exact additive-vs-alpha is what only Track B fixes for free.
 | B1 | (cheapest disprove) Run **G-AB** on a full-match `.rr4` — restore→churn 900→restore→replay→compare digests | A==C ⟹ nothing outside blk matters; A≠C ⟹ resim premise dead | gsta-verification-harness + Tris (LIVE, Steam) | blocked on a full-match .rr4 |
 | B2 | Prove **cross-core determinism** — DC resim vs tape's recorded Steam raw state (cold-boot MENUNAV, no restore) | first-divergence ≥ first super, RNG drawn | gsta-verification-harness | ⚠ 2026-08-30 **INCONCLUSIVE (not KILL)** — bit-exact through the **first hit** (incl. knockback); self-deterministic; NO cross-core signature. Diverged X-ONLY at first assist (f1199) < super (f2359) = harness recon gaps, not engine. Strict gate unmet. |
 | B2a | Fix `tape_to_flycast_movie.py` (seat-swap s0↔s1, char-select skip) — verify on both clean tapes | movie P1/P2 = tape p1_in/p2_in ≥99.9% | (our lane) | not started |
-| B2b | Extend `maplecast_autoselect.cpp` to drive **assist-type + exact reserve order** (from `assist_p1/p2`); add DC `RngVal (0x8C16BC2C)` as a 4th `TELE_OUT` segment | assist entry reproduces; RngVal readable | flycast-internals | not started (needs Tris go — engine work) |
+| B2b | **Assist poke** — set DC `assist_type` (`+0x4C9`) per slot via `MAPLECAST_ASSIST` env | first assist reproduces the tape's variant | flycast-internals | ✅ recipe + PATCH STAGED (`tools/render-replica-poc/assist_poke.patch`; hook-corrected — a per-vblank `applyAssist()` OUTSIDE the movie-pace `active()` gate, self-gated on `in_match`+600fr). ⚠ **BUILD BLOCKED from this worktree-isolated session** (git apply + Write/Edit both refuse the `maplecast-flycast` checkout) → needs a NON-isolated maplecast session: `git apply` → `ninja flycast.exe` (stop local oracle PIDs first) → run w/ `MAPLECAST_ASSIST` → capture. Runbook: `tools/render-replica-poc/assist_build_run.txt`. |
 | B2c | Re-run B2 through a super on a clean tape w/ the assist-faithful harness + RngVal count | first-divergence ≥ first super, RNG drawn >0 | gsta-verification-harness | blocked on B2a+B2b |
 | B3 | Gate the RESIM RENDER with **G-PIXEL** (live consecutive-frame diff of resim real-TA pvr2 vs engine mirror) | region diff within tolerance on frozen frames | gsta-verification-harness | blocked on B2 |
 | B4 | Only if B1–B3 all pass: wire resim → real-TA → pvr2 as the primary tape renderer | — | flycast-internals + sprite-render | blocked |
@@ -281,6 +298,40 @@ window** to prove the run wasn't a neutral re-run. KILL = any divergence at/afte
 - **2026-08-30** — B0b: char-select DC anchor PRODUCED + CONFIRMED (`mvc2_50.state`, engine
   `atCharSelect()` read-back). ⚠ savestate-RESTORE stalls the headless render loop ⟹ B2 uses cold-boot
   MENUNAV (proven), not restore. B2 (decisive offline determinism test) kicked off.
+- **2026-08-30** — Assist poke BUILT + LIVE (maplecast session; patch had bad `@@` counts + literal-`\n`
+  escapes → applied by hand + fixed; read-back CONFIRMED `slots0/2/4=0/2/2 1/3/5=1/0/2`). Assists changed
+  the sim (clocks differ from the drifted run). ⚠ BUT spot-checks (f6000 TIME54, f8496 TIME29) show
+  **P1-favorable** (P1 all 3 alive, P2 down to Spiral/Sentinel) — the OPPOSITE of the real **P2-wins-0-2**
+  → resim LIKELY STILL DIVERGES; **assists necessary but not sufficient** → points to the deeper cross-core
+  RNG/determinism gate (B2 G-COMBAT, still unproven). Bigger-budget re-run (`--max-frames 20000`) to a clean
+  `match_end` needed to CONFIRM the actual outcome — handed to the native maplecast session (my from-here
+  launch failed on git-bash `/c`→path MSYS mangling; the resim never ran). If it diverges: localize via a
+  frame-exact B2 comparison (with assists) on a **rollback-free** tape → is the new first-divergence the
+  first super/RNG?
+- **2026-08-30** — Full-match CAPTURE window **FIXED** (root cause = a client-side `setTimeout(15000)` in
+  `capture_mirror.mjs:62`, NOT a server drop; also dropped 4/5 redundant side-channels → 1 msg = 1 frame,
+  ~5× smaller). New `tools/render-replica-poc/capture_mirror_full.mjs` → `render_ta_wire_full.zcst` = **8497
+  frames**, full match end-to-end (verified: T.Bonne vs Spiral, Cable KO'd by f6000, TIME 09 at end). ⚠
+  assist-DRIFTED (doesn't reach the real KO — P1 survives to time-over vs losing 0-2 in reality). Assist
+  patch STAGED but ⚠ **BUILD BLOCKED by this session's worktree isolation** (can't git-apply/rebuild
+  `maplecast-flycast`) → handed to Tris to run `assist_build_run.txt` in a non-isolated session.
+- **2026-08-30** — Tris chose **FIX ASSISTS → true full match**. Plan: (1) assist-type recon — sh4-re finds
+  the DC location to set `assist_type` — **RESOLVED: DC `+0x4C9`** (direct from the DC disasm; ≠ Steam `+0x4e9`,
+  don't map — both correct) with a full battle-init POKE recipe (see ledger) → flycast pokes it via a new
+  `MAPLECAST_ASSIST` env so the resim sets the tape's assist types; (2) full-match CAPTURE — flycast fixes the
+  ~15s mirror WS drop (`maplecast_mirror.cpp:1899`; keepalive / server cap / segment-stitch); (3) render the
+  FULL match → must play out to the KNOWN outcome of **59603897: P2 (Cable/Spiral/Sentinel) wins, set 0-2**
+  over P1 (Magneto/Storm/T.Bonne). Fresh-tape dense-combo blocky bodies RESOLVED = a POC-renderer limitation;
+  the tapecanvas full-VRAM renderer (`render_ta_wire.mjs` / `play_zcst.html`) renders them CLEAN, no fix needed.
+- **2026-08-30** — Baseline PUSHED (`origin/quarters-tigerbeetle`, `e9a4066`). Fresh-tape validation **DONE**:
+  pulled a real server tape (match **59603897**, 19:08, **800 rollbacks**, confirmed_in 6394 fr) from
+  `149.28.44.118:/opt/rr-server/gamestates/` → the confirmed-input replay HANDLED it: roster exact, coherent
+  combat, **clean Magneto super** (`build-headless-win/render_ta_wire_fresh.zcst`, 894 fr). Rollbacks are
+  irrelevant to the resim BY DESIGN (confirmed_in = linear forward stream → forward-only, no desync).
+  ⚠ **Seat mapping is PER-TAPE** (keyed on `local_pn`): this tape P1=seat0/P2=seat1 (local_pn=1), OPPOSITE
+  the Aug-28 clean tape (P1=seat1) — the converter must key on `local_pn`, not hardcode. OPEN: dense
+  multi-overlapping-body combo frames render blocky in the POC (bodytex VRAM churn); sprite-render
+  confirming POC-limitation vs genuine capture-gap on the tapecanvas full-VRAM renderer.
 - **2026-08-30** — Interactive WebGPU player SHIPPED: `web/tapecanvas/play_zcst.html` — fetches
   `render_ta_wire.zcst` and plays/scrubs the resim match in-browser on WebGPU (reuses the `render_ta_wire.mjs`
   decode path + `webgpu-test.html` init; len=0-robust; `?src=` overridable). Run: serve projects root
@@ -336,6 +387,30 @@ window** to prove the run wasn't a neutral re-run. KILL = any divergence at/afte
   NAOMI" claim was retracted (DC-not-NAOMI, contaminated); resim NOT PROVEN.
 - **2026-08-27** — Prior team decision (`STEAM-TAPE-RENDER-HANDOFF.md`, commit 24a084b): Path A =
   pixel-perfect target; Path B (flycast) parked NOT-PROVEN. Survives adversarial review.
+- **2026-08-30 — ⭐ RESTORE POINT (session close).** Committed as a return spot. State of play:
+  • **Render = DONE + PURE TA.** `web/tapecanvas/play_zcst.html` renders the real serverPublish TA on WebGPU
+    (king.html's exact pipeline: FrameDecoder→TAParser→pvr2) with a **60fps-paced speed control** + a
+    **RetroReceipts name overlay** (`?left=&right=`). NO prebaked sprites — the emitter/atlas path is retired.
+  • **Full-match CAPTURE fixed** (budget bug: `capture_mirror.mjs` 15s `setTimeout`; match runs ~12.7k frames;
+    `capture_mirror_full.mjs` stops on `match_end`).
+  • **Input decode is FAITHFUL (98.8%) but per-tape** — the alignment must be MEASURED; `ggpo_sim_tie` is
+    MISLEADING (Tris's tape 59604428: real offset **+1**, not the reported +6; P1=seat s0 at local_pn=0).
+    Duc's tape likely looked wrong from a bad offset. Tool: `scratchpad/build_movie_59604428.py` (offset scan).
+  • **But the resim still DRIFTS over a full match** — cross-core (DC flycast ≠ Steam). Tris's match: 12.7k
+    resim frames vs 3.8k real input frames; reaches `match_end` with the CORRECT winner (nachero/P2) but via a
+    divergent longer fight. Tris confirmed by eye ("doesn't look like how duc plays"). ⟹ **input reconstruction
+    SOLVED; the wall is cross-core determinism = the RNG.**
+  • **ROM lineage re-confirmed:** Steam = DC-lineage recompile (`__DEV_TYPE_DC__`), NOT NAOMI.
+  • **king.html clarity:** it renders LIVE TA from a running engine (no resim/determinism) — that's why it's
+    pixel-perfect; the replay player is the SAME renderer, so the render half is done.
+  • **DETERMINISM RIG we built but NEVER RAN:** `replay-kit/verify.py rng` (read-only, ~1 min — settles
+    whether the RNG is inside `blk`) and `AB.cmd` / `rrtape4.py ab <tape.rr4>` (the full A/B falsification:
+    restore anchor→replay→churn 900 random→restore→replay same→compare A==C). §2.3 already PROVED bit-identical
+    in-engine replay from a full `blk` snapshot + inputs — so faithful replay IS achievable in the matching
+    engine; the drift is the flycast cross-core mismatch.
+  **NEXT:** run `verify.py rng` + `AB.cmd` against the live Steam game to settle the RNG-determinism question
+  — decides whether faithful full-TA replay = "restore full blk + feed inputs, capture the engine's TA", or
+  whether we drive the render from the recorded state each frame (state-injection — Tris's idea, no drift).
 
 ## 7. OPEN QUESTIONS PARKING LOT
 - Does the Option-B camera focal 812.357 stay constant across a superjump? (Oracle probe

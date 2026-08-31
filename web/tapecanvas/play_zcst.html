@@ -8,7 +8,7 @@
   :root { color-scheme: dark; }
   body { font:13px/1.4 system-ui,sans-serif; background:#0b0e14; color:#dfe4ea; margin:0; padding:14px; }
   h1 { font-size:15px; margin:0 0 8px; }
-  #wrap { display:inline-block; }
+  #wrap { display:inline-block; position:relative; }
   canvas { display:block; width:960px; height:720px; image-rendering:pixelated; background:#000; border:1px solid #2b313c; border-radius:6px; }
   #bar { display:flex; align-items:center; gap:10px; margin-top:10px; }
   button { border:1px solid #3a4250; background:#1b2029; color:#cfd6df; border-radius:6px; padding:6px 14px; cursor:pointer; font-size:13px; }
@@ -19,6 +19,19 @@
   #status { margin:8px 0; color:#9fb0c3; }
   .ok { color:#5fd97a; } .bad { color:#ff6b6b; }
   .hint { color:#7c8794; font-size:11px; margin-top:6px; max-width:960px; }
+  /* RetroReceipts replay overlay */
+  #ovl { position:absolute; left:0; top:0; width:960px; height:720px; pointer-events:none;
+         font-family:"Arial Narrow","Roboto Condensed",system-ui,sans-serif; }
+  #ovl .nm { position:absolute; top:10px; padding:4px 14px; font-size:22px; font-weight:800; letter-spacing:.5px;
+             color:#fff; text-shadow:0 2px 4px #000,0 0 3px #000; white-space:nowrap; max-width:42%;
+             overflow:hidden; text-overflow:ellipsis;
+             background:linear-gradient(180deg,rgba(10,14,20,.86),rgba(10,14,20,.42)); border-radius:5px; }
+  #ovl .nm.left  { left:12px;  border-left:4px solid #ff3b30; }
+  #ovl .nm.right { right:12px; border-right:4px solid #2b8cff; text-align:right; }
+  #ovl .brand { position:absolute; left:50%; bottom:10px; transform:translateX(-50%); font-size:11px; font-weight:700;
+                letter-spacing:3px; color:#ffd24d; text-shadow:0 1px 2px #000; opacity:.9; }
+  #bar label { color:#9fb0c3; }
+  #bar select { background:#1b2029; color:#cfd6df; border:1px solid #3a4250; border-radius:5px; padding:5px 6px; }
 </style>
 </head>
 <body>
@@ -26,8 +39,14 @@
 <div id="status">initializing…</div>
 <div id="wrap">
   <canvas id="c" width="640" height="480"></canvas>
+  <div id="ovl">
+    <span class="nm left"  id="pL">P1</span>
+    <span class="nm right" id="pR">P2</span>
+    <span class="brand">RETRO RECEIPTS ▸ REPLAY</span>
+  </div>
   <div id="bar">
     <button id="play" disabled>▶ Play</button>
+    <label>speed <select id="speed"><option>0.25</option><option>0.5</option><option selected>1</option><option>2</option><option>4</option></select></label>
     <input id="scrub" type="range" min="0" max="0" value="0" step="1" disabled>
     <span id="fnum">frame — / —</span>
   </div>
@@ -53,6 +72,11 @@ const playBtn  = document.getElementById('play');
 const scrub    = document.getElementById('scrub');
 const fnum     = document.getElementById('fnum');
 const setStatus = (t, cls) => { statusEl.textContent = t; statusEl.className = cls || ''; };
+
+// ---- RetroReceipts overlay: Steam usernames per side (?left=/?right= override) ----
+{ const q = new URLSearchParams(location.search);
+  document.getElementById('pL').textContent = q.get('left')  || 'el-Tirano';
+  document.getElementById('pR').textContent = q.get('right') || 'twitch.tv\\ducvader'; }
 
 // ---- 1) WebGPU init — mirrors webgpu-test.html (R.init(canvas) + TextureManager(R.dev)) ----
 if (!navigator.gpu) { setStatus('WebGPU not available — use Chrome/Edge with WebGPU enabled.', 'bad'); throw new Error('no webgpu'); }
@@ -120,14 +144,20 @@ function seekTo(target) {
 }
 
 // ---- 5) controls ----
-let playing = false, raf = 0;
-function loop() {
+let playing = false, raf = 0, speed = 1, lastT = 0, acc = 0;
+const FRAME_MS = 1000 / 60;                       // real MvC2 speed = 60 fps, independent of monitor refresh
+const speedSel = document.getElementById('speed');
+speedSel.onchange = () => { speed = +speedSel.value; };
+function loop(t) {
   if (!playing) return;
   if (curTa >= nFrames - 1) { stop(); return; }
-  seekTo(curTa + 1);
+  if (!lastT) lastT = t;
+  acc += (t - lastT) * speed; lastT = t;
+  let n = 0;                                        // advance whole 60fps ticks elapsed (cap 8/raf so a stall can't runaway)
+  while (acc >= FRAME_MS && curTa < nFrames - 1 && n < 8) { seekTo(curTa + 1); acc -= FRAME_MS; n++; }
   raf = requestAnimationFrame(loop);
 }
-function start() { if (playing) return; playing = true; playBtn.textContent = '⏸ Pause'; if (curTa >= nFrames - 1) { seekTo(0); } raf = requestAnimationFrame(loop); }
+function start() { if (playing) return; playing = true; playBtn.textContent = '⏸ Pause'; lastT = 0; acc = 0; if (curTa >= nFrames - 1) { seekTo(0); } raf = requestAnimationFrame(loop); }
 function stop() { playing = false; playBtn.textContent = '▶ Play'; cancelAnimationFrame(raf); }
 playBtn.onclick = () => playing ? stop() : start();
 scrub.oninput = () => { stop(); seekTo(+scrub.value); };
