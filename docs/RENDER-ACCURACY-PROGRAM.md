@@ -649,6 +649,21 @@ window** to prove the run wasn't a neutral re-run. KILL = any divergence at/afte
   render ONLY real extracted assets (Tris's hard rule, no approximations). NEXT: sprite-render expert renders a real
   tape's state on the canvas (viewable demo) + the precise gap list.
 
+- **2026-08-31 (sh4-re, disasm-grounded): per-part BLEND LOCATED = it's RUNTIME PVR render-state, NOT a part field.**
+  Closes the "blend UNLOCATED" open item. The GFX2 part record carries NO blend bit; the emitter descriptor MODE
+  (`*0x8C1F9D84`) is globally FIXED at `0x02` for every 2D sprite (bodies AND cat-1-4 effects), and the submit
+  `loc_8C1244B0` (bank12:9794) resolves MODE-2 blend straight from the **runtime global register `0x8C2AA4C4`**
+  (packed src/dst, set per draw-batch/scene-fade by `loc_8c11d490`, NOT per-object). ⟹ blend CANNOT be baked offline
+  per-part (same sid draws opaque/alpha/additive depending only on the register that batch). ⚠ the current
+  `tape-adapter.mjs:282` "all cat-1-4 → additive" is WRONG — cat-1-4 sprite objs run MODE-2 = the SAME global blend
+  as bodies (alpha/opaque), NOT pure-additive; only beams/auras/hitsparks (many cat 5-13, out of scope) are truly
+  additive. **IMMEDIATE Track-A fix (implementing): add the missing ALPHA pipeline to sprite-gpu.mjs, replace 1-bit
+  `isAdd` with a 2-nibble blend byte → {opaque 1/0=pipe, alpha 4/5=alphaPipe, additive 1/1=sparkPipe, alpha-add
+  4/1=pipeAdd}, DEFAULT cat-1-4 to ALPHA (not additive) → fixes "too bright" now.** Follow-up: a capture-derived
+  gfx1 allowlist (BODYCAP pass) promotes the genuinely-additive banks — real data, not a guess. PIXEL-EXACT per-object
+  blend stays a Track-B (real-TA) / submit-hook property = the definitional ceiling. (sh4-re to re_kb-UPSERT
+  `finding:emitter_blend_is_runtime_state`.)
+
 ## 7. OPEN QUESTIONS PARKING LOT
 - Does the Option-B camera focal 812.357 stay constant across a superjump? (Oracle probe
   `0x8C26A518+0x20` + `blk+0x6990/0x6994`) — Track A7 dependency.

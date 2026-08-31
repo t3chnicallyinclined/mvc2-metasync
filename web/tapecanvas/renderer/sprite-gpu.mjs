@@ -210,6 +210,30 @@ export class SpriteGPU {
                    alpha: { srcFactor: 'one',       dstFactor: 'one', operation: 'add' } } }] },
         primitive: { topology: 'triangle-list' },
       });
+      // REGULAR-ALPHA variant of the palette pipeline (src-a / 1-src-a) — the MISSING blend
+      // (OWNED-RENDER-BUILD-SPEC "alphaPipe" build gap). MvC2's global fragment blend for
+      // sprite-class objects (cat 1-4 effects) is MODE-2 = alpha/opaque (the SAME state the
+      // bodies run), NOT pure-additive: blend is RUNTIME PVR state (sh4-re: the TSP SRC/DST
+      // is set once per list, not a per-part field). Without this pipe the wire's 0x45 (alpha)
+      // fell through to this.pipe (opaque REPLACE) and 0x01/0x41 went to pipeAdd (too bright) —
+      // the "effects look too bright" bug. dst=1-src-a composites the effect OVER instead of
+      // adding light.
+      this.alphaPipe = device.createRenderPipeline({
+        layout: device.createPipelineLayout({ bindGroupLayouts: [this.bgl] }),
+        vertex: { module: mod, entryPoint: 'vs', buffers: [{
+          arrayStride: INST_STRIDE, stepMode: 'instance', attributes: [
+            { shaderLocation: 0, offset: 0,  format: 'float32x4' },
+            { shaderLocation: 1, offset: 16, format: 'float32x4' },
+            { shaderLocation: 2, offset: 32, format: 'float32' },
+            { shaderLocation: 3, offset: 36, format: 'float32' },
+            { shaderLocation: 4, offset: 40, format: 'float32x3' },
+            { shaderLocation: 5, offset: 52, format: 'float32' },
+          ]}]},
+        fragment: { module: mod, entryPoint: 'fs', targets: [{ format: this.fmt,
+          blend: { color: { srcFactor: 'src-alpha', dstFactor: 'one-minus-src-alpha', operation: 'add' },
+                   alpha: { srcFactor: 'one',       dstFactor: 'one-minus-src-alpha', operation: 'add' } } }] },
+        primitive: { topology: 'triangle-list' },
+      });
       // hit-spark pipeline: additive blend, no palette (bindings 0,1,2)
       this.sparkBgl = device.createBindGroupLayout({ entries: [
         { binding: 0, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'float' } },
@@ -263,6 +287,16 @@ export class SpriteGPU {
         fragment: { module: lutMod, entryPoint: 'fs_lut', targets: [{ format: this.fmt,
           blend: { color: { srcFactor: 'src-alpha', dstFactor: 'one', operation: 'add' },
                    alpha: { srcFactor: 'one', dstFactor: 'one', operation: 'add' } } }] },
+        primitive: { topology: 'triangle-list' },
+      });
+      // REGULAR-ALPHA (src-a / 1-src-a) LUT variant — the exact-costume-palette twin of
+      // alphaPipe (a LUT-routed effect part gets MODE-2 alpha, not additive). See alphaPipe.
+      this.lutAlphaPipe = device.createRenderPipeline({
+        layout: device.createPipelineLayout({ bindGroupLayouts: [this.lutBgl] }),
+        vertex: { module: lutMod, entryPoint: 'vs_lut', buffers: [lutVbuf] },
+        fragment: { module: lutMod, entryPoint: 'fs_lut', targets: [{ format: this.fmt,
+          blend: { color: { srcFactor: 'src-alpha', dstFactor: 'one-minus-src-alpha', operation: 'add' },
+                   alpha: { srcFactor: 'one', dstFactor: 'one-minus-src-alpha', operation: 'add' } } }] },
         primitive: { topology: 'triangle-list' },
       });
       this.lutBuf = device.createBuffer({ size: this.maxGroups * this.LUT_PG * 16,
@@ -362,6 +396,26 @@ export class SpriteGPU {
     } catch (e) { console.error('[sprite-gpu] setSparkAtlas failed', e); }
   }
 
+  // Map a PVR blend byte (src<<4|dst) to the matching pipeline for a route (LUT vs RGB).
+  // The 4 render states MvC2 uses for these lists (sh4-re: the global TSP SRC/DST word set
+  // once per list, NOT a per-part field — so we can't bake it offline, we classify at draw):
+  //   0x10 src=ONE  dst=ZERO      -> OPAQUE / replace   (pipe / lutPipe)          bodies, opaque props
+  //   0x45 src=srcA dst=1-srcA    -> MODE-2 ALPHA       (alphaPipe / lutAlphaPipe) cat 1-4 effects DEFAULT
+  //   0x41 src=srcA dst=ONE       -> ALPHA-ADD          (pipeAdd / lutPipeAdd)     true glow/energy
+  //   0x11 src=ONE  dst=ONE       -> pure ADD           (pipeAdd / lutPipeAdd approx; genuine one/one
+  //                                                       palette pipe deferred with the gfx1 BODYCAP pass)
+  // Unknown/legacy dst==ONE -> ALPHA (safe default; corrects the old too-bright alpha-add).
+  _pipeFor(lut, blend) {
+    switch (blend & 0xff) {
+      case 0x45: return lut ? this.lutAlphaPipe : this.alphaPipe;   // regular alpha
+      case 0x41: return lut ? this.lutPipeAdd  : this.pipeAdd;      // alpha-add (src-a/one)
+      case 0x11: return lut ? this.lutPipeAdd  : this.pipeAdd;      // pure-add -> alpha-add approx (deferred)
+      case 0x10: case 0x00: return lut ? this.lutPipe : this.pipe;  // opaque / replace
+      default:   return ((blend & 0xf) === 1) ? (lut ? this.lutAlphaPipe : this.alphaPipe)
+                                              : (lut ? this.lutPipe : this.pipe);
+    }
+  }
+
   // sprites: [{charId, slot, sx,sy,sw,sh (atlas px), dx,dy,dw,dh (canvas px), flip}]
   // T: TextureManager (T._pal = live PVR palette RAM, RGBA, 1024 entries).
   render(sprites, dbg, T, sparks, effects) {
@@ -384,7 +438,13 @@ export class SpriteGPU {
     // draw calls). Cid-contiguity is NO LONGER required — that constraint only existed for
     // the old per-cid grouping. RGB and LUT keep SEPARATE instance buffers (this.inst /
     // this.idxInst), so each retains its full maxInst=512 capacity (no per-path regression).
-    const isAdd = (s) => s.blend != null && (s.blend & 0xf) === 1;
+    // BLEND BYTE (PVR src<<4|dst; codes 0=zero 1=one 4=srcA 5=invSrcA — the convention
+    // sprite-client + the wire already use). Bodies carry no blend -> OPAQUE 0x10 (unchanged:
+    // punch-through REPLACE). Effects carry the runtime PVR blend the sh4-re resolved
+    // (cat 1-4 default 0x45 = MODE-2 alpha, per tape-adapter). This replaces the old 1-bit
+    // isAdd: 0x45 (alpha) used to fall through to the OPAQUE pipe (no alphaPipe existed) and
+    // 0x01/0x41 (dst=ONE) all mapped to the too-bright additive pipeAdd.
+    const blendOf = (s) => (s.blend != null) ? (s.blend & 0xff) : 0x10;
     const routeOf = (s) => {
       const ic = this.idxChars[s.charId], lut = this.charLUT[s.charId];
       if (s.costume != null && ic && ic.bg && lut) return 'lut';   // exact costume-LUT body
@@ -471,11 +531,11 @@ export class SpriteGPU {
       const t = s.tint;
       bufData[o + 10] = t ? t[0] : 0; bufData[o + 11] = t ? t[1] : 0; bufData[o + 12] = t ? t[2] : 0;
       bufData[o + 13] = s.flipY ? 1 : 0;   // part Y-mirror (flags & 0x8000)
-      const add = isAdd(s), cost = lutRun ? (s.costume | 0) : -1;
-      if (cur && cur.lut === lutRun && cur.cid === s.charId && cur.costume === cost && cur.add === add) {
+      const blend = blendOf(s), cost = lutRun ? (s.costume | 0) : -1;
+      if (cur && cur.lut === lutRun && cur.cid === s.charId && cur.costume === cost && cur.blend === blend) {
         cur.count++;
       } else {
-        cur = { lut: lutRun, cid: s.charId, costume: cost, add, first: idx, count: 1 };
+        cur = { lut: lutRun, cid: s.charId, costume: cost, blend, first: idx, count: 1 };
         runs.push(cur);
       }
       if (lutRun) ni++; else n++;
@@ -540,16 +600,15 @@ export class SpriteGPU {
     // Draw the RUNS IN ORDER (global z/layer from the emitter). Switch pipeline / vertex
     // buffer / bind group only when they change between runs. RGB runs read this.inst
     // (palBuf via chars[cid].bg); LUT runs read this.idxInst (lutBuf via idxChars[cid].bg);
-    // isAdd -> the additive (src-alpha/ONE) variant. Because runs are emitted in the
-    // emitter's global draw order, an additive effect now paints OVER a body it overlaps
-    // (Defect #1) and a higher-layer object draws in front of a lower-layer one across
-    // owners (Defect #2), while bodies keep punch-through REPLACE (no blend on this.pipe).
+    // _pipeFor(run.blend) -> the per-run blend pipeline (opaque / alpha / alpha-add). Because
+    // runs are emitted in the emitter's global draw order, an effect now paints OVER a body it
+    // overlaps (Defect #1) and a higher-layer object draws in front of a lower-layer one across
+    // owners (Defect #2), while bodies keep punch-through REPLACE (blend 0x10 -> this.pipe).
     if (runs.length) {
       let curPipe = null, curBuf = null;
       for (const run of runs) {
         if (!run.count) continue;
-        const pipe = run.lut ? (run.add ? this.lutPipeAdd : this.lutPipe)
-                             : (run.add ? this.pipeAdd    : this.pipe);
+        const pipe = this._pipeFor(run.lut, run.blend);
         if (pipe !== curPipe) { pass.setPipeline(pipe); curPipe = pipe; }
         const buf = run.lut ? this.idxInst : this.inst;
         if (buf !== curBuf) { pass.setVertexBuffer(0, buf); curBuf = buf; }

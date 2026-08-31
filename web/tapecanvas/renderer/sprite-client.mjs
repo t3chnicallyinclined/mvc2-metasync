@@ -2232,9 +2232,25 @@ export class SpriteClient {
       const far = (o.type !== 3) && ((Math.abs(o.x - ox) + Math.abs(o.y - oy)) > 130);
       const px = far ? o.x : ox, py = far ? o.y : oy;
       const zBase = (o.type === 1) ? 1 : (o.type === 3 ? -2 : -1);
+      // CAPE/AURA Z-ORDER TIE-BREAK (bug 4: Storm's cape draws ON TOP of her intermittently).
+      // DATA (tape 59601369): an OWNED satellite that hugs its owner shares the body's EXACT
+      // draw_layer 100% of the time (1347/1347 attached owner-0 effects == slot-0's layer). At a
+      // shared layer the global per-part z-sort INTERLEAVES the satellite's parts among the body's
+      // (and, on a partZ tie, the later-emitted satellite lands in front) → the cape pops over the
+      // body. Fix: when the satellite ties its owner's layer, drop it half a bucket so the WHOLE
+      // satellite sits as one contiguous unit just BEHIND the owner body (still above layer L-1).
+      // ⚠ NEEDS sh4-re: the true front/behind of a satellite WITHIN a shared layer is the engine
+      // slot-table sub-index, which the tape does not carry. "Behind" matches the reported defect
+      // (cape-on-top = wrong) and a cape physically hanging behind the fighter; a satellite meant
+      // to sit in front of its owner at the same layer would need that sub-index to place correctly.
+      let satLayer = (o.type != null ? o.type : undefined);
+      const capeTieBehind = (typeof window === 'undefined') ? true : (window._capeTieBehind !== false);
+      if (capeTieBehind && satLayer != null && osl.draw_layer != null && osl.draw_layer !== 0xFF && satLayer === osl.draw_layer) {
+        satLayer = satLayer - 0.5;
+      }
       emitAssembly({ cid: o.cid, exx: px, eyy: py, facing: osl.facing, slot: 0, zBase,
                      engZ: (o.engZ != null ? o.engZ : undefined),   // satellite's OWN engine 1/W (node+0xE8)
-                     layer: (o.type != null ? o.type : undefined),  // DEFECT #2: satellite's OWN layer (o.type = wire layer)
+                     layer: satLayer,                                // DEFECT #2 + bug-4 tie-break (see above)
                      sclX: osl.scaleX, sclY: osl.scaleY, pal12d: osl.pal12d, pal12e: osl.pal12e,
                      blend: o.blend, fx: false }, o.sid);
     }

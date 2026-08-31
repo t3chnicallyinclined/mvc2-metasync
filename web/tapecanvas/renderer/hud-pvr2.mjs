@@ -80,8 +80,15 @@ export class HudPvr2 {
     const ta = buildHudTA(quads, order);
     const parsed = new TAParser().parse(ta, ta.length);
     const snap = synthSnap(this.W, this.H);
+    // transparentClear: the offscreen RT clears to (0,0,0,a=0) so every pixel the HUD does
+    // NOT draw stays fully transparent. Without this the RT clears to OPAQUE black (a=1) and
+    // the readback paints black over the whole 640x480 — the "HUD covers the fighters" bug
+    // that forced play_state.html/gpu.html to hide the HUD canvas. With it, the readback is a
+    // clean straight-alpha HUD sprite that alpha-composites OVER the bodies (renderHudRGBA
+    // un-premultiplies so putImageData/drawImage and manual composites are both correct).
     this.R.renderFrame(parsed, this.T, snap, this.vram,
-      { singlePass: true, noSort: true, drawOpaque: false, drawPunch: false, drawTrans: true }, this.rt);
+      { singlePass: true, noSort: true, transparentClear: true,
+        drawOpaque: false, drawPunch: false, drawTrans: true }, this.rt);
     return this.R._lastEncoder;
   }
   get colorTexture() { return this.rt.color; }
@@ -109,6 +116,7 @@ export function buildHudQuads(baseQuads, state, opts = {}) {
   const pointCol = (ss) => { for (let i = 0; i < ss.length; i++) if (slots[ss[i]] && slots[ss[i]].active) return i; return 0; };
   const sideTeam = [TEAM_INNER[pointCol(P1_SLOTS)], TEAM_INNER[pointCol(P2_SLOTS)]];
   const out = [];
+  const barPos = {};   // `${side}_${row}` -> { fill: outIdx, chip: outIdx }  (for the draw-order swap)
   for (const bq of baseQuads) {
     const q = { x: bq.x.slice(), y: bq.y.slice(), u: bq.u.slice(), v: bq.v.slice(),
                 col: bq.col.map(c => parseInt(c, 16) >>> 0),
@@ -119,7 +127,16 @@ export function buildHudQuads(baseQuads, state, opts = {}) {
       const slot = bq.side === 0 ? p1[Math.min(2, bq.row)] : p2[Math.min(2, bq.row)];
       const e = slots[slot];
       if (e) {
-        const frac = Math.max(0, Math.min(1, (e.hp | 0) / HP_MAX));
+        // TWO-LAYER LIFE BAR (real capture, hud_quads.json): the yellow→team gradient
+        // 'fill' quad (col 0xfefefe00 outer / 0xfefe3ffe team inner) = CURRENT health;
+        // the solid-red 'chip' quad (col 0xfffe0000) = the RECOVERABLE / recently-lost
+        // health BEHIND it. Tape-confirmed red_hp >= hp always (8086 red>hp, 0 red<hp over
+        // this tape), so the red 'chip' is the WIDER background and the yellow 'fill' the
+        // narrower foreground. Size each by its OWN quantity (chip=red_hp, fill=hp) — the
+        // old code sized BOTH by hp so red covered yellow 1:1 = the "only red shows" bug.
+        const hpFrac  = Math.max(0, Math.min(1, (e.hp  | 0) / HP_MAX));
+        const redFrac = Math.max(0, Math.min(1, (e.red | 0) / HP_MAX));
+        const frac = (bq.sub === 'chip') ? redFrac : hpFrac;
         let minx = q.x[0], maxx = q.x[0]; for (let k = 1; k < 4; k++) { if (q.x[k] < minx) minx = q.x[k]; if (q.x[k] > maxx) maxx = q.x[k]; }
         if (bq.side === 0) { const inner = minx + (maxx - minx) * frac; for (let k = 0; k < 4; k++) if (q.x[k] > minx + 0.5) q.x[k] = inner; }
         else { const inner = maxx - (maxx - minx) * frac; for (let k = 0; k < 4; k++) if (q.x[k] < maxx - 0.5) q.x[k] = inner; }
@@ -133,8 +150,21 @@ export function buildHudQuads(baseQuads, state, opts = {}) {
           r += (255 - r) * fl; g += (255 - g) * fl; b += (255 - b) * fl;
           q.col[k] = (((c & 0xff000000) >>> 0) | ((r & 255) << 16) | ((g & 255) << 8) | (b & 255)) >>> 0; }
       }
+      const key = `${bq.side}_${bq.row}`;
+      (barPos[key] || (barPos[key] = {}))[bq.sub] = out.length;
     }
     out.push(q);
+  }
+  // DRAW ORDER: the yellow 'fill' (current hp) must composite OVER the red 'chip'
+  // (recoverable loss). In the baked capture 'fill' precedes 'chip' in the quad list, so the
+  // translucent painter's pass draws chip LAST = on top = the all-red bug. Swap the two array
+  // slots per (side,row) so 'chip' draws first and 'fill' lands over it — leaves every
+  // frame/portrait/name quad untouched (out index == baseQuads index; only the pair swaps).
+  for (const k in barPos) {
+    const b = barPos[k];
+    if (b.fill != null && b.chip != null && b.fill < b.chip) {
+      const t = out[b.fill]; out[b.fill] = out[b.chip]; out[b.chip] = t;
+    }
   }
   return out;
 }
@@ -197,8 +227,15 @@ export async function renderHudRGBA(hud, quads, order = [0, 1, 2, 3]) {
   const out = new Uint8Array(w * h * 4); const bgra = fmt.startsWith('bgra');
   for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
     const s = y * bpr + x * 4, dd = (y * w + x) * 4;
-    if (bgra) { out[dd] = m[s + 2]; out[dd + 1] = m[s + 1]; out[dd + 2] = m[s]; out[dd + 3] = m[s + 3]; }
-    else { out[dd] = m[s]; out[dd + 1] = m[s + 1]; out[dd + 2] = m[s + 2]; out[dd + 3] = m[s + 3]; }
+    let r, g, b, a;
+    if (bgra) { r = m[s + 2]; g = m[s + 1]; b = m[s]; a = m[s + 3]; }
+    else { r = m[s]; g = m[s + 1]; b = m[s + 2]; a = m[s + 3]; }
+    // UN-PREMULTIPLY: the transparent-clear translucent pass leaves rgb PREMULTIPLIED by the
+    // accumulated coverage (rgb = color*a). Divide back out so `out` is TRUE straight alpha —
+    // the shape putImageData()/drawImage() and the manual gate composite both assume. Opaque
+    // HUD pixels (a=255) are unchanged; only fractional-alpha edges are corrected. a=0 stays 0.
+    if (a > 0 && a < 255) { const inv = 255 / a; r = Math.min(255, r * inv); g = Math.min(255, g * inv); b = Math.min(255, b * inv); }
+    out[dd] = r; out[dd + 1] = g; out[dd + 2] = b; out[dd + 3] = a;
   }
   return out;
 }

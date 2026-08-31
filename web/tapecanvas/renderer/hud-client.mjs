@@ -20,7 +20,7 @@
 // frame/bars/names come from this match-independent slab; portraits are injected per tape char.
 // ============================================================================
 
-import { HudPvr2, buildHudQuads, injectPortraits, renderHudRGBA } from './hud-pvr2.mjs';
+import { HudPvr2, buildHudQuads, injectPortraits, renderHudRGBA } from './hud-pvr2.mjs?v=bars-cape1';
 
 const P1_SLOTS = [0, 2, 4], P2_SLOTS = [1, 3, 5];
 const TEAM_HEX = ['#fe3ffe', '#00fe00', '#00bffe'];   // C1/C2/C3 for the meter tint

@@ -45,6 +45,7 @@
 <div id="stage">
   <canvas id="cstage" width="640" height="480"></canvas>
   <canvas id="cbody"  width="640" height="480"></canvas>
+  <canvas id="chud"   width="640" height="480"></canvas>
   <div id="ovl">
     <span class="nm left"  id="pL">PLAYER 1</span>
     <span class="nm right" id="pR">PLAYER 2</span>
@@ -58,6 +59,7 @@
   <label>speed <select id="speed"><option>0.25</option><option>0.5</option><option selected>1</option><option>2</option><option>4</option></select></label>
   <label><input type="checkbox" id="fx" checked> effects</label>
   <label><input type="checkbox" id="hitflash" checked> hit-flash</label>
+  <label><input type="checkbox" id="hud" checked> HUD</label>
   <button id="shot">save PNG</button>
 </div>
 <div id="log"></div>
@@ -71,23 +73,40 @@ const START    = +(qs.get('frame') || 870);
 const logEl = document.getElementById('log');
 const log = (m) => { logEl.textContent += m + '\n'; logEl.scrollTop = logEl.scrollHeight; };
 
-// player labels (?left=/?right= override; tape carries char-id teams, not display names)
-document.getElementById('pL').textContent = qs.get('left')  || 'PLAYER 1';
-document.getElementById('pR').textContent = qs.get('right') || 'PLAYER 2';
+// player labels — OPT-IN only (?left=/?right=). The real HUD now shows the roster via DM01
+// portraits, so the demo "PLAYER 1/2" chrome is hidden by default to keep the life bars clear;
+// pass ?left=NAME&right=NAME to caption a shared replay.
+{ const nmL = qs.get('left'), nmR = qs.get('right');
+  const pL = document.getElementById('pL'), pR = document.getElementById('pR');
+  if (nmL) pL.textContent = nmL; else pL.style.display = 'none';
+  if (nmR) pR.textContent = nmR; else pR.style.display = 'none'; }
 
-let SpriteClient, SpriteGPU, TapeAdapter, loadTapeJson, StageClient, PVR2Renderer;
+let SpriteClient, SpriteGPU, TapeAdapter, loadTapeJson, StageClient, PVR2Renderer, HudClient;
 try {
-  const V = '?v=sharp2';   // same module rev the headless gate + gpu.html use
+  const V = '?v=bars-cape1';   // bug1 two-layer life bar (hud-pvr2) + bug4 cape z-order (sprite-client)
   ({ SpriteClient } = await import(`${RENDERER}/sprite-client.mjs${V}`));
   ({ SpriteGPU }    = await import(`${RENDERER}/sprite-gpu.mjs${V}`));
   ({ StageClient }  = await import(`${RENDERER}/stage-client.mjs${V}`));
   ({ PVR2Renderer } = await import(`${RENDERER}/pvr2-renderer.mjs${V}`));
+  ({ HudClient }    = await import(`${RENDERER}/hud-client.mjs${V}`));
   ({ TapeAdapter, loadTapeJson } = await import(`./tape-adapter.mjs${V}`));
 } catch (e) { log('module import FAILED: ' + e.message); throw e; }
 
 const cstage = document.getElementById('cstage');
 const cbody  = document.getElementById('cbody');
+const chud   = document.getElementById('chud');
+const hctx   = chud.getContext('2d');
 const STAGE  = new StageClient(new URL('./stages/', import.meta.url).href); window._stage = STAGE;
+
+// FULL HUD (real pvr2 rasterizer): DM01 portraits + angled life bars from the tape's hp/red,
+// TIME/meters/combo from the real FONT.BIN. Renders to its OWN offscreen RT with a TRANSPARENT
+// clear (hud-pvr2 transparentClear) and composites straight-alpha OVER the bodies — the #chud
+// canvas sits above #cbody but only the bar/frame/portrait pixels are opaque, so the fighters
+// show through. ⚠ HUD base MUST be absolute — new URL(rel,'./hud/') throws (base must be
+// absolute) and the throw is swallowed -> silent monogram fallback. Build it from import.meta.url.
+const HUD = new HudClient(new URL('./hud/', import.meta.url).href); window._hud = HUD;
+try { await HUD.load(); log('HUD assets loaded (portraits + font + VRAM)'); }
+catch (e) { log('HUD load failed: ' + e.message); }
 
 const SC = new SpriteClient(); window._sc = SC;
 const SG = new SpriteGPU();    window._sg = SG;
@@ -109,6 +128,7 @@ else try {
   gpuOK = SG.init(device, cbody, 'premultiplied');    // transparent clear -> 3D stage shows through
   stageR = new PVR2Renderer(); stageR.initShared(cstage, device);
   STAGE.attachDevice(device); window._stageR = stageR;
+  if (HUD.ready) HUD.initGpu(device);                 // route the HUD through the SAME device's pvr2 (own offscreen RT)
   log(gpuOK ? 'WebGPU ready' : 'WebGPU init failed — bodies will not draw');
 } catch (e) { log('no WebGPU: ' + e.message); }
 
@@ -149,6 +169,12 @@ function renderFrame(fi) {
   if (STAGE_ID >= 0 && row && stageR && STAGE.ready) { STAGE.setCamB(row[20], row[21]); STAGE.render(stageR); }
   const drawList = SC.buildAssemblyDrawList(640, 480);
   if (SG.ok) { try { SG.render(drawList, {}, null, [], null); } catch (e) { log('SG.render: ' + e.message); } }
+  // FULL HUD overlay (transparent) OVER the bodies. renderState is async + self-throttling
+  // (drops overlapping frames -> shows the last completed frame; safe to fire per tick). When
+  // off, clear the overlay so no stale HUD lingers.
+  const hudOn = document.getElementById('hud').checked;
+  if (hudOn && HUD.ready && HUD.hud) HUD.renderState(hctx, AD.buildHudState(fi));
+  else hctx.clearRect(0, 0, chud.width, chud.height);
   document.getElementById('fno').textContent =
     `idx ${fi} · game ${row ? row[0] : '?'} · sprites ${drawList.length} · fx ${(AD._lastObjs && AD._lastObjs.drawn) | 0}`;
 }
@@ -174,10 +200,11 @@ document.getElementById('play').onclick = (e) => {
 scrub.oninput = () => { if (!playing) renderFrame(+scrub.value); };
 document.getElementById('fx').onchange = () => renderFrame(+scrub.value);
 document.getElementById('hitflash').onchange = () => renderFrame(+scrub.value);
+document.getElementById('hud').onchange = () => renderFrame(+scrub.value);
 document.getElementById('shot').onclick = () => {
   const c = document.createElement('canvas'); c.width = 640; c.height = 480;
   const x = c.getContext('2d'); x.fillStyle = '#000'; x.fillRect(0, 0, 640, 480);
-  x.drawImage(cstage, 0, 0); x.drawImage(cbody, 0, 0);
+  x.drawImage(cstage, 0, 0); x.drawImage(cbody, 0, 0); x.drawImage(chud, 0, 0);
   const a = document.createElement('a'); a.download = `pathA_f${scrub.value}.png`; a.href = c.toDataURL('image/png'); a.click();
 };
 

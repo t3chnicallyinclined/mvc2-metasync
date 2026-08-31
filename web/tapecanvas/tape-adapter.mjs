@@ -269,17 +269,23 @@ export class TapeAdapter {
       }
       // SPRITE-CLASS EFFECT (cat 1-4). Renders through the SAME emitter (GFX2, sel=sid)
       // part-assembly as a body (NOT the FX_CID whole-quad, NOT a 0x0CED directory), own-origin
-      // (obj sx/sy), additive. Resolve the atlas from gfx2 (bankMap) else the owner's char.
+      // (obj sx/sy). Resolve the atlas from gfx2 (bankMap) else the owner's char.
       diag.effect++;
       if (!this.effectsOn || this.objRecBytes < 20) { diag.gated++; continue; }   // dark on 0.3.28 / when off
       const cid = this.resolveFxAtlas(o);
       if (cid == null) { diag.ownerless++; continue; }     // ownerless super-flash w/o a bankMap entry
       objects.push({
         // isEffect:false -> the emitter renders it as a part-assembly (the sprite-class path),
-        // keyed by cid's atlas + sel=sid; blend 0x1 -> sprite-gpu isAdd -> pipeAdd (src-alpha/ONE).
+        // keyed by cid's atlas + sel=sid.
+        // BLEND: cat 1-4 sprite objects run MvC2's GLOBAL fragment blend = MODE-2 ALPHA (0x45,
+        // src-a/1-src-a) — the SAME state as the bodies, NOT pure additive (sh4-re: blend is
+        // runtime PVR TSP state, set per-list, not a bakeable per-part field). The old blend:0x1
+        // forced sprite-gpu's additive pipe (src-a/ONE) => effects washed out TOO BRIGHT. Default
+        // to 0x45; honor an explicit per-object blend if a future capture ships one (o.blend).
+        // (Genuinely-additive beams/auras/hitsparks need a gfx1 BODYCAP allowlist — follow-up.)
         cid, sid: masked, type: o.layer, x: o.sx, y: o.sy,
         xflip: (o.owner < 6 ? (sc.slot[o.owner].facing ? 1 : 0) : (o.face ? 1 : 0)),
-        isEffect: 0, blend: 0x1, additive: true, objScale,
+        isEffect: 0, blend: (o.blend != null ? (o.blend & 0xff) : 0x45), additive: false, objScale,
         gfx1: o.gfx1 >>> 0, gfx2: o.gfx2 >>> 0, owner: o.owner,
         hotDx: 0, hotDy: 0, hasHot: false, engZ: undefined,
       });
@@ -381,9 +387,13 @@ export async function loadTapeJson(url) {
   return TapeAdapter.fromJsonObject(await resp.json());
 }
 
-// Build from a pre-decoded tape.json object. objs entries are arrays of 9 (0.3.28) or 10
-// (0.3.29, +gfx2) elements: [sid,sx,sy,zx,face,cat,owner,layer,gfx1(,gfx2)]. Optional
-// t.fxBankMap { "0x..gfx2": char_id } supplies the handle->atlas calibration.
+// Build from a pre-decoded tape.json object. objs entries are arrays of 9 (0.3.28), 10
+// (0.3.29, +gfx2) or 11 (+blend) elements:
+//   [sid,sx,sy,zx,face,cat,owner,layer,gfx1(,gfx2(,blend))]
+// The optional 11th element `blend` is the PVR blend byte (src<<4|dst) when a future capture
+// resolves the runtime TSP state per object; absent -> undefined -> tape-adapter defaults
+// cat 1-4 to 0x45 (MODE-2 alpha). Optional t.fxBankMap { "0x..gfx2": char_id } supplies the
+// ownerless-effect handle->atlas calibration.
 TapeAdapter.fromJsonObject = function (t) {
   const byFrame = new Map();
   let recBytes = 16;
@@ -393,6 +403,7 @@ TapeAdapter.fromJsonObject = function (t) {
       return {
         sid: a[0], sx: a[1], sy: a[2], zx: a[3], face: a[4], cat: a[5], owner: a[6], layer: a[7],
         gfx1: (a[8] >>> 0), gfx2: ((a[9] || 0) >>> 0), gfx: (a[8] >>> 0),
+        blend: (a.length >= 11 && a[10] != null) ? (a[10] & 0xff) : undefined,
       };
     }));
   }
