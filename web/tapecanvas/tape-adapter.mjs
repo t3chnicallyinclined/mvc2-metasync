@@ -88,6 +88,15 @@ export function decodeObjsBytes(bytes, recBytes = 16) {
         o.gfx = dv.getUint32(off + 12, true) >>> 0;     // 0.3.28 single (wrong) gfx = Dat_Pal
         o.gfx1 = o.gfx; o.gfx2 = 0;
       }
+      if (recBytes >= 32) {                             // 0.3.32 FULL EFFECT WIRE tail (12 B)
+        o.isEffect  = dv.getUint8(off + 20) ? 1 : 0;   // blk+0x6CE8 value-test (3D-class)
+        o.blend     = dv.getUint8(off + 21);           // sprite-gpu nibble (0x11 add / 0x45 alpha / 0x00 opaque)
+        o.drawn     = dv.getUint8(off + 22);           // H+0x170 draw gate
+        o.atimer    = dv.getUint8(off + 23);           // H+0x186 anim-cell countdown
+        o.zy        = dv.getUint16(off + 24, true);    // scaleY ×4096 (H+0x134)
+        o.effect_key = dv.getUint16(off + 26, true);   // in-bank gfx low16 (else gfx1&0xffff)
+        o.depth     = dv.getFloat32(off + 28, true);   // H+0x12C (DC node+0xE8) byte-exact z
+      }
       objs.push(o);
       off += recBytes;
     }
@@ -133,9 +142,10 @@ export class TapeAdapter {
     });
   }
 
-  // 0.3.29 objs records carry gfx2; the tape's objs_enc descriptor names it. Detect 16 vs 20.
+  // objs_enc descriptor names the record: 0.3.32 adds is_effect/blend (32 B), 0.3.29 gfx2 (20 B), else 16 B.
   static detectObjRecBytes(rawTape) {
     const enc = String(rawTape.objs_enc || '');
+    if (/is_effect|32B/i.test(enc)) return 32;   // 0.3.32 FULL EFFECT WIRE
     return /gfx2/i.test(enc) ? 20 : 16;
   }
 
@@ -355,19 +365,22 @@ export class TapeAdapter {
       // => alpha (0x45). Honors a reader-shipped o.blend/o.isEffect when present. `additive` routes
       // the emitter's ADDITIVE branch (buildEmitterDrawList) so the glow accumulates.
       const blend = this.effectBlendByte(o);
-      const additive = (blend & 0x0f) === 1;               // dst==ONE nibble => additive pipe
+      // is_effect (reader 0.3.32, shared-Effect-Poly node) routes to the FX_CID whole-quad
+      // (_emitEffectQuad), NOT the caster-atlas emitAssembly path — so `additive` must be FALSE for
+      // it (buildEmitterDrawList checks o.additive BEFORE o.isEffect). On a 20B tape o.isEffect is
+      // undefined -> !undefined = true -> additive unchanged (no 20B regression).
+      const additive = !(o.isEffect) && ((blend & 0x0f) === 1);   // dst==ONE nibble => additive pipe
       if (additive) diag.additive++;
       objects.push({
-        // isEffect:false -> the emitter renders it as a part-assembly (the sprite-class path),
-        // keyed by cid's atlas + sel=sid. effect_key = gfx1 low-16 (== DC node+0x15c & 0xFFFF, the
-        // live server's effect_key) — carried so the FX-atlas path can resolve it if a reader ever
-        // sets o.isEffect for a shared-Effect-Poly node.
+        // isEffect:0 -> the emitter renders it as a part-assembly (sprite-class path), keyed by cid's
+        // atlas + sel=sid. isEffect:1 (reader 0.3.32) -> _emitEffectQuad(FX_CID) via effect_key. Prefer
+        // the reader's real effect_key/depth when present (0.3.32), else gfx1 low-16 / undefined (20B).
         cid, sid: masked, type: o.layer, x: o.sx, y: o.sy,
         xflip: (o.owner < 6 ? (sc.slot[o.owner].facing ? 1 : 0) : (o.face ? 1 : 0)),
         isEffect: (o.isEffect ? 1 : 0), blend, additive, objScale,
-        effect_key: (o.gfx1 >>> 0) & 0xffff,
+        effect_key: (o.effect_key != null ? (o.effect_key & 0xffff) : ((o.gfx1 >>> 0) & 0xffff)),
         gfx1: o.gfx1 >>> 0, gfx2: o.gfx2 >>> 0, owner: o.owner,
-        hotDx: 0, hotDy: 0, hasHot: false, engZ: undefined,
+        hotDx: 0, hotDy: 0, hasHot: false, engZ: (o.engZ != null ? o.engZ : undefined),
       });
       diag.drawn++;
     }
@@ -490,13 +503,18 @@ TapeAdapter.fromJsonObject = function (t) {
   let recBytes = 16;
   for (const [frame, objs] of (t.objs || [])) {
     byFrame.set(frame, objs.map(a => {
-      if (a.length >= 10) recBytes = 20;
+      if (a.length >= 13) recBytes = 32; else if (a.length >= 10) recBytes = 20;
       return {
         sid: a[0], sx: a[1], sy: a[2], zx: a[3], face: a[4], cat: a[5], owner: a[6], layer: a[7],
         gfx1: (a[8] >>> 0), gfx2: ((a[9] || 0) >>> 0), gfx: (a[8] >>> 0),
+        // 0.3.32 FULL EFFECT WIRE: [10]=blend [11]=is_effect [12]=drawn, then extras
+        // [13]=zy [14]=effect_key [15]=depth. Absent on 16/20B -> undefined -> interim classifier.
         blend: (a.length >= 11 && a[10] != null) ? (a[10] & 0xff) : undefined,
         isEffect: (a.length >= 12 && a[11] != null) ? (a[11] ? 1 : 0) : undefined,
         drawn: (a.length >= 13 && a[12] != null) ? (a[12] | 0) : undefined,
+        zy: (a.length >= 14 && a[13] != null) ? (a[13] | 0) : undefined,
+        effect_key: (a.length >= 15 && a[14] != null) ? (a[14] & 0xffff) : undefined,
+        engZ: (a.length >= 16 && a[15] != null) ? +a[15] : undefined,
       };
     }));
   }

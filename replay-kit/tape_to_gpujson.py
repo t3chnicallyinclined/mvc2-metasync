@@ -23,10 +23,12 @@ def load_tape(path):
     return json.loads(raw)
 
 def decode_objs(tape):
-    # 0.3.28 record = 16 B (single gfx); 0.3.29 = 20 B (gfx1 + gfx2). Detect from objs_enc.
+    # Record: 16 B (0.3.28, single gfx); 20 B (0.3.29, gfx1+gfx2); 32 B (0.3.32, +12 B effect wire).
+    # Detect from objs_enc. Pure transport unpack — no render decisions here.
     if 'objs' not in tape or not tape['objs']:
         return []
-    rec = 20 if 'gfx2' in str(tape.get('objs_enc', '')) else 16
+    enc = str(tape.get('objs_enc', ''))
+    rec = 32 if ('is_effect' in enc or '32B' in enc) else (20 if 'gfx2' in enc else 16)
     data = gzip.decompress(base64.b64decode(tape['objs']))
     out, off, n = [], 0, len(data)
     while off + 6 <= n:
@@ -38,7 +40,17 @@ def decode_objs(tape):
             zx = struct.unpack_from('<H', data, off + 6)[0]
             face, cat, owner, layer = struct.unpack_from('<BBBB', data, off + 8)
             gfx1 = struct.unpack_from('<I', data, off + 12)[0]
-            if rec >= 20:
+            if rec >= 32:
+                gfx2 = struct.unpack_from('<I', data, off + 16)[0]
+                is_effect, blend, drawn, atimer = struct.unpack_from('<BBBB', data, off + 20)
+                zy, effect_key = struct.unpack_from('<HH', data, off + 24)
+                depth = struct.unpack_from('<f', data, off + 28)[0]
+                # Element order KEEPS [10]=blend [11]=is_effect [12]=drawn (fromJsonObject contract);
+                # extras [13]=zy [14]=effect_key [15]=depth carried for over-capture. atimer dropped
+                # (render-unused; still on the binary wire for future use).
+                objs.append([sid, sx, sy, zx, face, cat, owner, layer, gfx1, gfx2,
+                             blend, is_effect, drawn, zy, effect_key, depth])
+            elif rec >= 20:
                 gfx2 = struct.unpack_from('<I', data, off + 16)[0]
                 objs.append([sid, sx, sy, zx, face, cat, owner, layer, gfx1, gfx2])
             else:

@@ -795,6 +795,38 @@ window** to prove the run wasn't a neutral re-run. KILL = any divergence at/afte
   extend the FX atlas offline → additive via a gfx1 heuristic → render the CURRENT tape's pillar. ⚠ sh4-re at build:
   Steam palette base H+0x1B8 vs H+0x1A8; whether sel 0x260 is single-tile.
 
+- **2026-08-31 — both Tris steers CHECKED (sprite-render): (a) webgpu-test.html cockpit has NO reusable tape-effect
+  fix; (b) the REAL pillar sids ARE multi-tile → the live bake IS necessary; (c) the ?fxown HACK is REMOVED (data
+  fxBankMap).** (a) `maplecast-flycast/web/webgpu-test.html` is the LIVE TA-mirror renderer — its `_fxDecode` reads
+  effect texels from the WIRE's VRAM (which the tape lacks); FX_CID is skipped on the bridge; the state/emitter path
+  imports the SAME SpriteClient/knobs `play_state.html` uses. NO hidden state-path effect fix (cited :613,843-850,
+  1030,1055,1183). (b) The ACTUAL pillar demon sids **0x3d(64×64)/0x3e(16×32)/0x3f(32×32)** (+0x30/0x31/0x28/0x2a/
+  0x2c0/0x2d3/0x2da/0x64) are single-PART but that part is a MULTI-TILE block whose LZSS back-refs underflow the
+  runtime scratch `0x0CE60000` → offline = approximate/recognizable, NOT pixel-faithful ⟹ the live `MAPLECAST_PARTDUMP`
+  bake IS required. Tris's "separate sids might be single-tile" = FALSIFIED per-sid. (c) The demons are genuinely
+  OWNERLESS global effects — gfx1 bank is NOT char-specific (0x15→{42,44,53}, 0x17→{49,53}, 0x1b→{20,42,44}) and the
+  9 ownerless values NEVER appear owner-attributed anywhere in the tape → UNATTRIBUTABLE from the 20B tape; general
+  fix = the 0.3.32 reader owner/is_effect WIRE. INTERIM SHIPPED (data, not code): a per-tape `fxBankMap` (9 values→cid
+  53) in `tape_59601369.json` (gitignored) — `resolveFxAtlas` consumes it → column renders WITHOUT `?fxown` (drawn
+  11→33, ownerless→0, additive 33, brightPx +40%). ⟹ PIXEL-PERFECT step = the staged live PL35 PARTDUMP bake (maplecast
+  session + Inferno play; the PPM carries the live palette so no pal-row RE needed) → rip `--realparts` → scp → `?v=`
+  bump → `webgpu-test.html` DIFF tint = yellow gate.
+
+- **2026-08-31 — DECISIVE effect-layer diagnosis (sprite-render): Storm/Magneto supers RENDER (owner-attributed); the
+  inconsistency = the 90% additive-allowlist gap + the ownerless class + multi-tile cells ⟹ COMMIT to the reader
+  0.3.32 upgrade + re-record + per-char bakes.** Storm Lightning Storm (fi1451, 35/35 nodes, ALL owner=42 → PL2A,
+  CLEAN bright lightning) + Magneto Magnetic Tempest (fi2995, 31/31, ALL owner=44 → PL2C, energy bursts — Tempest is a
+  burst-swarm, NOT literal columns) are 100% OWNER-attributed, 0 ownerless, 0 gated → they render (`_supers_montage.png`).
+  The ownerless class (owner=255) is specific to Blackheart's demon-swarm + global flashes. ⚠ THE inconsistency source
+  (CONFIRMED): the gfx1-bank additive allowlist {0x15,0x17,0x1b} covers only 90% (16,291/17,958) — **1,667 nodes render
+  DIM ALPHA** (banks 0x19=1095 Blackheart, 0x16=411 Magneto, 0x0d=136, 0x0b=25); a hand-tuned bank list CANNOT be made
+  correct without the real blend (guessing over-brightens alpha effects). This IS the per-frame/per-character "lost
+  effect" Tris saw. ⟹ CONFIRMED GENERAL FIX = 3 parts, 2 need the reader wire + RE-RECORD: (a) per-object BLEND byte
+  (0.3.32 `computeObjectBlend`) → the dim/bright inconsistency; (b) is_effect + resolved owner (0.3.32) → ownerless
+  attribution (kills the per-tape `fxBankMap`); (c) per-char multi-tile PARTDUMP bakes (PL2A/PL2C/PL35…, offline, NO
+  reader) → pixel-perfect cells (all super cells are multi-tile). DO NOT hand-expand the additive allowlist. The
+  0.3.32 reader edits (staged earlier) are CONFIRMED REQUIRED, not optional.
+
 ## 7. OPEN QUESTIONS PARKING LOT
 - Does the Option-B camera focal 812.357 stay constant across a superjump? (Oracle probe
   `0x8C26A518+0x20` + `blk+0x6990/0x6994`) — Track A7 dependency.
