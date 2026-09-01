@@ -231,16 +231,21 @@ export class TapeAdapter {
   effectBlendByte(o) {
     if (o.isEffect) return 0x11;                                    // (1) reader 3D-class effect-poly -> additive
     const bank = (o.gfx1 >>> 8) & 0xff;                             // high byte of the Dat_GFX1 handle
-    // (2) ADDITIVE OVERRIDE via the gfx1-bank allowlist (additive is not in any reader field on Steam).
-    //     window._fxRealBlendOnly=true disables it (A/B: raw reader byte = flat/opaque supers).
     const realOnly = (typeof window !== 'undefined' && window._fxRealBlendOnly);
-    if (!realOnly && TapeAdapter.FX_ADDITIVE_BANKS.has(bank)) return 0x11;
-    // (3) real reader blend byte (0.3.32): opaque 0x00 / alpha 0x45 for NON-additive-bank nodes.
-    if (o.blend != null) return o.blend & 0xff;
-    // (4) INTERIM (no reader byte, 20B tapes): blanket A/B or allowlist.
+    if (o.blend != null) {
+      // (2) TRUST the reader's OPAQUE (0x00). A reader-opaque node is a SOLID object (Sentinel's
+      //     DRONES, projectile bodies) — NOT an additive glow. Forcing it additive both mis-blends it
+      //     AND drops it onto the additive emit path (which loses the owner's costume palette -> the
+      //     "drones purple, body black" bug). Only promote a reader-ALPHA (0x45) in a known energy bank
+      //     to additive (a dim-alpha there is a mis-rendered glow; additive is not a reader field on
+      //     Steam). realOnly disables the promotion for A/B.
+      if (!realOnly && (o.blend & 0xff) === 0x45 && TapeAdapter.FX_ADDITIVE_BANKS.has(bank)) return 0x11;
+      return o.blend & 0xff;                                        // opaque 0x00 / alpha 0x45 as the reader classified
+    }
+    // (3) INTERIM (no reader byte, 20B tapes): blanket A/B or the gfx1-bank additive allowlist.
     if (typeof window !== 'undefined' && window._fxAdditive !== undefined)
       return window._fxAdditive ? 0x11 : 0x45;
-    return TapeAdapter.FX_ADDITIVE_BANKS.has(bank) ? 0x11 : 0x45;
+    return (!realOnly && TapeAdapter.FX_ADDITIVE_BANKS.has(bank)) ? 0x11 : 0x45;
   }
 
   _verifySchema(schemaStr) {

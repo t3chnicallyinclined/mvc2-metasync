@@ -2292,6 +2292,15 @@ export class SpriteClient {
                      sclX: (eScl != null ? eScl : (osl ? osl.scaleX : 1)),
                      sclY: (eScl != null ? eScl : (osl ? osl.scaleY : 1)),
                      pal12d: (osl ? osl.pal12d : 0), pal12e: (osl ? osl.pal12e : 0),
+                     // PALETTE FIX (Sentinel drones): an OWNED solid satellite shares the caster's
+                     // costume palette. Pass the owner's costume so it routes to the exact costume-LUT
+                     // path (idx atlas, SAME 2048xH layout as _parts.png) with the owner's body bank
+                     // (bodyBank + costume*8) — matching the BODY instead of the RGB-baked default bank
+                     // (bank 0). Without this the drone drew PL34 bank-0 (purple) while the body drew
+                     // costume-3 bank-24. Only when the caster body is live (osl); else RGB fallback.
+                     // window._noSatCostume=true restores the pre-fix RGB path (A/B before/after).
+                     costume: ((typeof window === 'undefined' || !window._noSatCostume)
+                               && osl && osl.costume != null ? (osl.costume | 0) : undefined),
                      blend: o.blend, fx: false }, o.sid);
     }
 
