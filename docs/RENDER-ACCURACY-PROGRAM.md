@@ -845,6 +845,48 @@ window** to prove the run wasn't a neutral re-run. KILL = any divergence at/afte
   consistent effects (attribution + opaque/alpha); additive is a permanent (imperceptible) heuristic; cells = the
   last bake step. URLs: `play_state.html?tape=./tape.json&frame=` 2205 (Storm) / 3679 (Sentinel) / 403 (Magneto).
 
+- **2026-08-31 — Sentinel drone palette FIXED (Tris-judged GOOD live).** Owned solid satellites
+  (drones/capes/projectiles) now inherit the owner's costume (`sprite-client.mjs` emitAssembly passes
+  `osl.costume` → costume-LUT bank `bodyBank+costume*8`), so they match the body instead of the RGB-baked
+  default (bank 0 = purple). Commit 2f7a807. ⚠ METHOD NOTE: the agent's first montage used a mismatched
+  frame — `frame=N` in the harnesses/URL is a ROW INDEX (`applyFrame(fi)=this.frames[fi]`), while objframes
+  are keyed by the frame COUNTER (starts 1175; row index = counter−1175). Verify renders at the right index.
+- **2026-08-31 — REMAINING GAP TO PIXEL-PERFECT (Path A), grounded:** (1) **CHOPPY** = online rollback smear
+  (~2% predicted-then-corrected teleports) — exact fix = reader 0.3.33 confirmed-only capture (needs re-record);
+  interim = render-side de-jitter. (2) **HIT/SPARK EFFECTS** = multi-tile cells garble (offline-decode dead-end →
+  per-char PARTDUMP bakes) + ownerless globals (owner=255) dropped unless uniquely attributable. (3) **HUD** =
+  ALREADY BUILT (hud-client/hud-pvr2, real portraits+FONT.BIN+VRAM in `hud/`); if not showing it's a bug not a
+  build. (4) **CELLS** = the recurring per-char PARTDUMP bake. Two non-isolated levers: reader 0.3.33 (choppy+HUD
+  list-0x0B+ownerless, one capture) and the maplecast PARTDUMP bakes (cells). Render-side items doable in-worktree.
+
+- **2026-08-31 — HUD OVERLAYS (TIME badge / LEVEL-hyper gauge / name plates) MISSING = top-band-only capture
+  (Tris-diagnosed, code-confirmed).** The real HUD = 48 list-0x0B nodes, ALL dumped (`replay-kit/hud_bank_dump.json`
+  + `hud_bank/*.bin` via `hud_bankdump.py`) — the ASSETS are complete. But the RENDER is driven by a pvr2 draw-FIFO
+  snapshot (`hud/hud_quads.json`, source "maplecast _hud_cap_def hudq_tail.bin", 104 quads, y-span **44–112 only**) —
+  the TOP BAND (life bars) alone. The center ∞TIME (x~320,y~30), the bottom LEVEL/hyper gauge (y~440), and clean
+  name plates are drawn in the SAME pvr2 HUD pass but were NOT in that snapshot. `hud-client.mjs:16,134-135` already
+  documents it: "NOT in the top-band HUDQ capture … Needs one full-band (BAND_H=480) HUDQ capture with a running
+  timer + built meter + active combo." ⟹ can't assemble from the node dump (element screen positions are computed by
+  each node's native `update_fn`, NOT stored — `bar_geom`=[0,0,0]); the FIFO capture is the only source of real
+  positions. FIX = one **full-band HUD FIFO capture** (maplecast, live, mid-match). No render-side shortcut respects
+  render-only-real-assets. CONSOLIDATION — the remaining Path-A ceiling = **2 live-capture sessions**: (A) maplecast →
+  full-band HUD capture + per-char PARTDUMP cell bakes (two birds); (B) RetroReceipts-agent → reader 0.3.33 (exact
+  choppy confirmed-capture + the 68 ownerless effects). Both non-isolated; this worktree is fenced out of both.
+
+- **2026-08-31 — HUD overlays are a CAPTURE dependency, NOT a render-side gap (proven; no fabrication).** Attempted
+  to assemble the timer/level/name overlays from the dumped Steam bank; FALSIFIED by 3 tests: (1) `hud_bank/*.bin`
+  regions are NODE DESCRIPTORS (`{count=1,type=3,bar_geom,ptrs}`), NOT GFX1 cells — the pixels sit behind the gfx ptr
+  in LZSS-compressed GFX1 = the SAME `0x0CE60000` scratch-window offline dead-end as body/effect cells. (2) FONT.BIN
+  has ONLY `digit_0..9`+`bar_white` — no letters, no ∞ glyph → text LABELS uncomposable from font. (3) decodable
+  `hud_vram.bin` is the top band `[0x400000,0x500000)` y≤112 — excludes the bottom LEVEL gauges. ⟹ NO render change
+  made (render-only-real-assets). IMPORTANT REFRAME: for a RANKED tape the FUNCTIONAL HUD is ~complete from real
+  assets — life bars+health, frame, DM01 portraits, name plates, **timer COUNTDOWN digits** (ranked TIME is a
+  countdown, **∞ is TRAINING-only**), level number, meter fill, combo — the digit overlays are FONT.BIN 2D (in-browser,
+  headless-unverifiable → Tris must eyeball). RESIDUAL needing the full-band capture: decorative TIME/LEVEL label+badge
+  sprites, per-tape name-plate text (the "SLE" artifact = baked capture-roster name), exact bottom-gauge geometry.
+  Capture spec: `rip_hud_quads.py` against a **full-band (BAND_H=480)** HUD TA capture mid-match (running timer, built
+  meter, active combo; ∞ badge for training tapes) — same method that baked the top-band bars, real texAddrs+coords.
+
 ## 7. OPEN QUESTIONS PARKING LOT
 - Does the Option-B camera focal 812.357 stay constant across a superjump? (Oracle probe
   `0x8C26A518+0x20` + `blk+0x6990/0x6994`) — Track A7 dependency.
