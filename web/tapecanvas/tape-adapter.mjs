@@ -39,7 +39,7 @@ export const P2_SLOTS = [1, 3, 5];
 // 0.3.28 frame schema field indices. VERIFIED against the tape's own schema string in the
 // constructor; a mismatch throws loudly rather than silently mis-reading a column.
 const F = {
-  frame: 0, hp: 4, p1_meter: 7, p2_meter: 8, meter_fill: 9, combo_dealt: 10,
+  frame: 0, hp: 4, vx: 12, vy: 13, combo_dealt: 10, p1_meter: 7, p2_meter: 8, meter_fill: 9,
   red_hp: 14, facing: 15, hitstun: 16, drawn: 17, sid: 18, atimer: 19,
   sx: 24, sy: 25, zx: 26, zy: 27, flash: 28, glow: 29, layer: 30, timer: 31,
   p2_meter_fill: 32, round_no: 33,
@@ -269,6 +269,27 @@ export class TapeAdapter {
     return best;
   }
 
+  // ROLLBACK-SMEAR DE-JITTER (INTERIM, window._deJitter DEFAULT ON). A rollback-heavy online tape
+  // stores some PREDICTED frames whose per-slot screen pos SPIKES one frame then REVERSES the next
+  // (the catch-up teleport the render replays as stutter). Detect a one-frame outlier — a jump
+  // beyond one-frame world motion (tape vx/vy at F.vx/F.vy) that reverses on the next frame — and
+  // interpolate across it. A REAL move continues same-direction (dPrev and dNext share sign) so it
+  // is never touched. Stateless (uses fi-1/fi/fi+1) => scrub-safe. The EXACT fix is reader 0.3.33
+  // confirmed-only capture; this is the on-existing-tapes interim. Returns [sx,sy] for slot s.
+  _deJitterPos(fi, s, sx0, sy0) {
+    if (typeof window !== 'undefined' && window._deJitter === false) return [sx0, sy0];
+    const prev = this.frames[fi - 1], next = this.frames[fi + 1], cur = this.frames[fi];
+    if (!prev || !next || !cur) return [sx0, sy0];
+    const psx = prev[F.sx], psy = prev[F.sy], nsx = next[F.sx], nsy = next[F.sy];
+    const vx = cur[F.vx], vy = cur[F.vy];
+    if (!psx || !psy || !nsx || !nsy) return [sx0, sy0];
+    const fix = (c, p, n, v) => {
+      const dP = c - p, dN = n - c, thr = 3 * Math.abs(v || 0) + 8;   // world motion + camera/round slack
+      return (Math.abs(dP) > thr && Math.abs(dN) > thr && (dP > 0) !== (dN > 0)) ? (p + n) / 2 : c;
+    };
+    return [fix(sx0, psx[s], nsx[s], vx ? vx[s] : 0), fix(sy0, psy[s], nsy[s], vy ? vy[s] : 0)];
+  }
+
   // Write frame `fi` into a SpriteClient (or a SpriteClient-shaped object with slot[6]).
   //   opts.load(sc, charId) — lazy atlas loader (sc.loadAsmChar emitter / sc.loadChar whole-sprite).
   //   opts.now             — timestamp for sl.t (default performance.now()/0).
@@ -292,7 +313,8 @@ export class TapeAdapter {
       sl.char_id = cid;
       sl.facing = face[s] | 0;
       sl.palette = 0;
-      sl.screen_x = sx[s]; sl.screen_y = sy[s]; sl.pos_x = sx[s];
+      const [djx, djy] = this._deJitterPos(fi, s, sx[s], sy[s]);   // rollback-smear de-jitter (INTERIM)
+      sl.screen_x = djx; sl.screen_y = djy; sl.pos_x = djx;
       const rawSid = sid[s] | 0;
       sl.sprite_id = rawSid & 0x7fff;                 // GFX2[sid & 0x7FFF]
       sl.sid_xform = (rawSid & 0x8000) ? 1 : 0;
