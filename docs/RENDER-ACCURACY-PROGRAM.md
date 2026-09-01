@@ -827,6 +827,24 @@ window** to prove the run wasn't a neutral re-run. KILL = any divergence at/afte
   reader) → pixel-perfect cells (all super cells are multi-tile). DO NOT hand-expand the additive allowlist. The
   0.3.32 reader edits (staged earlier) are CONFIRMED REQUIRED, not optional.
 
+- **2026-08-31 — 0.3.32 REAL-WIRE VERIFIED on a live ranked tape (match 59607511): attribution WIN, additive
+  assumption CORRECTED.** First 32B ranked capture (VERSION 0.3.32, recBytes=32, 18,647 effect nodes). (a) **OWNER
+  attribution EXCELLENT — 99.6%** (owner H+0x28), ownerless-dropped=0 on both rendered supers (Storm fi2205, Sentinel
+  fi3679) — the reader owner field fixes the drop for owned effects. ⚠ MATCH-DEPENDENT: ownerless-GLOBAL effects
+  (Blackheart Inferno demons) still ship owner=255 (the reader kept H+0x28, added NO global-effect resolution) →
+  still need the allowlist/fxBankMap; this roster had none. (b) **blend byte = 80% opaque / 20% alpha / 0% ADDITIVE**;
+  **is_effect=1 is 0.0%** (the `blk+0x6CE8` value-test is DEAD on Steam sprite-class — the recompile handle ≠ 0x0CED
+  ptr) so `computeObjectBlend` never returns additive. ⟹ ⚠⚠ PLAN CORRECTION: the reader blend byte CANNOT supply
+  additive brightness — per-object additive is a RUNTIME PVR register (`0x8C2AA4C4`) absent from Steam RAM; NO reader
+  field delivers it. Additive stays the gfx1-bank ALLOWLIST heuristic (kept as an override in `effectBlendByte`) — the
+  definitional ceiling of reconstruct-from-state; only Track-B real-TA gives exact per-object additive. FORTUNATELY
+  additive-vs-opaque is visually IMPERCEPTIBLE over dark backgrounds (A/B brightPx within 0.5%), and the reader marks
+  the big energy banks (0x17=10,162) OPAQUE=bright → the reader byte's real value = (i) the opaque/alpha split that
+  KILLS the dim-flicker + (ii) the 99.6% attribution. (c) CELLS still approximate (Storm garbles, Sentinel clean) →
+  per-char PARTDUMP bakes still required. 20B tapes re-verified unchanged. NET: 0.3.32 delivers bright+attributed+
+  consistent effects (attribution + opaque/alpha); additive is a permanent (imperceptible) heuristic; cells = the
+  last bake step. URLs: `play_state.html?tape=./tape.json&frame=` 2205 (Storm) / 3679 (Sentinel) / 403 (Magneto).
+
 ## 7. OPEN QUESTIONS PARKING LOT
 - Does the Option-B camera focal 812.357 stay constant across a superjump? (Oracle probe
   `0x8C26A518+0x20` + `blk+0x6990/0x6994`) — Track A7 dependency.
