@@ -1013,7 +1013,7 @@ struct CapBuf { ID3D11Buffer* buf; const char* tag; UINT used; };
 static CapBuf g_capBufs[12];
 static int    g_nCapBufs = 0;
 static volatile LONG g_bufDumps = 0;
-static LONG MAX_BUF_DUMPS = 6;   // raised to cover a burst; see D3DCAP_BURST
+static LONG MAX_BUF_DUMPS = 6;   // per BURST, not per session; see D3DCAP_BURST
 
 // `used` is the highest byte any draw this frame reads from the buffer. Dumping only that prefix is
 // what keeps a burst on disk: the vertex buffer is 2 MiB and a frame touches ~220 KB of it.
@@ -1041,7 +1041,13 @@ static void dumpCapturedBuffers(IDXGISwapChain* sc, unsigned frame) {
     // reference; leaking them once per frame exhausts the device and crashes the game (observed on
     // character select, which notes far more textures than a match does).
     if (!g_nCapBufs) { endFrameTex(); return; }
-    if (InterlockedIncrement(&g_bufDumps) > MAX_BUF_DUMPS) { releaseCapBufs(); endFrameTex(); return; }
+    if (InterlockedIncrement(&g_bufDumps) > MAX_BUF_DUMPS) {
+        static bool warned = false;
+        if (!warned) { warned = true;
+            logf("[buf] ⚠ dump budget %ld exhausted -- later frames get an inventory with NO VERTEX "
+                 "DATA and the packer will reject them", MAX_BUF_DUMPS); }
+        releaseCapBufs(); endFrameTex(); return;
+    }
 
     ID3D11Device* dev = nullptr;
     ID3D11DeviceContext* ctx = nullptr;
@@ -1369,7 +1375,7 @@ static HRESULT STDMETHODCALLTYPE hkPresent(IDXGISwapChain* sc, UINT si, UINT fla
             --g_burstLeft;
             if (!openFrame(g_frame + 1)) g_burstLeft = 0;
         }
-    } else if (InterlockedExchange(&g_armDraws, 0)) {
+    } else if (InterlockedExchange(&g_armDraws, 0) && !(g_burst > 1 && g_burstDone)) {
         // ⚠⚠ THE BURST COUNTDOWN IS ARMED HERE AND NOWHERE ELSE.
         // An earlier edit put these three lines in the CONTINUATION branch above, inside
         // `if (g_burstLeft)`. That is circular: nothing else ever set g_burstLeft, so it stayed 0,
@@ -1380,6 +1386,12 @@ static HRESULT STDMETHODCALLTYPE hkPresent(IDXGISwapChain* sc, UINT si, UINT fla
             g_burstFirst = g_frame + 1;
             g_burstGot = 0;
             g_burstLeft = g_burst > 1 ? g_burst - 1 : 0;
+            // ⚠ THE DUMP BUDGET IS PER BURST, NOT PER SESSION.
+            // It was a running total, so once a run had recorded MAX_BUF_DUMPS frames every later
+            // frame wrote an inventory with NO VERTEX DATA -- 589 such frames in one run, and the
+            // packer rejects every one of them. The budget exists to stop a runaway filling the
+            // disk, which is a per-burst concern; reset it whenever a burst starts.
+            if (g_burst > 1) InterlockedExchange(&g_bufDumps, 0);
         }
     }
 

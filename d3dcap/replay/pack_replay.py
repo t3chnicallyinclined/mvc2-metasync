@@ -107,6 +107,13 @@ def main():
     print("vertex buffer %s: %d bytes" % (vb_ptr, len(vb)))
 
     # ── textures: dedupe by pointer, resolve to a dump, ASSERT COVERAGE ──────────────────────────
+    # Frames of this capture that came BEFORE this one, newest first. A texture written once for the
+    # whole burst lives under the frame number that first sampled it.
+    earlier_frames = sorted(
+        (int(os.path.basename(f)[6:-7]) for f in glob.glob(os.path.join(CAP, "frame_*.ndjson"))
+         if os.path.getsize(f) and int(os.path.basename(f)[6:-7]) <= int(a.frame)),
+        reverse=True)
+
     tex_index = OrderedDict()
     missing = Counter()
     for d in scene:
@@ -125,15 +132,23 @@ def main():
             # over a perfectly correct stage. It read like a shading bug for two rounds.
             # "pointer#generation" is the identity on captures from 2026-09-01 onward; older ones
             # have no "#" and no `_v` suffix, so both forms are accepted.
+            # ⚠ NAME THE FILE, DO NOT GLOB FOR IT. With the frame number pinned the filename is fully
+            # determined, and a burst leaves ~55,000 files in the capture directory -- one glob per
+            # texture per frame is a full directory scan each time, which turned packing a 300-frame
+            # sequence from seconds into hours.
+            # A texture generation may legitimately have been written on an EARLIER frame of the same
+            # burst: the version table lives for the whole session, so a texture is written once per
+            # content generation, not once per frame that samples it.
             if "#" in p:
                 ptr, ver = p.split("#", 1)
-                pat = "tex_%s_%dx%d_f%d_%s_v%s.bin" % (a.frame, t["w"], t["h"], t["fmt"], ptr, ver)
+                name = "tex_%%s_%dx%d_f%d_%s_v%s.bin" % (t["w"], t["h"], t["fmt"], ptr, ver)
             else:
-                pat = "tex_%s_%dx%d_f%d_%s.bin" % (a.frame, t["w"], t["h"], t["fmt"], p)
-            hits = glob.glob(os.path.join(CAP, pat))
-            if len(hits) > 1:
-                sys.exit("texture %s matches %d dumps in frame %s -- ambiguous, refusing to guess"
-                         % (p, len(hits), a.frame))
+                name = "tex_%%s_%dx%d_f%d_%s.bin" % (t["w"], t["h"], t["fmt"], p)
+            hits = [os.path.join(CAP, name % a.frame)] if os.path.exists(
+                os.path.join(CAP, name % a.frame)) else []
+            if not hits:
+                hits = [x for x in (os.path.join(CAP, name % f) for f in earlier_frames)
+                        if os.path.exists(x)][-1:]
             if not hits:
                 missing[t["fmt"]] += 1
                 continue

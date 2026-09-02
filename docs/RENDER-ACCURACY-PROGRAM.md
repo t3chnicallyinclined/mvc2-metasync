@@ -1937,3 +1937,32 @@ calls, which without a buffer is thousands of write syscalls per frame.
 frame is a full GPU pipeline flush per captured frame. The fix is a staging ring mapped N frames
 later. It is worth maybe 1-5 ms a frame — real, but an order of magnitude below what the filesystem
 was costing, so it waits for a measurement rather than a guess.
+
+### It worked — and the log says the disk is no longer the bottleneck
+
+```
+[burst] 180/300 frames (741 draws, 166 textures, 0 MB queued to disk)
+[burst] COMPLETE: 300 consecutive frames from 2845
+[burst] COMPLETE: 300 consecutive frames from 3146
+```
+
+**Three complete 300-frame bursts, with the writer queue at 0 MB throughout.** The async writer keeps
+up comfortably; the filesystem is out of the frame path. The game still runs slowly during a burst,
+but that is now the per-draw instrumentation and the GPU sync, not I/O — a different problem with
+different fixes.
+
+Two things that run finding, both silent failures:
+
+* **The dump budget was per SESSION.** `MAX_BUF_DUMPS` is a running total, so once a run had recorded
+  that many frames every later frame wrote an inventory with **no vertex data** — 589 such frames in
+  this run, every one of which the packer rejects. Of 895 captured frames only 306 were complete. The
+  budget exists to stop a runaway filling the disk, which is a per-burst concern, so it now resets
+  when a burst arms — and exhausting it logs a warning instead of quietly dropping the geometry.
+* **`pack_replay.py` globbed the capture directory per texture.** A burst leaves ~55,000 files there,
+  so packing a 300-frame sequence meant tens of thousands of full directory scans. With the frame
+  number pinned the filename is fully determined, so it is an exact `os.path.exists` now — one frame
+  went from unusable to 0.3 s. A texture generation may legitimately live under an EARLIER frame of
+  the same burst (the session-wide version table writes it once), so there is a fallback that looks
+  back through the burst's own frames.
+
+Usable result from the run: **246 consecutive complete frames, 2574..2819 — 4.1 seconds of game time.**
