@@ -172,6 +172,33 @@ def main():
         if odd:
             print('  NOTE: angles other than 0x8000 present %s -- the general rotation formula is specified but unexercised' % odd)
 
+    # 10. TAPE v5: the world-space class (System-A nodes + interned polygon-list objects)
+    if t.get('anodes'):
+        ab = b64gz(t['anodes']); astride = int(t.get('anodes_stride', 96)); off = 0; fr_n = 0; nodes_n = 0
+        lists = Counter(); objs_ref = set()
+        while off + 6 <= len(ab):
+            fr = struct.unpack_from('<I', ab, off)[0]; n = struct.unpack_from('<H', ab, off + 4)[0]; off += 6
+            for _ in range(n):
+                if off + astride > len(ab):
+                    fail('anodes stream truncated'); break
+                lists[ab[off]] += 1; oi = struct.unpack_from('<H', ab, off + 84)[0]
+                if oi != 0xFFFF: objs_ref.add(oi)
+                off += astride; nodes_n += 1
+            fr_n += 1
+        ob = b64gz(t.get('aobjs', '')) if t.get('aobjs') else b''
+        n_objs = struct.unpack_from('<H', ob, 0)[0] if len(ob) >= 2 else 0
+        tcws = Counter(); o2 = 2; k = 0
+        while o2 + 4 <= len(ob) and k < n_objs:
+            ln = struct.unpack_from('<I', ob, o2)[0]; body = ob[o2 + 4:o2 + 4 + ln]; o2 += 4 + ln; k += 1
+            if len(body) >= 0x18 + 0x10:
+                tcws['%08X' % struct.unpack_from('<I', body, 0x18 + 0x0C)[0]] += 1
+        print('v5 world-space: %d frames, %d nodes (%.1f/frame), lists %s, %d objects (%d referenced), TCWs %s'
+              % (fr_n, nodes_n, nodes_n / max(1, fr_n), dict(sorted(lists.items())), n_objs, len(objs_ref), dict(tcws.most_common(8))))
+        if nodes_n and not n_objs:
+            fail('world-space nodes present but no objects were read -- the +0xA0 pointer chase failed')
+    else:
+        print('no world-space stream (tape_ver < 5)')
+
     # 7. v2 wire unchanged
     if t.get('objs'):
         ob = b64gz(t['objs'])

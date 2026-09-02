@@ -123,6 +123,67 @@ export function decodeNodesBytes(bytes, stride = 44) {
   return byFrame;
 }
 
+// ⭐ TAPE v5 -- the SYSTEM-A (world-space) class: shadows, 1P/2P markers, super glows, hail chunks,
+// HUD, stage props. Per frame: [u32 frame, u16 count, count x 96 B {u8 list, u8 pad[3], u32 flags,
+// f32[16] matrix (column-major 4x4; its row-major 3x4 transpose is Steam's CBWorld, byte-exact),
+// f32[3] colour, u16 obj (index into aobjs, 0xFFFF none), u16 pad, u64 model ptr}].
+export function decodeANodes(bytes, stride = 96) {
+  const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const byFrame = new Map();
+  let off = 0;
+  while (off + 6 <= bytes.length) {
+    const frame = dv.getUint32(off, true); off += 4;
+    const count = dv.getUint16(off, true); off += 2;
+    const out = [];
+    for (let i = 0; i < count && off + stride <= bytes.length; i++) {
+      const m = new Float32Array(16);
+      for (let k = 0; k < 16; k++) m[k] = dv.getFloat32(off + 8 + k * 4, true);
+      out.push({
+        list: bytes[off], flags: dv.getUint32(off + 4, true), matrix: m,
+        colour: [dv.getFloat32(off + 72, true), dv.getFloat32(off + 76, true), dv.getFloat32(off + 80, true)],
+        obj: dv.getUint16(off + 84, true), model: dv.getBigUint64(off + 88, true),
+      });
+      off += stride;
+    }
+    byFrame.set(frame, out);
+  }
+  return byFrame;
+}
+
+// the interned polygon-list objects `obj` indexes: [u16 count, count x (u32 len, bytes)]. Each is
+// the node's DC-TA list: 0x18 header, then records of a 0x50 header (u32 PCW, ISP, TSP, TCW --
+// the TCW names the texture -- ..., i32 payload_size @+0x4C) and 32-byte vertices x y z nx ny nz u v.
+export function decodeAObjs(bytes) {
+  const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const out = [];
+  if (bytes.length < 2) return out;
+  const n = dv.getUint16(0, true);
+  let off = 2;
+  for (let i = 0; i < n && off + 4 <= bytes.length; i++) {
+    const len = dv.getUint32(off, true); off += 4;
+    const body = bytes.subarray(off, off + len); off += len;
+    const recs = [];
+    let q = 0x18;
+    while (q + 0x50 <= body.length) {
+      const bv = new DataView(body.buffer, body.byteOffset + q, 0x50);
+      const pcw = bv.getInt32(0, true);
+      if (pcw >= 0) break;
+      const size = bv.getInt32(0x4C, true);
+      const pay = body.subarray(q + 0x50, q + 0x50 + size);
+      const verts = [];
+      for (let v = 8; v + 32 <= pay.length; v += 32) {
+        const f = new Float32Array(pay.buffer.slice(pay.byteOffset + v, pay.byteOffset + v + 32));
+        verts.push({ x: f[0], y: f[1], z: f[2], nx: f[3], ny: f[4], nz: f[5], u: f[6], v: f[7] });
+      }
+      recs.push({ pcw: bv.getUint32(0, true), isp: bv.getUint32(4, true), tsp: bv.getUint32(8, true),
+                  tcw: bv.getUint32(12, true), verts });
+      q += 0x50 + size;
+    }
+    out.push({ bytes: body, recs });
+  }
+  return out;
+}
+
 // the palette table `pal` indexes into: N x 32 B ARGB4444 (16 colours), first-seen order.
 export function decodePals(bytes) {
   const out = [];
@@ -229,6 +290,9 @@ export class TapeAdapter {
       // v3 streams, when the tape carries them. Both are gunzipped by the caller, like objs.
       nodesByFrame: rawTape.nodesBytes ? decodeNodesBytes(rawTape.nodesBytes, rawTape.nodesStride || 44) : new Map(),
       pals: rawTape.palsBytes ? decodePals(rawTape.palsBytes) : [],
+      // v5: world-space nodes + their polygon-list objects (rendered through the vs_world path)
+      anodesByFrame: rawTape.anodesBytes ? decodeANodes(rawTape.anodesBytes, rawTape.anodesStride || 96) : new Map(),
+      aobjs: rawTape.aobjsBytes ? decodeAObjs(rawTape.aobjsBytes) : [],
       stage_id: rawTape.stage_id,
     });
   }
