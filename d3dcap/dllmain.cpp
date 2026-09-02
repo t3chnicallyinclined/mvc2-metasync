@@ -81,7 +81,8 @@ static void logf(const char* fmt, ...) {
 
 // forward declarations; all defined further down in this file.
 static void noteBuf(ID3D11Buffer* b, const char* tag);
-static void noteTex(ID3D11Resource* r);
+static unsigned noteTexVersioned(ID3D11DeviceContext* c, ID3D11Resource* r);
+static void markTexDirty(ID3D11Resource* r);
 static void noteRT(ID3D11Resource* r);
 static const char* moduleOf(void* p);
 
@@ -141,6 +142,9 @@ static HRESULT STDMETHODCALLTYPE hkMap(ID3D11DeviceContext* c, ID3D11Resource* r
                                        D3D11_MAP type, UINT flags, D3D11_MAPPED_SUBRESOURCE* mp) {
     HRESULT hr = oMap ? oMap(c, r, sub, type, flags, mp) : E_FAIL;
     if (SUCCEEDED(hr) && r && mp && mp->pData && sub == 0) {
+        // A texture mapped for writing is about to change, so anything a later draw samples from it
+        // is NOT what an earlier draw saw. See the stale-texture note above noteTexVersioned.
+        if (type != D3D11_MAP_READ) markTexDirty(r);
         D3D11_RESOURCE_DIMENSION dim = D3D11_RESOURCE_DIMENSION_UNKNOWN;
         r->GetType(&dim);
         if (dim == D3D11_RESOURCE_DIMENSION_BUFFER) {
@@ -194,6 +198,7 @@ static PFN_UpdateSubresource oUpdateSub = nullptr;
 
 static void STDMETHODCALLTYPE hkUpdateSub(ID3D11DeviceContext* c, ID3D11Resource* r, UINT sub,
                                           const D3D11_BOX* box, const void* src, UINT rp, UINT dp) {
+    if (r && src) markTexDirty(r);
     if (r && src && sub == 0) {
         D3D11_RESOURCE_DIMENSION dim = D3D11_RESOURCE_DIMENSION_UNKNOWN;
         r->GetType(&dim);
@@ -321,16 +326,18 @@ static void dumpDraw(ID3D11DeviceContext* ctx, const char* kind, UINT count, UIN
         if (i) fprintf(g_out, ",");
         if (!srv[i]) { fprintf(g_out, "null"); continue; }
         ID3D11Resource* res = nullptr; srv[i]->GetResource(&res);
-        if (res) noteTex(res);
+        // A pointer alone is not an identity for a texture: the game rewrites textures mid-frame, so
+        // the pointer must be qualified by which GENERATION of its content this draw sampled.
+        unsigned ver = res ? noteTexVersioned(ctx, res) : 0;
         ID3D11Texture2D* t2 = nullptr;
         if (res) res->QueryInterface(__uuidof(ID3D11Texture2D), (void**)&t2);
         if (t2) {
             D3D11_TEXTURE2D_DESC td = {}; t2->GetDesc(&td);
-            fprintf(g_out, "{\"p\":\"%p\",\"w\":%u,\"h\":%u,\"fmt\":%d,\"mips\":%u}",
-                    (void*)res, td.Width, td.Height, (int)td.Format, td.MipLevels);
+            fprintf(g_out, "{\"p\":\"%p#%u\",\"w\":%u,\"h\":%u,\"fmt\":%d,\"mips\":%u}",
+                    (void*)res, ver, td.Width, td.Height, (int)td.Format, td.MipLevels);
             t2->Release();
         } else {
-            fprintf(g_out, "{\"p\":\"%p\"}", (void*)res);
+            fprintf(g_out, "{\"p\":\"%p#%u\"}", (void*)res, ver);
         }
         if (res) res->Release();
         srv[i]->Release();
@@ -702,35 +709,121 @@ static void installCreationHooks(ID3D11Device* dev) {
 }
 
 // -- TEXTURE CAPTURE ------------------------------------------------------------------------------
-// Descs alone cannot be diffed. ~1100 of 1250 scene draws sample ONE 256x256 page, so the deduped
-// set per frame is small. Dumped at end-of-frame like the buffers, keyed by resource pointer.
-static ID3D11Texture2D* g_capTex[320];   // a real match frame binds ~189 distinct textures; 64 silently truncated
-static int g_nCapTex = 0;
+// -- TEXTURE CAPTURE, VERSIONED ------------------------------------------------------------------
+// ⚠⚠ 2026-09-01, THE STALE-TEXTURE BUG. The first version noted each bound texture by pointer and
+// snapshotted it ONCE, at Present, exactly the way the vertex buffer is handled. That is wrong for
+// precisely the reason the Present-time CONSTANT-BUFFER snapshot was wrong (see the note above
+// hkMap): the game REWRITES textures during a frame, so a Present-time read hands every draw the
+// LAST content the object ever held. The vertex buffer survives that treatment only because the game
+// APPENDS to it -- a property that does not generalise across resource types, and we generalised it
+// anyway.
+//
+// Measured on frame 4261 before the fix: of the 123 character draws, 8 were pixel-exact and six were
+// 100% wrong on every pixel they owned. Searching all 123 dumped index tiles for one that reproduces
+// those draws found nothing above 8%, so the content they sampled was simply not in the capture. On
+// screen the characters came out as scattered sprite shards over a correct stage.
+//
+// Fix: watch the two paths a texture is written through -- Map/Unmap and UpdateSubresource, the same
+// two the constant buffers needed -- and at each DRAW snapshot any bound texture that is new or has
+// been written since its last snapshot. The snapshot is a GPU-side CopyResource into a staging
+// texture, which does NOT stall the frame; the staging textures are Mapped and written out at
+// Present, when the GPU is done with them anyway. Each draw records "ptr#version", so no draw can be
+// handed content from an upload that happened after it.
+struct TexVer {
+    ID3D11Resource*  res;      // identity: the pointer the draw record prints
+    ID3D11Texture2D* tex;      // the same object, held with a reference
+    unsigned ver;
+    bool snapped;
+    bool dirty;
+};
+static TexVer g_texVer[512];
+static int g_nTexVer = 0;
 
-static void noteTex(ID3D11Resource* r) {
+struct TexSnap { ID3D11Texture2D* stg; ID3D11Resource* res; unsigned ver; };
+static TexSnap g_texSnap[768];
+static int g_nTexSnap = 0;
+static unsigned g_texWrites = 0, g_texRewrites = 0;
+static ID3D11Device* g_texDev = nullptr;
+
+static bool isDumpableTex(DXGI_FORMAT f);
+static UINT texBytesPerPixel(DXGI_FORMAT f);
+
+static void markTexDirty(ID3D11Resource* r) {
     if (!r) return;
-    if (g_nCapTex >= 320) {
-        // Never truncate silently -- that is how the 2048x1024 scene RT went missing from a frame
-        // with 189 distinct textures while the array was 64 entries.
-        static bool warned = false;
-        if (!warned) { warned = true; logf("[tex] ⚠ capture array FULL (320) -- textures are being dropped"); }
+    D3D11_RESOURCE_DIMENSION dim = D3D11_RESOURCE_DIMENSION_UNKNOWN;
+    r->GetType(&dim);
+    if (dim != D3D11_RESOURCE_DIMENSION_TEXTURE2D) return;
+    ++g_texWrites;
+    for (int i = 0; i < g_nTexVer; ++i) {
+        if (g_texVer[i].res != r) continue;
+        // A rewrite of a texture some draw has ALREADY sampled is the case that used to corrupt the
+        // capture silently. Count it so the log says whether this frame was affected at all.
+        if (g_texVer[i].snapped && !g_texVer[i].dirty) ++g_texRewrites;
+        g_texVer[i].dirty = true;
         return;
     }
-    ID3D11Texture2D* t = nullptr;
-    if (FAILED(r->QueryInterface(__uuidof(ID3D11Texture2D), (void**)&t)) || !t) return;
-    for (int i = 0; i < g_nCapTex; ++i) if (g_capTex[i] == t) { t->Release(); return; }
-    g_capTex[g_nCapTex++] = t;   // keeps the QI reference
+}
+
+// Returns the content generation this draw is sampling. Snapshots first, if needed.
+static unsigned noteTexVersioned(ID3D11DeviceContext* c, ID3D11Resource* r) {
+    if (!r) return 0;
+    int slot = -1;
+    for (int i = 0; i < g_nTexVer; ++i) if (g_texVer[i].res == r) { slot = i; break; }
+    if (slot < 0) {
+        if (g_nTexVer >= 512) {
+            static bool warned = false;
+            if (!warned) { warned = true; logf("[tex] ⚠ version table FULL (512) -- textures dropped"); }
+            return 0;
+        }
+        ID3D11Texture2D* t = nullptr;
+        if (FAILED(r->QueryInterface(__uuidof(ID3D11Texture2D), (void**)&t)) || !t) return 0;
+        slot = g_nTexVer++;
+        g_texVer[slot].res = r;          // the QI reference on `tex` keeps this pointer valid
+        g_texVer[slot].tex = t;
+        g_texVer[slot].ver = 0;
+        g_texVer[slot].snapped = false;
+        g_texVer[slot].dirty = true;     // never snapshotted, so it needs one
+    }
+    if (!g_texVer[slot].dirty) return g_texVer[slot].ver;
+    if (g_texVer[slot].snapped) ++g_texVer[slot].ver;   // a new generation of this texture's content
+
+    ID3D11Texture2D* t = g_texVer[slot].tex;
+    D3D11_TEXTURE2D_DESC d = {};
+    t->GetDesc(&d);
+    if (isDumpableTex(d.Format) && d.Width <= 4096 && d.Height <= 4096 && d.SampleDesc.Count == 1
+        && g_nTexSnap < 768) {
+        if (!g_texDev) c->GetDevice(&g_texDev);
+        D3D11_TEXTURE2D_DESC sd = d;
+        sd.Usage = D3D11_USAGE_STAGING;
+        sd.BindFlags = 0;
+        sd.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+        sd.MiscFlags = 0;
+        ID3D11Texture2D* stg = nullptr;
+        if (g_texDev && SUCCEEDED(g_texDev->CreateTexture2D(&sd, nullptr, &stg)) && stg) {
+            // GPU-side copy only. Mapping here would sync the CPU to the GPU 700 times a frame.
+            c->CopyResource(stg, t);
+            g_texSnap[g_nTexSnap].stg = stg;
+            g_texSnap[g_nTexSnap].res = r;
+            g_texSnap[g_nTexSnap].ver = g_texVer[slot].ver;
+            ++g_nTexSnap;
+        }
+    } else if (g_nTexSnap >= 768) {
+        static bool warned = false;
+        if (!warned) { warned = true; logf("[tex] ⚠ snapshot queue FULL (768) -- content dropped"); }
+    }
+    g_texVer[slot].snapped = true;
+    g_texVer[slot].dirty = false;
+    return g_texVer[slot].ver;
 }
 
 // ⚠ CRASH FIX 2026-09-01: the first version assumed 4 bytes/pixel and walked y to Height. BC7/BC1
 // are BLOCK compressed -- the mapped staging data has ceil(Height/4) rows and a RowPitch far smaller
 // than Width*4 -- so that read ran ~4x past the end of the allocation and took the game down.
-// The sprite atlases we actually need are UNCOMPRESSED R8G8B8A8/B8G8R8A8, so dump only those and
-// skip the rest (they are Collection UI art, not the arcade surface). Never guess a pixel layout.
-// ⚠⚠ 2026-09-01, mvc2-sprite-render-expert: the original comment here said "the sprite atlases we
-// actually need are UNCOMPRESSED R8G8B8A8". THAT PREMISE WAS INVERTED. The 256x256 RGBA pages are the
-// 3D STAGE. The CHARACTERS go through the palette path: t0 is a DXGI_FORMAT_R8_UNORM (61) index tile
-// and t1 is the 256x1 palette. Of 189 textures bound in frame 4828, 144 are fmt 61 -- and this filter
+// Dump only uncompressed formats; never guess a pixel layout.
+// ⚠⚠ 2026-09-01, mvc2-sprite-render-expert: an earlier comment here claimed "the sprite atlases we
+// need are UNCOMPRESSED R8G8B8A8". THAT PREMISE WAS INVERTED. The 256x256 RGBA pages are the 3D
+// STAGE. The CHARACTERS go through the palette path: t0 is a DXGI_FORMAT_R8_UNORM (61) index tile and
+// t1 is the 256x1 palette. Of 189 textures bound in frame 4828, 144 are fmt 61 -- and the old filter
 // skipped every one, so the capture contained ZERO character pixels. It also skipped the 256x128 HUD
 // bank, which per mvc-hud-list0b-live-re cannot be obtained offline at all.
 static bool isDumpableTex(DXGI_FORMAT f) {
@@ -745,53 +838,41 @@ static bool isRGBA32(DXGI_FORMAT f) {
 static UINT texBytesPerPixel(DXGI_FORMAT f) { return f == DXGI_FORMAT_R8_UNORM ? 1u : 4u; }
 
 static void releaseCapTex() {
-    for (int i = 0; i < g_nCapTex; ++i) if (g_capTex[i]) { g_capTex[i]->Release(); g_capTex[i] = nullptr; }
-    g_nCapTex = 0;
+    for (int i = 0; i < g_nTexSnap; ++i) if (g_texSnap[i].stg) g_texSnap[i].stg->Release();
+    g_nTexSnap = 0;
+    for (int i = 0; i < g_nTexVer; ++i) if (g_texVer[i].tex) g_texVer[i].tex->Release();
+    g_nTexVer = 0;
+    g_texWrites = g_texRewrites = 0;
 }
 
 static void dumpCapturedTextures(ID3D11Device* dev, ID3D11DeviceContext* ctx, unsigned frame) {
-    for (int i = 0; i < g_nCapTex; ++i) {
-        ID3D11Texture2D* t = g_capTex[i];
-        if (!t) continue;
+    logf("[tex] %d distinct textures, %u writes seen this frame, %u of them rewrote a texture a draw "
+         "had already sampled, %d snapshots to write",
+         g_nTexVer, g_texWrites, g_texRewrites, g_nTexSnap);
+    for (int i = 0; i < g_nTexSnap; ++i) {
+        ID3D11Texture2D* stg = g_texSnap[i].stg;
+        if (!stg) continue;
         D3D11_TEXTURE2D_DESC d = {};
-        t->GetDesc(&d);
-        if (!isDumpableTex(d.Format) || d.Width > 4096 || d.Height > 4096) {
-            t->Release();
-            g_capTex[i] = nullptr;
-            continue;
-        }
-        if (d.SampleDesc.Count == 1) {
-            D3D11_TEXTURE2D_DESC sd = d;
-            sd.Usage = D3D11_USAGE_STAGING;
-            sd.BindFlags = 0;
-            sd.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
-            sd.MiscFlags = 0;
-            ID3D11Texture2D* stg = nullptr;
-            if (SUCCEEDED(dev->CreateTexture2D(&sd, nullptr, &stg)) && stg) {
-                ctx->CopyResource(stg, t);
-                D3D11_MAPPED_SUBRESOURCE m = {};
-                if (SUCCEEDED(ctx->Map(stg, 0, D3D11_MAP_READ, 0, &m))) {
-                    char path[MAX_PATH];
-                    _snprintf_s(path, sizeof(path), _TRUNCATE, "%s\\tex_%u_%ux%u_f%d_%p.bin",
-                                g_dir, frame, d.Width, d.Height, (int)d.Format, (void*)t);
-                    FILE* f = nullptr;
-                    if (fopen_s(&f, path, "wb") == 0 && f) {
-                        // Rows are repacked tightly at Width*4; RowPitch is the SOURCE stride and is
-                        // >= Width*4, so this never over-reads. Decoder needs only w/h/format.
-                        const size_t rowBytes = (size_t)d.Width * texBytesPerPixel(d.Format);
-                        for (UINT y = 0; y < d.Height; ++y)
-                            fwrite((const uint8_t*)m.pData + (size_t)y * m.RowPitch, 1, rowBytes, f);
-                        fclose(f);
-                        logf("[tex] %ux%u fmt=%d -> %p", d.Width, d.Height, (int)d.Format, (void*)t);
-                    }
-                    ctx->Unmap(stg, 0);
-                }
-                stg->Release();
+        stg->GetDesc(&d);
+        D3D11_MAPPED_SUBRESOURCE m = {};
+        if (SUCCEEDED(ctx->Map(stg, 0, D3D11_MAP_READ, 0, &m))) {
+            char path[MAX_PATH];
+            _snprintf_s(path, sizeof(path), _TRUNCATE, "%s\\tex_%u_%ux%u_f%d_%p_v%u.bin",
+                        g_dir, frame, d.Width, d.Height, (int)d.Format,
+                        (void*)g_texSnap[i].res, g_texSnap[i].ver);
+            FILE* f = nullptr;
+            if (fopen_s(&f, path, "wb") == 0 && f) {
+                // Rows are repacked tightly at Width*bpp; RowPitch is the SOURCE stride and is
+                // >= that, so this never over-reads. The decoder needs only w/h/format.
+                const size_t rowBytes = (size_t)d.Width * texBytesPerPixel(d.Format);
+                for (UINT y = 0; y < d.Height; ++y)
+                    fwrite((const uint8_t*)m.pData + (size_t)y * m.RowPitch, 1, rowBytes, f);
+                fclose(f);
             }
+            ctx->Unmap(stg, 0);
         }
-        if (g_capTex[i]) { g_capTex[i]->Release(); g_capTex[i] = nullptr; }
     }
-    g_nCapTex = 0;
+    releaseCapTex();
 }
 
 
@@ -1075,8 +1156,10 @@ static HRESULT STDMETHODCALLTYPE hkPresent(IDXGISwapChain* sc, UINT si, UINT fla
         // Spend a dump slot only on a REAL MATCH frame. Draw count alone cannot tell gameplay from
         // character select (both render ~1200 draws into the same 2048x1024 offscreen RT), but the
         // distinct-texture count can: measured, menus 9-30, char select 21-24, in-match 96-298.
-        // g_nCapTex IS that count, so the in-process gate matches the offline one exactly.
-        if (g_drawIdx >= 300 && g_nCapTex >= 50) {
+        // g_nTexVer IS that count -- one entry per DISTINCT texture object the frame's draws
+        // sampled, independent of how many content generations each of them went through -- so the
+        // in-process gate still matches the offline one exactly.
+        if (g_drawIdx >= 300 && g_nTexVer >= 50) {
             // The SCENE RT is the diff target. The backbuffer has been through a 9-pass bloom/SMAA
             // chain, so diffing against it would only prove that bloom exists. The scene RT is bound
             // for the whole sprite pass and never rebound in the frame, so Present is a valid

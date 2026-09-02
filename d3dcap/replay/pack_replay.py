@@ -116,14 +116,26 @@ def main():
             p = t["p"]
             if p in tex_index:
                 continue
-            hits = glob.glob(os.path.join(CAP, "tex_*_%dx%d_f%d_%s.bin"
-                                          % (t["w"], t["h"], t["fmt"], p)))
+            # ⚠ p is "pointer#generation" on captures from 2026-09-01 onward. The game rewrites
+            # textures mid-frame, so a pointer alone is not an identity -- packing by pointer handed
+            # every draw the LAST content the object held and turned the characters into scattered
+            # sprite shards. Older captures have no "#"; both forms are accepted.
+            if "#" in p:
+                ptr, ver = p.split("#", 1)
+                hits = glob.glob(os.path.join(CAP, "tex_*_%dx%d_f%d_%s_v%s.bin"
+                                              % (t["w"], t["h"], t["fmt"], ptr, ver)))
+            else:
+                hits = glob.glob(os.path.join(CAP, "tex_*_%dx%d_f%d_%s.bin"
+                                              % (t["w"], t["h"], t["fmt"], p)))
             if not hits:
                 missing[t["fmt"]] += 1
                 continue
             tex_index[p] = {"w": t["w"], "h": t["h"], "fmt": t["fmt"], "file": hits[0]}
     bound = {t["p"] for d in scene for t in (d.get("tex") or []) if t and "w" in t}
-    print("textures: %d/%d bound textures have pixel dumps" % (len(tex_index), len(bound)))
+    objs = {str(x).split("#", 1)[0] for x in bound}
+    print("textures: %d/%d bound texture CONTENTS have pixel dumps (%d distinct objects, "
+          "%d rewritten mid-frame)"
+          % (len(tex_index), len(bound), len(objs), len(bound) - len(objs)))
     if missing:
         print("  MISSING by DXGI format: %s" % dict(missing))
         if 61 in missing:

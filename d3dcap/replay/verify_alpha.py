@@ -61,6 +61,20 @@ def sha8(b):
     return hashlib.sha256(b).hexdigest()[:16]
 
 
+def tex_files(t):
+    """Dumps for ONE content generation of a texture.
+
+    A texture's identity in a capture is "pointer#generation": the game rewrites textures mid-frame,
+    so the pointer alone is not an identity. Captures before 2026-09-01 have no "#" and no "_v"
+    suffix on the filename; both forms are accepted.
+    """
+    p = str(t["p"])
+    if "#" in p:
+        ptr, ver = p.split("#", 1)
+        return glob.glob(os.path.join(CAP, f"tex_*_{t['w']}x{t['h']}_f{t['fmt']}_{ptr}_v{ver}.bin"))
+    return glob.glob(os.path.join(CAP, f"tex_*_{t['w']}x{t['h']}_f{t['fmt']}_{p}.bin"))
+
+
 def depth_state(d):
     """(comparison func, writes) from the captured depth-stencil state."""
     ds = d.get("depth") or d.get("ds")
@@ -163,7 +177,7 @@ def main(frame):
             return None
         if t["p"] in tex_cache:
             return tex_cache[t["p"]]
-        hit = glob.glob(os.path.join(CAP, f"tex_*_{t['w']}x{t['h']}_f{t['fmt']}_{t['p']}.bin"))
+        hit = tex_files(t)
         out = None
         if hit:
             raw = np.frombuffer(open(hit[0], "rb").read(), np.uint8)
@@ -180,7 +194,7 @@ def main(frame):
             return None
         if t["p"] in pal_cache:
             return pal_cache[t["p"]]
-        hit = glob.glob(os.path.join(CAP, f"tex_*_{t['w']}x{t['h']}_f{t['fmt']}_{t['p']}.bin"))
+        hit = tex_files(t)
         out = None
         if hit:
             raw = np.frombuffer(open(hit[0], "rb").read(), np.uint8)

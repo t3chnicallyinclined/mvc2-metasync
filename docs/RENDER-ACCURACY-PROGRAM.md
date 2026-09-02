@@ -1531,3 +1531,69 @@ Two related things fell out of the same look:
   rendered from invented data (`verify_alpha.py` confirms those 2 draws contribute no coverage);
 * the pipeline cache key did not include the layout, so the first draw's layout would have been
   reused for every later draw with matching states.
+
+---
+
+## 2026-09-01 — coverage fixed; the next bug is stale texture content
+
+With the vertex offset fixed the browser reports:
+
+```
+COVERAGE  we cover 1,228,760 (99.997%)   truth 1,228,764 (99.997%)   MISSING 5 px   spurious 1 px
+COLOUR    mean |delta| B=16.179 G=15.522 R=13.283 A=0.205   differing 170,976 px (13.915%)
+```
+
+Geometry is done. The stage, the HUD and the meters are right; the characters come out as scattered
+sprite shards.
+
+### `verify_frame.py`: the CPU colour gate
+
+`verify_frame.py` is `verify_alpha.py`'s sibling — it reads the same `.pack` the browser reads, runs
+the same fragment maths, composites with the same captured blend states, and does it all in NumPy
+with no GPU. It models perspective-correct interpolation (DXBC `dcl_input_ps linear` IS the
+perspective-correct mode), point/bilinear sampling per the captured sampler, the alpha test, the
+depth test and per-draw blending.
+
+It reproduces the browser to within 0.01% — `mean |delta| B=16.198` vs `16.179`, `13.924%` vs
+`13.915%`. **The replayer and the CPU model agree, so the WGSL, the uploads, the samplers and the
+blend translation are all off the table. What is left is our MODEL of the capture.**
+
+It also scores every draw on the pixels where it is the last writer:
+
+```
+indexed : 123 draws --   8 pixel-exact,  30 wrong somewhere,  85 never the last writer
+texalpha:  64 draws --  19 pixel-exact,  24 wrong somewhere,  21 never the last writer
+opaque  : 572 draws -- 197 pixel-exact,  28 wrong somewhere, 347 never the last writer
+```
+
+Six character draws are **100% wrong on every pixel they own**.
+
+### The cause: textures were snapshotted once, at Present
+
+Searching all 123 dumped index tiles for one that reproduces a 100%-wrong draw found nothing above
+8%, and the draw's own tile scored **0.0%** over 2,807 drawn pixels. The content those draws sampled
+was not in the capture at all.
+
+`dllmain.cpp` noted each bound texture by pointer and dumped it once at Present — the same mistake
+the constant buffers made, and for the same reason. The vertex buffer survives Present-time
+snapshotting only because the game APPENDS to it; that property does not generalise across resource
+types, and it was generalised anyway. Both `Map`/`Unmap` and `UpdateSubresource` filtered on
+`D3D11_RESOURCE_DIMENSION_BUFFER`, so **texture writes were entirely unobserved**.
+
+Fixed by versioning texture content:
+
+* `markTexDirty()` on both write paths — the same two the constant buffers needed;
+* at each **draw**, any bound texture that is new or has been written since its last snapshot is
+  copied GPU-side into a staging texture. `CopyResource` does not stall; the staging textures are
+  mapped and written at Present, when the GPU is done with them anyway;
+* each draw records `"ptr#generation"`, so no draw can be handed content from a later upload;
+* the dump filename gains a `_v<gen>` suffix. `pack_replay.py`, `verify_alpha.py`, `decode_verts.py`
+  and `summarize.py` accept both forms, so captures taken before this still analyse — verified: the
+  old frame 4261 still packs and still reports 0 missing coverage.
+
+The capture log now states the answer directly: `N distinct textures, W writes seen this frame, R of
+them rewrote a texture a draw had already sampled`. If `R` is 0 on the next capture, this hypothesis
+is wrong and the shards are something else.
+
+⚠ The in-match gate counts texture OBJECTS, not generations — a frame that rewrites one page eight
+times must not read as eight pages, since the 50-texture threshold was calibrated on objects.

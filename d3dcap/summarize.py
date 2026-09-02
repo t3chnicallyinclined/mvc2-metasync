@@ -123,7 +123,12 @@ def main(path, brief=False):
                                      "slots": set(), "n": 0})
             e["slots"].add(slot)
             e["n"] += 1
-    print("    %d distinct textures" % len(tex))
+    objs = {str(k).split("#", 1)[0] for k in tex}
+    print("    %d distinct textures (%d objects, %d content generations)"
+          % (len(tex), len(objs), len(tex)))
+    if len(tex) > len(objs):
+        print("    -> %d textures were REWRITTEN mid-frame; each generation is captured separately"
+              % (len(tex) - len(objs)))
     for p, e in sorted(tex.items(), key=lambda kv: -kv[1]["n"])[:30]:
         print("    %s  %5dx%-5d %-20s mips=%d slots=%s  used by %d draws"
               % (p, e["w"], e["h"], fmt(e["fmt"]), e["mips"], sorted(e["slots"]), e["n"]))

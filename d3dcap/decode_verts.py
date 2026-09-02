@@ -113,7 +113,10 @@ def decode(frame, score_only=False):
     # gameplay, so draw count alone cannot tell them apart. Distinct bound textures can: a match binds
     # a separate sprite page per character and effect, while char-select re-binds one atlas.
     # Measured on real captures: menus 9-30, character select 22-24, in-match 96-298.
-    tex_ids = {t["p"] for d in game for t in (d.get("tex") or []) if t and "w" in t}
+    # Count distinct texture OBJECTS. A frame that rewrites one page eight times must not read as
+    # eight pages -- the 50-texture threshold below was calibrated on objects.
+    tex_ids = {str(t["p"]).split("#", 1)[0]
+               for d in game for t in (d.get("tex") or []) if t and "w" in t}
     if score_only:
         # Ranking hook for collect.ps1: richer frame = more distinct sprite pages = more of the
         # scene (assists, effects, supers) actually exercised. 0 means "not an in-match frame".
