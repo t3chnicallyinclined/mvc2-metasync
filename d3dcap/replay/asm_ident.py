@@ -117,10 +117,21 @@ def char_quads(man, B):
             P.append(((x + 1) * SX, (1 - y) * SY))
             U.append((u, v))
         z = struct.unpack_from('<f', vb, vo + ii[0] * st + 8)[0]
+        # THE FLIP LIVES IN THE UV WINDING, NOT IN THE PAGE CONTENT. Comparing page bytes says
+        # NOTHING about orientation -- the same 32x32 page serves a mirrored and an unmirrored draw,
+        # so "every tile matched unflipped" was true and irrelevant. Correlate screen x against u
+        # instead: if u DECREASES as x increases, this quad is mirrored. Measured on f2574 the split
+        # is exact and by side -- LEFT body 55 quads mirrored, RIGHT body 29 unmirrored.
+        def wind(pos, tex):
+            lo = min(range(len(pos)), key=lambda j: pos[j])
+            hi = max(range(len(pos)), key=lambda j: pos[j])
+            return tex[hi] < tex[lo]
         out[d['tex'][0]].append(dict(
             i=d['i'], z=z, sx=min(p[0] for p in P), sy=min(p[1] for p in P),
             tw=max(p[0] for p in P) - min(p[0] for p in P),
             th=max(p[1] for p in P) - min(p[1] for p in P),
+            fx=wind([p[0] for p in P], [u for u, v in U]),
+            fy=wind([p[1] for p in P], [v for u, v in U]),
             u0=min(u for u, v in U) * 32, v0=min(v for u, v in U) * 32))
     return out
 
@@ -170,6 +181,8 @@ def main():
     ap.add_argument('--char')
     ap.add_argument('--minx', type=float, default=None,
                     help='only consider draws at screen x >= this, to isolate ONE body')
+    ap.add_argument('--maxx', type=float, default=None,
+                    help='only consider draws at screen x <= this, to isolate ONE body')
     a = ap.parse_args()
 
     man, B = load_pack(a.pack)
@@ -195,7 +208,7 @@ def main():
                 return int(pid), pt
         return None, None
 
-    place, votes = {}, defaultdict(Counter)
+    place, votes, mirrored = {}, defaultdict(Counter), {}
     for k, (nm, ay, ax) in hits.items():
         if nm != ch:
             continue
@@ -205,11 +218,16 @@ def main():
         for q in quads[k]:
             if a.minx is not None and q['sx'] < a.minx:
                 continue
+            if a.maxx is not None and q['sx'] > a.maxx:
+                continue
             offx = ax + q['u0'] - pt['x']
             offy = ay + q['v0'] - pt['y']
-            px = q['sx'] - offx
-            py = q['sy'] - (pt['h'] - q['th'] - offy)     # part bitmap rows are bottom-up
+            # a mirrored quad puts the tile at atlas offx on the part's RIGHT side
+            sxo = (pt['w'] - q['tw'] - offx) if q['fx'] else offx
+            px = q['sx'] - sxo
+            py = q['sy'] - (pt['h'] - q['th'] - offy)     # the part's 32-row bands stack in reverse
             votes[pid][(round(px, 3), round(py, 3))] += 1
+            mirrored[pid] = q['fx']
     print()
     for pid, c in votes.items():
         (px, py), n = c.most_common(1)[0]
@@ -221,18 +239,30 @@ def main():
         sys.exit('\nonly %d part placed -- with a single part the origin is always solvable, so this '
                  'cannot test the table. Use a frame where more tiles match.' % len(place))
 
+    mset = set(mirrored.values())
+    print('   orientation from UV winding: %s'
+          % ('MIRRORED' if mset == {True} else 'UNMIRRORED' if mset == {False}
+             else 'MIXED %s -- these parts are NOT one body' % mirrored))
     print('\nsearching %d %s assemblies for one origin that places all %d parts...'
           % (len(asm['assemblies']), ch, len(place)))
+    # THE LAW. A part's rect in sprite space is [origin_x - dx, origin_x - dx + w]; mirroring
+    # REFLECTS that rect about origin_x, which puts its left edge at origin_x + dx - w. Both forms
+    # are the same transform, so there is no free sign to pick -- the UV winding already said which
+    # one applies. Confirmed EXACT on 3 bodies / 3 characters / 3 frames, all resolving to the same
+    # ground line origin_y = 202.067, which no run was given.
     best = []
-    for facing, sgn in (('dx NEGATED', -1), ('dx AS-IS', +1)):
-        for sel, recs in asm['assemblies'].items():
-            have = {r['part']: r for r in recs}
-            if not set(place) <= set(have):
-                continue
-            os_ = {(round(px - sgn * have[p]['dx'], 3), round(py - have[p]['dy'], 3))
-                   for p, (px, py) in place.items()}
-            if len(os_) == 1:
-                best.append((facing, sel, len(recs), os_.pop()))
+    for sel, recs in asm['assemblies'].items():
+        have = {r['part']: r for r in recs}
+        if not set(place) <= set(have):
+            continue
+        os_ = set()
+        for pid, (px, py) in place.items():
+            r = have[pid]
+            ox = (px - r['dx'] + parts[str(pid)]['w']) if mirrored[pid] else (px + r['dx'])
+            os_.add((round(ox, 3), round(py - r['dy'], 3)))
+        if len(os_) == 1:
+            best.append(('MIRRORED' if any(mirrored.values()) else 'UNMIRRORED',
+                         sel, len(recs), os_.pop()))
     if not best:
         print('   FAILED: no assembly places these parts consistently under either dx sign.')
         print('   THAT would be a real defect in the table -- but first rule out that the parts')
