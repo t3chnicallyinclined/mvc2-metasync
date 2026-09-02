@@ -472,10 +472,12 @@ def main():
                 palkey = '%s_pal_%s' % (at.name, sha8(pal.tobytes()))
                 if palkey not in textures:
                     textures[palkey] = {'w': 256, 'h': 1, 'fmt': 28, **intern(pal.tobytes())}
-                bmp, pw, ph = at.part_bitmap(pid, not a.no_vflip, logical=extra['bit15'])
+                fl = at.flag_of(sid, ri)
+                # INFERRED: a tiled record with a flip flag draws its LOGICAL rect (PL2A cell 668
+                # assembles coherently only that way; see v3gate). Scale-walker records always do.
+                bmp, pw, ph = at.part_bitmap(pid, not a.no_vflip, logical=extra['bit15'] or bool(fl & 0xC000))
                 # per-record flags: vflip in the bitmap; hflip in the bitmap too -- the node's mirror
                 # is applied by the UV winding below, so the net is (mir XOR hf), as on Steam.
-                fl = at.flag_of(sid, ri)
                 if fl & 0x4000:
                     bmp = bmp[::-1]
                 if fl & 0x8000:
@@ -510,13 +512,22 @@ def main():
                 # corners in native px: TL, BL, TR, BR (index order the IB below expects)
                 corners = [(left, top), (left, top + ph), (left + pw, top), (left + pw, top + ph)]
                 if rot_gen:
+                    # ⚠ THE ROTATION IS IN 640x480 SPACE, NOT NATIVE. The walker rotates L = pen*sX
+                    # (bank03 loc_8c03481c: fr14/fr12 = float*+0xEC) -- i.e. in the E0/E4 screen
+                    # space where pixels are square -- and the pivot is floor(E0) + sX*hot. Native
+                    # (384x224) is anisotropic (3/5, 7/15), so rotating there bends the angle: on
+                    # tape 59612784 f4485 the rocket-punch trail origins run at 28 deg in 640-space
+                    # (= 0x1400 exactly) and the native-space rotation drew the pieces off-line.
                     sgn = -1.0 if mir else 1.0
                     hx, hy = extra['hot']
-                    Px, Py = ox + sgn * hx, oy + hy
+                    Px, Py = np.floor(tsx) + sgn * hx / TAPE_X, np.floor(tsy) + hy / TAPE_Y   # 640-space pivot
                     th = (((-extra['angle']) if mir else extra['angle']) & 0xFFFF) * (2.0 * math.pi / 65536.0)
                     c, sn = math.cos(th), math.sin(th)
-                    corners = [(Px + (cx - Px) * c + (cy - Py) * sn, Py - (cx - Px) * sn + (cy - Py) * c)
-                               for cx, cy in corners]
+                    rot = []
+                    for cx, cy in corners:
+                        X, Y = cx / TAPE_X - Px, cy / TAPE_Y - Py                   # native -> 640, about P
+                        rot.append(((Px + X * c + Y * sn) * TAPE_X, (Py - X * sn + Y * c) * TAPE_Y))
+                    corners = rot
                     rotated_general[extra['angle']] += 1
                 z = Z0 - len(draws) * ZSTEP
                 u0, u1 = (1.0, 0.0) if mir else (0.0, 1.0)   # the mirror lives in the UV winding

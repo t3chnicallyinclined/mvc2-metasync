@@ -177,7 +177,13 @@ def emit_frame(blk, base, shape, x0, y0):
             # (sid bit 15): the tiled builder (bit 15 clear) uses STORAGE dims -- clipping tiled
             # bodies LOST 11 matched tiles on f8940. --no-logical / --logical-all for A/B.
             dm = gfx1dims(cid).get(r['part'])
-            if dm and '--no-logical' not in sys.argv and                     (nd['sid'] & 0x8000 or '--logical-all' in sys.argv):
+            # INFERRED (2026-09-02): a TILED record carrying a flip flag (0x4000/0x8000) also draws
+            # its LOGICAL rect -- PL2A cell 668 (Storm knocked down, 7 records flagged 0xC000 on
+            # 64x64/128x16 parts with 48x48/80x16 logical) only assembles coherently that way; the
+            # proven frames hold flipped 8x8 parts only, so this is not pixel-gated yet.
+            # --flip-storage keeps the old behaviour for A/B.
+            if dm and '--no-logical' not in sys.argv and                     (nd['sid'] & 0x8000 or '--logical-all' in sys.argv or
+                     (fl & 0xC000 and '--flip-storage' not in sys.argv)):
                 sw, sh, lw, lh = dm
                 cw = lw * 8 if 0 < lw <= sw else pw
                 ch = lh * 8 if 0 < lh <= sh else ph
