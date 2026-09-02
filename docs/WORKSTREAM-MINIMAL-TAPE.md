@@ -992,3 +992,66 @@ and mirrors gameflow, round and per-fighter state out into `PTR_DAT_140acd3a0`; 
 been isolated yet.** Naming it is a bounded next step: `FUN_140055D40` makes ~30 dispatched calls, and
 the one that advances `blk+0x3CC8` can be found by breaking on writes to that address, or by hooking
 each `+0x30` in turn. Do not guess which; there are 30 candidates and they all look alike.
+
+---
+
+## 14. ⭐⭐⭐ THE STAGE IS STATIC, AND THE HUD BANK IS ALREADY IN EVERY CAPTURE
+
+> Tris, 2026-09-02: *"the stage we can run statically from assets, we can learn how it's displayed
+> from the 10 second gold source we have — that has the full HUD and background render, it's static
+> but moving camera."* Both halves are measured below, and the second one retires a recorded blocker.
+
+### 14.1 The stage mesh is fixed; only the camera moves
+
+Hashing each `vs_world` draw's vertex bytes and intersecting the sets:
+
+```
+frame_5481   208 distinct world-space draws
+frame_5630   489
+frame_2574   462
+5630 vs 2574  (DIFFERENT MATCHES)  455 shared          <- essentially all of it
+5481 vs 5630  (same match)          86 shared  (41%)   <- mid-super, most of the stage culled
+```
+
+**455 draws byte-identical across two different matches.** The stage is a fixed world-space mesh
+keyed by `stage_id`; per frame only the CAMERA changes and the visible subset varies with culling.
+The low 5481 overlap is not a counter-example — that frame is inside a 3-meter super, where the
+flash replaces most of the background.
+
+⟹ **Rip the stage once per `stage_id` and reuse it for every replay on that stage.** The camera is
+already in the tape (`eyeX`, `eyeY`, `ground`), and the geometry is world-space with the camera in a
+constant buffer, which is exactly why the vertex bytes repeat.
+
+### 14.2 ⭐ THE HUD SPRITE BANK IS IN THE CAPTURE — the "live dump" blocker is obsolete
+
+`frame_5630` carries a **256x128 RGBA texture with 17,101 non-transparent pixels**, which is exactly
+the bank `sprite.wgsl`'s `fs_hud` documents. Dumped and flipped (it is stored bottom-up like every
+other page — see §13's V-axis note), it is the complete HUD font:
+
+> ASCII upper and lower case, digits, punctuation, `©` `®` `™`, `対応`, `WINS`, `VM 対応！`, `ED`,
+> hearts and arrows.
+
+**This contradicts `mvc-hud-list0b-live-re`**, which records *"the UI sprite bank is NOT offline →
+live-dump via `replay-kit/hud_bankdump.py`"*. That was true of the OFFLINE ROM extraction. It is not
+true of the D3D11 captures: Steam has to upload the bank to draw it, so the shim sees it, and every
+capture ever taken already contains it. No live dump is needed for the font.
+
+⚠ **Scope, so this is not over-read.** What is confirmed is the **font/glyph bank**. The HUD also has
+health bars, meters, portraits and the timer, and those may live in other pages — `frame_5630` also
+carries `(256,256)`, `(128,128)x2`, `(64,64)x3` and a `(1,1)` RGBA texture, and which of those are
+HUD versus stage has NOT been determined. The way to settle it is by which draws bind them, not by
+size. `mvc-hud-list0b-live-re`'s other finding stands untouched: the HUD objects are list-`0x0B`
+pool nodes and are NOT in any tape, so the HUD's *state* still has to come from somewhere.
+
+### 14.3 What this makes buildable
+
+| piece | geometry / pixels | per-frame state | status |
+|---|---|---|---|
+| bodies | offline atlas | tape `sid/sx/sy/facing/costume` | **PIXEL-EXACT** (§13, `emitter_gate.py`) |
+| objects (capes, projectiles) | offline atlas, owner's char | tape `objs` stream | drawing; ordering open |
+| stage | **rip once per stage_id from a capture** | tape `eyeX/eyeY` | geometry proven static |
+| HUD chrome | **the 256x128 bank, from any capture** | list-0x0B nodes, NOT in the tape | bank found; state is the gap |
+| effects / supers | offline + capture pages | tape `objs` + `cat`/blend | additive state liftable from the super capture |
+
+The one genuinely missing input is **HUD state** — the list-`0x0B` nodes are not recorded in the tape
+at all. Everything else now has both its pixels and its per-frame state identified.

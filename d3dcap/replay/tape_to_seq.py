@@ -166,8 +166,11 @@ def main():
                          'punch through bodies. Diagnostic only.')
     ap.add_argument('--no-objs', action='store_true',
                     help='bodies only. Capes and projectiles that are their own pool node vanish.')
-    ap.add_argument('--layer-asc', action='store_true',
-                    help='order by ASCENDING layer instead. Which end is "back" is not measured.')
+    ap.add_argument('--objs-under', action='store_true',
+                    help="on a layer TIE draw objects BEHIND their body. Approximates the missing "
+                         "node+0x31 sort key; the engine's real tie-break is fighters-first.")
+    ap.add_argument('--layer-desc', action='store_true',
+                    help='walk layers 15->0. The engine walks 0->15 (loc_8c0308c2); diagnostic only.')
     ap.add_argument('--flip-facing', action='store_true')
     ap.add_argument('--swap-teams', action='store_true')
     a = ap.parse_args()
@@ -249,10 +252,34 @@ def main():
                           sid_raw & 0x7FFF, osx, osy,
                           bool(face) != bool(sid_raw & 0x8000), 'obj', costume[owner]))
 
-        # Back to front. Which end of `layer` is "back" is NOT measured -- the captures carry no
-        # game state, so layer cannot be correlated with Steam's draw index there. --layer-asc flips
-        # it. Ties keep list order, which puts bodies before their own objects.
-        items.sort(key=lambda t: t[0], reverse=not a.layer_asc)
+        # ⭐⭐ THE DRAW ORDER, CONFIRMED FROM THE DISASSEMBLY (mvc2-sh4-re-expert, bank03/bank04).
+        # Battle sprites do NOT use the linked-list buckets I first read. There are TWO render
+        # systems and the fighters are in the other one:
+        #   System A  3D/backdrop props: doubly-linked lists, head 0x8C287A5C, walked by
+        #             loc_8c0301ce (+ a real SECOND pass loc_8c030410 for nodes with a model at
+        #             +0x84). In battle these run AFTER the sprites, buckets 5,6,7,8,0x0B.
+        #   System B  THE FIGHTERS AND EVERY POOL OBJECT: 16 FLAT ARRAYS at
+        #             0x8C287DE0 + L*0x180, counts at 0x8C2895E0, cleared every frame, cap 96 per
+        #             layer (over-cap nodes are SILENTLY DROPPED). Walked by loc_8c0308c2 as
+        #             L = 0..15 ASCENDING, then i = 0..count-1.
+        # So: layer ASCENDING, not descending -- my previous default was backwards.
+        #
+        # Registration (bank04 loc_8c04515e) appends at the tail, then insertion-sorts backwards,
+        # ASCENDING and STABLY, on key (s8)node+0x31. Registration order is:
+        #     the six fighters first -- P1C1, P2C1, P1C2, P2C2, P1C3, P2C3, i.e. our slots 0..5
+        #     with even = P1 (this CONFIRMS the slot->team assumption), then the pool lists in
+        #     order 3, 4, 1, 2.
+        #
+        # ⚠⚠ WE DO NOT RECORD node+0x31, AND IT IS THE ACTUAL TIE-BREAK. Registration order only
+        # decides ties, and on ties the fighter registers FIRST, so a same-layer object draws ON
+        # TOP of its body. A cape that belongs behind must therefore carry a SMALLER +0x31 -- which
+        # is exactly the field the tape drops. That is why some frames still show the cape through
+        # the body, and it is now a precisely specified one-byte tape addition rather than a
+        # mystery. --objs-under approximates it meanwhile.
+        KIND = {'body': 0, 'obj': 1}                 # registration order: fighters, then the pool
+        if a.objs_under:
+            KIND = {'body': 1, 'obj': 0}
+        items.sort(key=lambda t: ((-t[0] if a.layer_desc else t[0]), KIND[t[6]]))
 
         for lay, at, sid, tsx, tsy, mir, kind, cos in items:
             if at is None:
