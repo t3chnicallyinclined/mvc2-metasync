@@ -1055,3 +1055,51 @@ pool nodes and are NOT in any tape, so the HUD's *state* still has to come from 
 
 The one genuinely missing input is **HUD state** — the list-`0x0B` nodes are not recorded in the tape
 at all. Everything else now has both its pixels and its per-frame state identified.
+
+---
+
+## 15. ⭐⭐⭐ THE RENDER MODEL, CLOSED FOR SPRITES — measured against Steam, per pixel (2026-09-02)
+
+Everything below was established with state and pixels from the SAME frame (the shim now dumps `blk`
+at Present), verified against Steam's own draw stream, and where it mattered, read out of the Steam
+binary in Ghidra or the DC disassembly. `v3gate.py` is the falsifier: 30 state-carrying frames,
+**20 exact** (14 at 100.00%, six within 1–2 px); every remaining miss is in the super frames and has
+a named cause below.
+
+### 15.1 What is PROVEN (v3gate 100.00% on quiet frames)
+* **Placement law**: `origin = (floor(sx640)·3/5, floor(sy480)·7/15)` — the engine TRUNCATES the
+  640×480 screen coord to an integer first (433.6→433, 422.5→422). `part_left = origin_x − dx`
+  (mirrored: `origin_x + dx − w`), `part_top = origin_y + dy`; part bitmaps are packed bottom-up.
+* **Paint order is DEPTH order, not walk order.** Steam's walker submits `z = base + 0.001·(k+1)`
+  per record; the sink `qsort`s the whole pass by z DESCENDING, ties FIFO (comparator
+  `@0x1408434d0`). Measured: within a body z falls along draw order (record 0 nearest); within a
+  layer the later-registered node has the larger base (`layerAcc += 0.001·parts`) and is BEHIND;
+  across layers the base is linear in the layer INDEX (`0.979379 + 0.000359·L`, lower = nearer).
+  ⟹ paint: layers far→near (LayerZ table for 8..15, flagged), reverse registration within a layer,
+  reverse record within a node. **`sort = −8` means IN FRONT** (front of the array → nearest).
+* **The one-frame staleness**: the walker WRITES `+0x124/+0x128` during the render, so state must
+  be read AFTER it (Present). Pairing frame N with `blk(N+1)` fixed every moving-character miss.
+* **sid bit 15 is a record-FORMAT flag** (Ghidra `FUN_1406129f0`), not a flip. Removing the XOR
+  took the super frames from 28.7% to 40.4%.
+* **Palette row is per RECORD**, `(flags>>4)&7` from the ROM (body 0, Storm's lightning 2, her
+  satellites 1), applied on Steam by which 256×1 palette the draw binds — index pages are plain
+  1..15 under every palette (0 texels > 15 in 130k). This closes the "PL32 sub-row 2" gap.
+* **One pixel blob per character**: effect nodes inherit the owner's GFX1 pointer by struct copy
+  (bank09) and share its GFX2 (+0x1B0 identical). The effect texels ARE in our atlases.
+* **`+0x148` bit 15 (DC `node+0x104`, the walker's rotation path)** ⇔ node absent from the
+  axis-aligned indexed stream: 370/0/0/24 over 30 frames, zero exceptions. Rotated sprites are
+  not tiles on Steam.
+
+### 15.2 What REMAINS, each with its evidence and owner
+| gap | evidence | status |
+|---|---|---|
+| **rotated sprites** (`+0x148` bit15) | 24 nodes, zero rotated quads in the indexed stream | SH4 expert on `loc_8c03481c` inputs/math |
+| **runtime reveal / blank** | same sid: one bolt's part 156 page all-zero, sibling shows only the tip; Cable's beam 32×40 of 64 with texels only in rows 0..7/40..47 | SH4 expert: tile arena `node+0xDC/+0x120`, animation script |
+| **P4 body absent** | `+0x170=1`, `sid 0x8000`, `flash 0x0030` (others 0x10/0x18/0x20), one PL34 tile in the frame, not in the world pass either | SH4 expert: flash 0x30 path |
+| **world-space RGBA class** | 118 on-screen `vs_world/texalpha` draws in a super frame from **12 shared pages** (two present in all 30 frames = 1P/2P markers + shadow disc; one = the additive effects sheet); not keyed by any System-B node's `gfx1` | System A nodes — not in `blkstate`, not in the tape; needs its own state source |
+| **tape staleness** | agent samples at a random phase relative to the walk | design: sample after the walk (agent change) |
+
+### 15.3 Tape v3 → v4 deltas implied
+`rot` (`+0x148` bit 15 + angle field once specified), the reveal state for effect nodes (field TBD),
+and a System-A node stream for shadows/markers/effect glows. None of these change the body path,
+which is exact.
