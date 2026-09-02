@@ -80,6 +80,8 @@ export class SequencePlayer {
         this.device = device;
         this.canvasFormat = canvasFormat;
         this.shared = { textures: new Map(), samplers: new Map() };
+        this.cache = new Map();
+        this.maxPrepared = 300;
         this.index = 0;
     }
 
@@ -109,29 +111,77 @@ export class SequencePlayer {
     }
 
     /**
-     * Build every frame's GPU resources up front.
+     * Build frames' GPU resources ahead of playback, as a WINDOW rather than all at once.
      *
-     * A sequence is a fixed, fully known set of frames, so there is nothing to discover during
-     * playback: uploading here turns each played frame into state-setting plus draw calls. The cost
-     * is bounded and small -- the vertex buffer is dumped as a used-range prefix (~230 KB), the index
-     * buffer is ~25 KB, and the uniform slice is 256 B per draw -- so ~0.5 MB per frame, and the
-     * textures are shared across the whole sequence rather than per frame.
+     * Per frame this is the vertex buffer (a used-range prefix, ~230 KB), the index buffer (~25 KB)
+     * and a 256 B uniform slice per draw -- about 0.5 MB. For a 1.5 s burst that is 45 MB and
+     * prebuilding everything is right. For 20 s of match it is 1200 frames and ~580 MB of GPU
+     * buffers, which is not. So the window is capped and topped up during playback: preparing is
+     * pure buffer creation, so a couple of frames per displayed frame keeps well ahead of a 60 fps
+     * read-out without ever allocating in the critical path for the frame being shown.
+     *
+     * Textures are NOT part of this. They are shared across the whole sequence and uploaded once.
      */
+    frameBytes(i) {
+        const h = this.seq.frames[i].head;
+        return h.vb.len + h.ib.len + h.draws.length * 256;
+    }
+
+    /** Guarantee frame `i` is ready. Synchronous, because the frame being drawn cannot wait. */
+    ensure(i) {
+        let e = this.cache.get(i);
+        if (!e) {
+            e = this.replayer.prepare(this.seq.frames[i]);
+            this.cache.set(i, e);
+        }
+        return e;
+    }
+
+    /** Prepare up to `n` not-yet-ready frames starting at `from`, wrapping at the end. */
+    prepareAhead(from, n) {
+        let did = 0;
+        for (let k = 0; k < n && this.cache.size < this.maxPrepared; k++) {
+            const i = (from + k) % this.count;
+            if (this.cache.has(i)) continue;
+            this.cache.set(i, this.replayer.prepare(this.seq.frames[i]));
+            did++;
+        }
+        return did;
+    }
+
+    /** Drop frames far from `i`. Buffers are destroyed explicitly, not left to the GC. */
+    evict(i) {
+        if (this.cache.size <= this.maxPrepared) return;
+        for (const [k, e] of this.cache) {
+            const d = Math.min(Math.abs(k - i), this.count - Math.abs(k - i));
+            if (d < this.maxPrepared / 2) continue;
+            e.res.vertexBuffer.destroy();
+            e.res.indexBuffer.destroy();
+            e.res.uniformBuffer.destroy();
+            this.cache.delete(k);
+            if (this.cache.size <= this.maxPrepared) break;
+        }
+    }
+
     async prepareAll(onProgress) {
-        this.prepared = [];
+        this.cache = new Map();
+        // ~145 MB of per-frame buffers. Short sequences fit entirely and never evict.
+        this.maxPrepared = Math.min(this.count, 300);
         let bytes = 0;
-        for (let i = 0; i < this.seq.frames.length; i++) {
-            const e = this.replayer.prepare(this.seq.frames[i]);
-            this.prepared.push(e);
-            const h = this.seq.frames[i].head;
-            bytes += h.vb.len + h.ib.len + h.draws.length * 256;
+        for (let i = 0; i < this.maxPrepared; i++) {
+            this.ensure(i);
+            bytes += this.frameBytes(i);
             if ((i & 7) === 0) {
-                onProgress?.(i + 1, this.seq.frames.length);
+                onProgress?.(i + 1, this.maxPrepared);
                 await new Promise((r) => setTimeout(r, 0));   // keep the page responsive
             }
         }
-        onProgress?.(this.seq.frames.length, this.seq.frames.length);
-        return { bytes, textures: this.shared.textures.size };
+        onProgress?.(this.maxPrepared, this.maxPrepared);
+        return {
+            bytes, textures: this.shared.textures.size,
+            prepared: this.maxPrepared, windowed: this.maxPrepared < this.count,
+            totalBytes: [...Array(this.count).keys()].reduce((a, i) => a + this.frameBytes(i), 0),
+        };
     }
 
     get count() { return this.seq.frames.length; }
@@ -141,9 +191,7 @@ export class SequencePlayer {
     draw(i, canvasView) {
         this.index = Math.max(0, Math.min(this.count - 1, i));
         const t0 = performance.now();
-        const entry = this.prepared?.[this.index];
-        const uploaded = entry ? (this.replayer.use(entry), 0)
-                               : this.replayer.setFrame(this.seq.frames[this.index]);
+        this.replayer.use(this.ensure(this.index));
         const { target, stats } = this.replayer.render({});
 
         if (!this.blitBind || this.blitSrc !== target) {
@@ -170,6 +218,10 @@ export class SequencePlayer {
         pass.end();
         this.device.queue.submit([enc.finish()]);
 
-        return { ms: performance.now() - t0, drawn: stats.drawn, uploaded };
+        // Stay ahead of the read-out without ever allocating for the frame being shown, and keep the
+        // window from growing past its cap.
+        this.prepareAhead(this.index + 1, 2);
+        this.evict(this.index);
+        return { ms: performance.now() - t0, drawn: stats.drawn, ready: this.cache.size };
     }
 }

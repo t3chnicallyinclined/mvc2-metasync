@@ -15,6 +15,7 @@
 #   -Analyze     skip launching; just analyse whatever is already in %TEMP%\rrcap
 #   -Keep        do not wipe previous captures first
 #   -Minutes N   give up after N minutes of play (default 10)
+#   -Seconds N   record N seconds of MATCH (N*60 consecutive frames) -- see -Burst
 #   -Burst N     record N CONSECUTIVE frames instead of one, then pack them into a playable
 #                sequence. This is what turns a still into a replay. 90 frames is ~1.5 seconds of
 #                match at 60 fps. The game WILL hitch while the burst records -- it is copying every
@@ -26,8 +27,13 @@ param(
     [switch]$Analyze,
     [switch]$Keep,
     [int]$Minutes = 10,
-    [int]$Burst = 0
+    [int]$Burst = 0,
+    [double]$Seconds = 0
 )
+
+# -Seconds is the honest unit: the capture records GAME frames at 60 fps, so N seconds of match is
+# N*60 frames however slowly the game is actually running while it records.
+if ($Seconds -gt 0) { $Burst = [int][math]::Round($Seconds * 60) }
 
 $ErrorActionPreference = 'Stop'
 $here   = $PSScriptRoot
@@ -130,9 +136,12 @@ if (-not $Analyze) {
     Say "==============================================================================" Cyan
     if ($Burst -gt 1) {
         Say " NOW: go into MvC2 -> TRAINING and get to the action you want to replay." Cyan
-        Say " The burst arms ~3s after the match starts and records $Burst CONSECUTIVE frames" Cyan
-        Say " (~$([math]::Round($Burst / 60.0, 1))s at 60fps). The game WILL hitch during it - that is" Cyan
-        Say " the capture copying every dirty texture and both buffers, every frame." Cyan
+        Say " It retries every second until a frame lands IN A MATCH, then records" Cyan
+        Say " $Burst CONSECUTIVE frames = $([math]::Round($Burst / 60.0, 1))s of GAME time." Cyan
+        Say "" Cyan
+        Say " The game will crawl for the whole burst - it is copying every dirty texture and" Cyan
+        Say " both buffers every frame. $([math]::Round($Burst / 60.0, 1))s of game time will take a lot longer than that" Cyan
+        Say " in real time. Keep playing through it; game frames are what is being counted." Cyan
         Say "==============================================================================" Cyan
         Say ""
     } else {
@@ -194,6 +203,7 @@ if (-not $Analyze) {
             foreach ($i in $ids) { if ($i -eq $prev + 1) { $run++ } else { $run = 1 }; $prev = $i
                                    if ($run -gt $best) { $best = $run } }
             if ($best -ge $Burst - 2) { Say "[burst] $best consecutive frames on disk" Green; break }
+            if ($best -gt 1) { Say "  ... burst in progress: $best/$Burst frames" DarkGray }
             continue
         }
         if ($script:matchSeen -and (Get-Date) -gt $script:extraUntil) { break }

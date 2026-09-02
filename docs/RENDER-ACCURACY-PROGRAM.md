@@ -1843,3 +1843,52 @@ frame, with textures shared across the whole sequence rather than per frame.
 
 The player now reports its measured rate and any skipped frames, so pacing is a number rather than an
 impression.
+
+### The burst never armed in a match
+
+First `-Burst 90` run recorded nothing:
+
+```
+[cap] frame 1 inventory: 0 draws
+[diag]   captured at creation: ...
+(nothing further)
+```
+
+Two mistakes compounding. The burst armed 3 s after the hooks went in — the Capcom logo — and that
+frame has 0 draws, so it failed the in-match gate and the burst ended, correctly. But burst mode also
+set `MAX_SHOTS = 1`, so **nothing ever armed again**: the run sat there recording nothing while the
+player waited for it.
+
+Arming is cheap — one frame, and a frame that fails the gate is discarded without consuming a dump
+slot — so it now retries every second until a burst completes, and stops arming once one is on disk.
+Both outcomes are logged rather than silent:
+
+```
+[burst] abandoned at N frame(s) -- frame F is not a match (D draws, T textures)
+[burst] COMPLETE: N consecutive frames from F
+```
+
+The texture version table is now sized for a long burst (4096, from 512). It lives for the whole
+burst — that is what makes a texture re-dump only when it is rewritten — so it accumulates every
+distinct texture object the game touches over the segment, not the ~230 a single frame binds. It also
+holds a reference to each, which is what keeps the pointer a stable identity: without it the game
+could free a texture and hand the same address to a different one.
+
+### Recording longer than a moment
+
+`collect.ps1 -Seconds N` is the honest unit: the capture counts GAME frames at 60 fps, so N seconds
+of match is N*60 consecutive frames however slowly the game is actually running while it records.
+
+20 seconds is 1200 frames, and that does not fit the "prebuild every frame" design: at ~0.5 MB of
+per-frame GPU buffers (vertex-buffer prefix ~230 KB, index buffer ~25 KB, 256 B of uniforms per draw)
+that is ~580 MB. So the player now prepares a **window** — 300 frames, ~145 MB — topped up two frames
+per displayed frame and evicted behind, with buffers destroyed explicitly rather than left to the GC.
+Preparing is pure buffer creation, so the top-up stays well ahead of a 60 fps read-out and never
+allocates in the critical path for the frame being shown. Sequences shorter than the window are
+prepared entirely and never evict, exactly as before.
+
+Textures are not part of the window: they are shared across the whole sequence and uploaded once.
+
+⚠ Rough cost of 20 s, to be replaced with measurements from the first long run: ~1.6 GB on disk
+during capture (the per-frame ndjson dominates at ~1 MB a frame), and a ~360 MB `.seq`. A 5-second
+run first would calibrate all of these against reality rather than arithmetic.

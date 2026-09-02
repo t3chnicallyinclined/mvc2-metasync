@@ -77,6 +77,8 @@ static unsigned g_frame = 0;
 static unsigned g_burst = 1;            // frames per arm; from D3DCAP_BURST
 static unsigned g_burstLeft = 0;        // frames still to record in the current burst
 static unsigned g_burstFirst = 0;       // frame number the current burst started on
+static unsigned g_burstGot = 0;         // frames of the current burst actually recorded
+static volatile LONG g_burstDone = 0;   // a full burst is on disk; stop arming
 static char g_dir[MAX_PATH] = {0};
 
 static uintptr_t g_imgBase = 0, g_imgSize = 0, g_renderer = 0;
@@ -762,7 +764,12 @@ struct TexVer {
     bool snapped;
     bool dirty;
 };
-static TexVer g_texVer[512];
+// Sized for a LONG burst, not a single frame. The table lives for the whole burst -- that is what
+// makes a texture re-dump only when it is rewritten -- so it accumulates every distinct texture
+// object the game touches over the whole segment, not the ~230 a single frame binds. It also holds a
+// reference to each, which is what keeps the pointer a stable identity: without it the game could
+// free a texture and hand the same address to a different one.
+static TexVer g_texVer[4096];
 static int g_nTexVer = 0;
 
 struct TexSnap { ID3D11Texture2D* stg; ID3D11Resource* res; unsigned ver; };
@@ -796,9 +803,10 @@ static unsigned noteTexVersioned(ID3D11DeviceContext* c, ID3D11Resource* r) {
     int slot = -1;
     for (int i = 0; i < g_nTexVer; ++i) if (g_texVer[i].res == r) { slot = i; break; }
     if (slot < 0) {
-        if (g_nTexVer >= 512) {
+        if (g_nTexVer >= 4096) {
             static bool warned = false;
-            if (!warned) { warned = true; logf("[tex] ⚠ version table FULL (512) -- textures dropped"); }
+            if (!warned) { warned = true; logf("[tex] ⚠ version table FULL (4096) -- textures dropped. "
+                                               "Shorten the burst; a long one accumulates every texture the game touches."); }
             return 0;
         }
         ID3D11Texture2D* t = nullptr;
@@ -1226,11 +1234,24 @@ static HRESULT STDMETHODCALLTYPE hkPresent(IDXGISwapChain* sc, UINT si, UINT fla
                 }
             }
             dumpCapturedBuffers(sc, g_frame);
+            ++g_burstGot;
+            if (g_burst > 1 && g_burstGot >= g_burst) {
+                g_burstLeft = 0;
+                InterlockedExchange(&g_burstDone, 1);
+                logf("[burst] COMPLETE: %u consecutive frames from %u", g_burstGot, g_burstFirst);
+            }
         } else {
             releaseCapBufs();
             // A frame that fails the in-match gate ends the burst: whatever we were recording is not
-            // a match any more, and half a burst of menu frames is not a playback.
+            // a match any more, and half a burst of menu frames is not a playback. The arm thread
+            // keeps trying, so an arm that lands on the title screen costs one wasted frame, not the
+            // whole run.
+            if (g_burstLeft || g_burstGot) {
+                logf("[burst] abandoned at %u frame(s) -- frame %u is not a match (%u draws, %d textures)",
+                     g_burstGot, g_frame, g_drawIdx, g_nTexVer);
+            }
             g_burstLeft = 0;
+            g_burstGot = 0;
             releaseCapTex();
             g_nRtSeen = 0;
         }
@@ -1247,6 +1268,7 @@ static HRESULT STDMETHODCALLTYPE hkPresent(IDXGISwapChain* sc, UINT si, UINT fla
             if (fopen_s(&g_out, path, "wb") == 0 && g_out) {
                 g_drawIdx = 0; g_capturing = true; g_ncbWritten = 0; g_nRtSeen = 0;
             g_burstFirst = g_frame + 1;
+            g_burstGot = 0;
             g_burstLeft = g_burst > 1 ? g_burst - 1 : 0;
             } else {
                 g_burstLeft = 0;
@@ -1371,8 +1393,14 @@ static DWORD WINAPI worker(LPVOID) {
         // vertex data was never written.
         MAX_BUF_DUMPS = (LONG)g_burst + 6;
     }
-    const ULONGLONG AUTO_MS = g_burst > 1 ? 3000 : 8000;
-    const unsigned  MAX_SHOTS = g_burst > 1 ? 1 : 60;
+    // ⚠ A BURST MUST KEEP RE-ARMING UNTIL IT LANDS IN A MATCH.
+    // The first version armed once, 3 s after the hooks went in -- which is the Capcom logo. That
+    // frame had 0 draws, failed the in-match gate, ended the burst, and with a one-shot budget
+    // nothing ever armed again: the run sat there recording nothing while the player waited.
+    // Arming is cheap (one frame, and a frame that fails the gate is discarded without a dump), so
+    // retry every second until a burst completes.
+    const ULONGLONG AUTO_MS = g_burst > 1 ? 1000 : 8000;
+    const unsigned  MAX_SHOTS = g_burst > 1 ? 100000 : 60;
     char armPath[MAX_PATH];
     _snprintf_s(armPath, sizeof(armPath), _TRUNCATE, "%s\\ARM", g_dir);
     ULONGLONG last = GetTickCount64();
@@ -1391,7 +1419,7 @@ static DWORD WINAPI worker(LPVOID) {
             while (GetAsyncKeyState(VK_F9) & 0x8000) Sleep(20);
         } else if (GetFileAttributesA(armPath) != INVALID_FILE_ATTRIBUTES) {
             DeleteFileA(armPath); why = "ARM";
-        } else if (GetTickCount64() - last >= AUTO_MS && shots < MAX_SHOTS) {
+        } else if (GetTickCount64() - last >= AUTO_MS && shots < MAX_SHOTS && !g_burstDone) {
             why = "auto";
         }
         if (why) { last = GetTickCount64(); ++shots; InterlockedExchange(&g_armDraws, 1); }

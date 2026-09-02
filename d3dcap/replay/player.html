@@ -117,8 +117,13 @@ $('load').onclick = async () => {
     const built = await player.prepareAll((i, n) => {
       $('readout').textContent = `preparing ${i}/${n}`;
     });
-    log(`${(built.bytes / 1048576).toFixed(1)} MB of per-frame buffers, ` +
+    log(`${(built.bytes / 1048576).toFixed(1)} MB of per-frame buffers for ${built.prepared} frames, ` +
         `${built.textures} textures shared across the sequence`, 'ok');
+    if (built.windowed) {
+      log(`sequence is longer than the ${built.prepared}-frame window ` +
+          `(all ${player.count} would be ${(built.totalBytes / 1048576).toFixed(0)} MB); ` +
+          `frames are prepared ahead and evicted behind during playback`, 'warn');
+    }
 
     $('pos').max = player.count - 1;
     $('pos').value = 0;
@@ -136,7 +141,7 @@ function show(i) {
   $('readout').innerHTML =
     `frame <b>${player.frameNumber}</b> &nbsp; ${player.index + 1}/${player.count} &nbsp;·&nbsp; ` +
     `<b>${r.drawn}</b> draws &nbsp;·&nbsp; <b>${r.ms.toFixed(1)}</b> ms` +
-    (r.uploaded ? ` &nbsp;·&nbsp; +${r.uploaded} new textures` : '');
+    ` &nbsp;·&nbsp; ${r.ready} ready`;
 }
 
 function stop() {
