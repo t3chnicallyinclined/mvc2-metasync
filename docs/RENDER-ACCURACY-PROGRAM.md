@@ -2146,3 +2146,32 @@ Open, in the order that matters:
 3. **Gate 1** — the geometry diff against `buildEmitterDrawList`, with the corrected `*192 / *112`
    mapping and M5 restated as the union rule. Needs the state sidecar first: the capture carries no
    game state, and every offset it needs is already in the agent's `reader.rs`.
+
+### ⭐ What that burst actually contains: a 3-meter triple super
+
+This matters more than the frame count. The burst is not neutral footage — it is the hardest content
+the game produces, and the hardest case Path A has never been able to reach.
+
+```
+draws per frame       min 322   mean 635   PEAK 836
+character draws       min  32   mean 165   peak 447
+effect/HUD (texalpha) min  27   mean  66   peak 172
+distinct pipeline states 11, of which 3 are ADDITIVE (dst = ONE)
+```
+
+The **middle ground-truth frame is inside the super**:
+
+```
+frame 5481:  582 draws  =  264 indexed (characters) + 123 texalpha (effects) + 194 opaque (stage)
+             90 ADDITIVE draws       187 distinct sprite tiles in that one frame
+             -> 0.018% of pixels differing, 25 missing of 1,228,800
+```
+
+Compare the last frame of the burst, after everything has cleared: 667 draws, 68 character draws,
+**0 additive** — 0.011% differing.
+
+So the pixel-accuracy numbers are measured **on the super, with all characters on screen, the flashes
+up and 90 additive draws compositing**, not on a quiet frame. Effect cells, additive blending and HUD
+chrome are precisely the ceiling recorded for Path A in `render-pipeline-handover`; Path B renders
+them without a special case, because it is replaying the game's own draw calls rather than
+reconstructing them.
