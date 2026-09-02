@@ -170,7 +170,7 @@ if (-not $Analyze) {
                 $null = $fs.Seek($logLen, 'Begin')
                 $sr = New-Object IO.StreamReader($fs)
                 $sr.ReadToEnd() -split "`r?`n" |
-                    Where-Object { $_ -match '\[cap\]|captured at creation|\[mh\]|\[init\]' } |
+                    Where-Object { $_ -match '\[cap\]|\[burst\]|\[write\]|captured at creation|\[mh\]|\[init\]' } |
                     ForEach-Object { Say "  $_" DarkGray }
                 $sr.Close(); $fs.Close(); $logLen = $len
             }

@@ -1892,3 +1892,48 @@ Textures are not part of the window: they are shared across the whole sequence a
 ⚠ Rough cost of 20 s, to be replaced with measurements from the first long run: ~1.6 GB on disk
 during capture (the per-frame ndjson dominates at ~1 MB a frame), and a ~360 MB `.seq`. A 5-second
 run first would calibrate all of these against reality rather than arithmetic.
+
+### The 20-second run recorded nothing consecutive, and crawled
+
+```
+[cap] frame 1199 ... 1250 ... 1307 ... 1362      (gaps of ~55 -- one per second at full speed)
+[cap] frame 4447 ... 4449 ... 4451 ... 4453      (gaps of 2 -- one per second at ~2 fps)
+found no run of consecutive frames
+```
+
+Every capture was a fresh once-a-second **arm**. The burst never continued once.
+
+**Cause: the burst initialiser was in the wrong branch.** An edit put `g_burstFirst / g_burstGot /
+g_burstLeft` inside the CONTINUATION block, guarded by `if (g_burstLeft)`. That is circular —
+nothing else ever set `g_burstLeft`, so it stayed 0, the continuation never ran, and it could never
+set itself. The capture looked healthy the whole time because frames kept appearing.
+
+Both paths now go through one `openFrame()`, so they cannot drift apart again, and the countdown is
+armed in exactly one place.
+
+### And why the game crawled — it was the disk, on the render thread
+
+Three separate filesystem costs, all paid from inside `Present()`:
+
+1. **Every texture was re-dumped every captured frame.** The version table was cleared at the end of
+   each frame, so a match frame's ~230 textures became ~230 file creations per capture. Over a run
+   that is tens of thousands of files in one directory, each one a fresh create plus an antivirus
+   scan — and the cost GROWS with the number of files already there, which is exactly the "it got
+   worse the longer it ran" signature. The table now lives for the whole **session**, so a texture is
+   written once per content generation and never again. The in-match gate needed its own per-frame
+   count (`g_frameTex`) since the table's size is no longer that number.
+2. **`logf` opens, writes and closes the log file on every call.** A burst would have paid that 1200
+   times for the per-frame `[cap]` line alone. Progress is now reported once per 60 burst frames.
+3. **Every dump was written synchronously.** There is now an async writer thread: the render thread
+   does one memcpy and a queue push, and the disk is entirely off the frame path. The queue is capped
+   at 512 MB and the producer waits if the disk cannot keep up — a stall is visible as a slow
+   capture, where an unbounded queue would be an out-of-memory crash twenty minutes in. It says so:
+   `[write] queue full (N MB) -- the disk is the bottleneck`.
+
+The frame inventory also gets a 1 MB `setvbuf`: it is ~1 MB written as thousands of small `fprintf`
+calls, which without a buffer is thousands of write syscalls per frame.
+
+⚠ Not yet addressed: `CopyResource` into a staging resource followed immediately by `Map` in the same
+frame is a full GPU pipeline flush per captured frame. The fix is a staging ring mapped N frames
+later. It is worth maybe 1-5 ms a frame — real, but an order of magnitude below what the filesystem
+was costing, so it waits for a measurement rather than a guess.

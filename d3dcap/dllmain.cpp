@@ -105,6 +105,74 @@ static void markTexDirty(ID3D11Resource* r);
 static void noteRT(ID3D11Resource* r);
 static const char* moduleOf(void* p);
 
+// -- ASYNC FILE WRITER ----------------------------------------------------------------------------
+// ⚠⚠ EVERY BYTE THIS TOOL WRITES USED TO BE WRITTEN FROM Present(), ON THE RENDER THREAD.
+// That is fine for one frame every 8 seconds and ruinous for a burst. A 20-second run degraded the
+// game from 60 fps to about 2 -- and got worse the longer it ran, which is the signature of file
+// creation in a directory that keeps growing, plus an antivirus scan per new file. Handing the bytes
+// to a background thread costs one memcpy and a lock, and takes the game's frame time out of the
+// filesystem's hands entirely.
+//
+// Bounded on purpose: if the writer cannot keep up, the producer waits rather than growing until the
+// process dies. A stall here shows up as a slow capture, which is visible; an unbounded queue shows
+// up as an out-of-memory crash twenty minutes in, which is not.
+struct WriteJob { char path[MAX_PATH]; uint8_t* data; size_t len; WriteJob* next; };
+static CRITICAL_SECTION g_wcs;
+static HANDLE g_wsem = nullptr;
+static WriteJob* g_whead = nullptr;
+static WriteJob* g_wtail = nullptr;
+static volatile LONG64 g_wqueued = 0;      // bytes waiting to be written
+static volatile LONG   g_wstalls = 0;
+static const LONG64 WRITE_QUEUE_CAP = 512ll << 20;
+
+static DWORD WINAPI writerThread(LPVOID) {
+    for (;;) {
+        WaitForSingleObject(g_wsem, INFINITE);
+        WriteJob* j = nullptr;
+        EnterCriticalSection(&g_wcs);
+        if (g_whead) { j = g_whead; g_whead = j->next; if (!g_whead) g_wtail = nullptr; }
+        LeaveCriticalSection(&g_wcs);
+        if (!j) continue;
+        FILE* f = nullptr;
+        if (fopen_s(&f, j->path, "wb") == 0 && f) { fwrite(j->data, 1, j->len, f); fclose(f); }
+        InterlockedAdd64(&g_wqueued, -(LONG64)j->len);
+        free(j->data);
+        free(j);
+    }
+}
+
+/** Take ownership of `data` (malloc'd) and write it to `path` off-thread. */
+static void writeAsync(const char* path, uint8_t* data, size_t len) {
+    if (!data) return;
+    if (!g_wsem) { FILE* f = nullptr;   // writer not up yet: fall back rather than lose the bytes
+        if (fopen_s(&f, path, "wb") == 0 && f) { fwrite(data, 1, len, f); fclose(f); }
+        free(data); return; }
+    while (g_wqueued > WRITE_QUEUE_CAP) {
+        if (InterlockedIncrement(&g_wstalls) == 1)
+            logf("[write] queue full (%lld MB) -- the disk is the bottleneck, capture will slow",
+                 (long long)(g_wqueued >> 20));
+        Sleep(2);
+    }
+    WriteJob* j = (WriteJob*)calloc(1, sizeof(WriteJob));
+    if (!j) { free(data); return; }
+    strncpy_s(j->path, path, _TRUNCATE);
+    j->data = data; j->len = len;
+    EnterCriticalSection(&g_wcs);
+    if (g_wtail) g_wtail->next = j; else g_whead = j;
+    g_wtail = j;
+    LeaveCriticalSection(&g_wcs);
+    InterlockedAdd64(&g_wqueued, (LONG64)len);
+    ReleaseSemaphore(g_wsem, 1, nullptr);
+}
+
+/** Copy `n` bytes and queue them. For data we do not own (a mapped staging resource). */
+static void writeAsyncCopy(const char* path, const void* src, size_t n) {
+    uint8_t* buf = (uint8_t*)malloc(n ? n : 1);
+    if (!buf) return;
+    memcpy(buf, src, n);
+    writeAsync(path, buf, n);
+}
+
 static bool safeRead(const void* src, void* dst, size_t n) {
     __try { memcpy(dst, src, n); return true; }
     __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
@@ -761,6 +829,7 @@ struct TexVer {
     ID3D11Resource*  res;      // identity: the pointer the draw record prints
     ID3D11Texture2D* tex;      // the same object, held with a reference
     unsigned ver;
+    unsigned lastFrame;        // last CAPTURED frame that sampled it, for the per-frame count
     bool snapped;
     bool dirty;
 };
@@ -776,6 +845,7 @@ struct TexSnap { ID3D11Texture2D* stg; ID3D11Resource* res; unsigned ver; };
 static TexSnap g_texSnap[768];
 static int g_nTexSnap = 0;
 static unsigned g_texWrites = 0, g_texRewrites = 0;
+static int g_frameTex = 0;     // distinct textures sampled by the frame being captured RIGHT NOW
 static ID3D11Device* g_texDev = nullptr;
 
 static bool isDumpableTex(DXGI_FORMAT f);
@@ -815,9 +885,13 @@ static unsigned noteTexVersioned(ID3D11DeviceContext* c, ID3D11Resource* r) {
         g_texVer[slot].res = r;          // the QI reference on `tex` keeps this pointer valid
         g_texVer[slot].tex = t;
         g_texVer[slot].ver = 0;
+        g_texVer[slot].lastFrame = 0;
         g_texVer[slot].snapped = false;
         g_texVer[slot].dirty = true;     // never snapshotted, so it needs one
     }
+    // The in-match gate counts textures THIS FRAME sampled. The table itself is session-wide now,
+    // so its size is not that number and using it would let any frame past the gate.
+    if (g_texVer[slot].lastFrame != g_frame) { g_texVer[slot].lastFrame = g_frame; ++g_frameTex; }
     if (!g_texVer[slot].dirty) return g_texVer[slot].ver;
     if (g_texVer[slot].snapped) ++g_texVer[slot].ver;   // a new generation of this texture's content
 
@@ -879,21 +953,26 @@ static void releaseCapTex() {
     g_texWrites = g_texRewrites = 0;
 }
 
-// End of a captured FRAME. During a burst the version table must SURVIVE: it is what makes a texture
-// re-dump only when the game rewrote it, which is the whole reason a burst fits on disk.
+// End of a captured FRAME.
+// ⚠⚠ THE VERSION TABLE SURVIVES THE WHOLE SESSION, not just a burst. It is what makes a texture get
+// written to disk ONCE per content generation instead of once per captured frame, and that is not a
+// nicety: a match frame samples ~230 textures, so re-dumping them every capture put tens of
+// thousands of small files in one directory, each one a fresh create + antivirus scan on the RENDER
+// THREAD. That is what degraded a 60 fps game to about 2 fps over the course of a run -- the cost
+// grew with the number of files already there, which is why it got worse the longer it ran.
+// Holding a reference to each texture is also what keeps its pointer a stable identity across
+// frames: without it the game could free one and hand the same address to a different texture.
 static void endFrameTex() {
-    if (g_burstLeft) {
-        for (int i = 0; i < g_nTexSnap; ++i) if (g_texSnap[i].stg) g_texSnap[i].stg->Release();
-        g_nTexSnap = 0;
-        return;
-    }
-    releaseCapTex();
+    for (int i = 0; i < g_nTexSnap; ++i) if (g_texSnap[i].stg) g_texSnap[i].stg->Release();
+    g_nTexSnap = 0;
 }
 
 static void dumpCapturedTextures(ID3D11Device* dev, ID3D11DeviceContext* ctx, unsigned frame) {
-    logf("[tex] %d distinct textures, %u writes seen this frame, %u of them rewrote a texture a draw "
-         "had already sampled, %d snapshots to write",
-         g_nTexVer, g_texWrites, g_texRewrites, g_nTexSnap);
+    // Quiet unless something is actually being written: at one line per frame this is the log during
+    // a 1200-frame burst.
+    if (g_nTexSnap)
+        logf("[tex] frame %u: %d sampled, %d new generations to write (%d known this session)",
+             frame, g_frameTex, g_nTexSnap, g_nTexVer);
     for (int i = 0; i < g_nTexSnap; ++i) {
         ID3D11Texture2D* stg = g_texSnap[i].stg;
         if (!stg) continue;
@@ -905,14 +984,16 @@ static void dumpCapturedTextures(ID3D11Device* dev, ID3D11DeviceContext* ctx, un
             _snprintf_s(path, sizeof(path), _TRUNCATE, "%s\\tex_%u_%ux%u_f%d_%p_v%u.bin",
                         g_dir, frame, d.Width, d.Height, (int)d.Format,
                         (void*)g_texSnap[i].res, g_texSnap[i].ver);
-            FILE* f = nullptr;
-            if (fopen_s(&f, path, "wb") == 0 && f) {
-                // Rows are repacked tightly at Width*bpp; RowPitch is the SOURCE stride and is
-                // >= that, so this never over-reads. The decoder needs only w/h/format.
-                const size_t rowBytes = (size_t)d.Width * texBytesPerPixel(d.Format);
+            // Rows are repacked tightly at Width*bpp; RowPitch is the SOURCE stride and is >= that,
+            // so this never over-reads. The decoder needs only w/h/format. Repacking happens here
+            // because the mapped pointer is only valid until Unmap; the WRITE happens off-thread.
+            const size_t rowBytes = (size_t)d.Width * texBytesPerPixel(d.Format);
+            uint8_t* buf = (uint8_t*)malloc(rowBytes * d.Height ? rowBytes * d.Height : 1);
+            if (buf) {
                 for (UINT y = 0; y < d.Height; ++y)
-                    fwrite((const uint8_t*)m.pData + (size_t)y * m.RowPitch, 1, rowBytes, f);
-                fclose(f);
+                    memcpy(buf + (size_t)y * rowBytes,
+                           (const uint8_t*)m.pData + (size_t)y * m.RowPitch, rowBytes);
+                writeAsync(path, buf, rowBytes * d.Height);
             }
             ctx->Unmap(stg, 0);
         }
@@ -996,14 +1077,9 @@ static void dumpCapturedBuffers(IDXGISwapChain* sc, unsigned frame) {
                             g_dir, frame, g_capBufs[i].tag, (void*)b);
                 UINT n = g_capBufs[i].used ? g_capBufs[i].used : bd.ByteWidth;
                 if (n > bd.ByteWidth) n = bd.ByteWidth;
-                FILE* f = nullptr;
-                if (fopen_s(&f, path, "wb") == 0 && f) {
-                    // Only the prefix any draw actually reads. The offline tools index this buffer by
-                    // absolute byte offset, so a PREFIX is safe where a slice would not be.
-                    fwrite(m.pData, 1, n, f);
-                    fclose(f);
-                    logf("[buf] %s %p -> %u of %u bytes", g_capBufs[i].tag, (void*)b, n, bd.ByteWidth);
-                }
+                // Only the prefix any draw actually reads. The offline tools index this buffer by
+                // absolute byte offset, so a PREFIX is safe where a slice would not be.
+                writeAsyncCopy(path, m.pData, n);
                 ctx->Unmap(stg, 0);
             } else {
                 logf("[buf] Map failed for %p", (void*)b);
@@ -1195,6 +1271,27 @@ static void probeSample() {
     InterlockedIncrement(&pSamples);
 }
 
+// Open the inventory for one frame. Both the ARM path and the burst CONTINUATION path go through
+// here, because when they were two copies they drifted and the burst silently stopped continuing.
+static bool openFrame(unsigned frame) {
+    char path[MAX_PATH];
+    _snprintf_s(path, sizeof(path), _TRUNCATE, "%s\\frame_%u.ndjson", g_dir, frame);
+    if (fopen_s(&g_out, path, "wb") != 0 || !g_out) {
+        logf("[cap] could not open %s", path);
+        return false;
+    }
+    // ⚠ A frame's inventory is ~1 MB written as thousands of small fprintf calls. Without a big
+    // buffer that is thousands of write syscalls per frame ON THE RENDER THREAD, which is felt
+    // directly as frame time during a burst.
+    setvbuf(g_out, nullptr, _IOFBF, 1 << 20);
+    g_drawIdx = 0;
+    g_capturing = true;
+    g_ncbWritten = 0;
+    g_nRtSeen = 0;
+    g_frameTex = 0;
+    return true;
+}
+
 // ── Present ──────────────────────────────────────────────────────────────────────────────────────
 static HRESULT STDMETHODCALLTYPE hkPresent(IDXGISwapChain* sc, UINT si, UINT flags) {
     probeOnce(sc);
@@ -1219,7 +1316,7 @@ static HRESULT STDMETHODCALLTYPE hkPresent(IDXGISwapChain* sc, UINT si, UINT fla
         // g_nTexVer IS that count -- one entry per DISTINCT texture object the frame's draws
         // sampled, independent of how many content generations each of them went through -- so the
         // in-process gate still matches the offline one exactly.
-        if (g_drawIdx >= 300 && g_nTexVer >= 50) {
+        if (g_drawIdx >= 300 && g_frameTex >= 50) {
             // The SCENE RT is the diff target. The backbuffer has been through a 9-pass bloom/SMAA
             // chain, so diffing against it would only prove that bloom exists. The scene RT is bound
             // for the whole sprite pass and never rebound in the frame, so Present is a valid
@@ -1248,39 +1345,42 @@ static HRESULT STDMETHODCALLTYPE hkPresent(IDXGISwapChain* sc, UINT si, UINT fla
             // whole run.
             if (g_burstLeft || g_burstGot) {
                 logf("[burst] abandoned at %u frame(s) -- frame %u is not a match (%u draws, %d textures)",
-                     g_burstGot, g_frame, g_drawIdx, g_nTexVer);
+                     g_burstGot, g_frame, g_drawIdx, g_frameTex);
             }
             g_burstLeft = 0;
             g_burstGot = 0;
             releaseCapTex();
             g_nRtSeen = 0;
         }
-        logf("[cap] frame %u inventory: %u draws%s", g_frame, g_drawIdx,
-             g_burstLeft ? "  (burst)" : "");
+        // ⚠ logf OPENS, WRITES AND CLOSES THE LOG FILE. That is one more filesystem round trip on
+        // the render thread, and a burst would pay it 1200 times. Report progress once a second of
+        // game time instead of once a frame.
+        if (!g_burstLeft) {
+            logf("[cap] frame %u inventory: %u draws", g_frame, g_drawIdx);
+        } else if ((g_burstGot % 60) == 0) {
+            logf("[burst] %u/%u frames (%u draws, %d textures, %lld MB queued to disk)",
+                 g_burstGot, g_burst, g_drawIdx, g_frameTex, (long long)(g_wqueued >> 20));
+        }
 
         // Continue the burst IN THIS Present. The arm path below is an `else if`, so leaving it to
         // re-arm would record every OTHER frame -- and a playback of every other frame is not a
         // playback of the match.
         if (g_burstLeft) {
             --g_burstLeft;
-            char path[MAX_PATH];
-            _snprintf_s(path, sizeof(path), _TRUNCATE, "%s\\frame_%u.ndjson", g_dir, g_frame + 1);
-            if (fopen_s(&g_out, path, "wb") == 0 && g_out) {
-                g_drawIdx = 0; g_capturing = true; g_ncbWritten = 0; g_nRtSeen = 0;
+            if (!openFrame(g_frame + 1)) g_burstLeft = 0;
+        }
+    } else if (InterlockedExchange(&g_armDraws, 0)) {
+        // ⚠⚠ THE BURST COUNTDOWN IS ARMED HERE AND NOWHERE ELSE.
+        // An earlier edit put these three lines in the CONTINUATION branch above, inside
+        // `if (g_burstLeft)`. That is circular: nothing else ever set g_burstLeft, so it stayed 0,
+        // the continuation never ran, and every "burst" frame was actually a fresh once-a-second
+        // arm. The capture looked like it was working -- frames kept appearing -- but they were
+        // 60 apart at full speed and 2 apart once the game bogged down, and never consecutive.
+        if (openFrame(g_frame + 1)) {
             g_burstFirst = g_frame + 1;
             g_burstGot = 0;
             g_burstLeft = g_burst > 1 ? g_burst - 1 : 0;
-            } else {
-                g_burstLeft = 0;
-            }
         }
-    } else if (InterlockedExchange(&g_armDraws, 0)) {
-        char path[MAX_PATH];
-        _snprintf_s(path, sizeof(path), _TRUNCATE, "%s\\frame_%u.ndjson", g_dir, g_frame + 1);
-        if (fopen_s(&g_out, path, "w") == 0 && g_out) {
-            g_drawIdx = 0; g_capturing = true; g_ncbWritten = 0; g_nRtSeen = 0;
-        }
-        else logf("[cap] could not open %s", path);
     }
 
     if ((g_frame % 600) == 0) {
@@ -1434,6 +1534,9 @@ BOOL APIENTRY DllMain(HMODULE hMod, DWORD reason, LPVOID) {
         GetTempPathA(sizeof(tmp), tmp);
         _snprintf_s(g_dir, sizeof(g_dir), _TRUNCATE, "%srrcap", tmp);
         CreateDirectoryA(g_dir, nullptr);
+        InitializeCriticalSection(&g_wcs);
+        g_wsem = CreateSemaphoreA(nullptr, 0, LONG_MAX, nullptr);
+        CloseHandle(CreateThread(nullptr, 0, writerThread, nullptr, 0, nullptr));
         g_imgBase = (uintptr_t)GetModuleHandleW(nullptr);
         {   // SizeOfImage, so a return address can be range-checked against the game module
             const IMAGE_DOS_HEADER* dh = (const IMAGE_DOS_HEADER*)g_imgBase;
