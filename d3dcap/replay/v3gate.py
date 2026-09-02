@@ -20,7 +20,7 @@ Fighter atlas = its own cid (blk+slot*0x738+0x6C0). Object atlas = its OWNER's c
 u64 at H+0x28 (the owning fighter's H base). Object mirror = face XOR sid bit 15, as in the tape
 adapter. Records inside a body paint in REVERSE list order (ordergate: 59 bodies, 0 violations).
 """
-import glob, json, os, sys
+import glob, json, os, struct, sys
 from collections import Counter
 import numpy as np
 from PIL import Image
@@ -81,6 +81,13 @@ def emit_frame(blk, base, shape, x0, y0):
     LAYERZ = [15, 17, 19, 21, 23, 25, 27, 29, 10, 11, 12, 13, 30, 31, 32, 33]
     order = sorted(range(len(nodes)), key=lambda i: (-LAYERZ[nodes[i]['layer']], -nodes[i]['idx']))
     for nd in (nodes[i] for i in order):
+        # ⭐ +0x148 bit 15 (DC node+0x104, the walker's ROTATION path): across 30 frames and 394
+        # nodes, bit set <=> absent from the axis-aligned indexed stream, 370/0/0/24, zero exceptions.
+        # These nodes are not drawn as tiles; painting them here invents pixels. --draw-rotated keeps
+        # them for A/B.
+        if (struct.unpack_from('<I', blk, nd['off'] + 0x148)[0] & 0x8000) and '--draw-rotated' not in sys.argv:
+            skipped['rotation-path node'] += 1
+            continue
         if nd['slot'] is not None:
             cid = blk[nd['off'] + H_CID]
             mir = bool(blk[nd['off'] + H_FACING])
