@@ -737,6 +737,30 @@ static const char* moduleOf(void* p) {
 static volatile LONG g_drawHooksDone = 0;
 
 // Read (never write) the draw function addresses out of a live context's table, then trampoline them.
+// ── THE SPRITE WALKER HOOK ─────────────────────────────────────────────────────────────────────
+// FUN_140620f10 (Ghidra, `void(void)`, called once per frame from FUN_140620960) walks the 16-layer
+// draw list: for every node with +0x170 != 0 it computes and WRITES the render fields -- screen
+// coords +0x124/+0x128, scale +0x130/+0x134 (÷ camera zoom blk+0x6928), depth +0x12C, angle
+// +0x148 = +0x64 (+ the animation cell's angle when +0x191 != 0), hotspot +0x178/+0x17A, facing
+// +0x154 -- and submits the node through FUN_1406129f0. So the ONLY moment the block holds exactly
+// what was drawn, for exactly the nodes that were drawn, is right after this function returns.
+// Frame-boundary dumps do not: the Present-time dump read every node as +0x170 == 0 with the
+// fighters parked off-screen for all 180 frames of a Hail Storm (and the openFrame dump did the
+// same in training mode), while the walker had plainly drawn them. Hook it and dump on return.
+// Pairing: this snapshot describes the SAME frame as the draws (`--paired` in the gate; the
+// sidecar says "at":"walk"). No arguments, void return -- a plain MinHook detour is safe.
+#define RR_WALK_FN 0x140620F10ULL
+typedef void (*PFN_Walk)(void);
+static PFN_Walk oWalk = nullptr;
+static bool g_walkHooked = false;
+static volatile LONG g_walkDumped = 0;      // one snapshot per captured frame
+static const char* g_dumpAt = "open";
+static void dumpBlk(unsigned frame);        // defined with the state dump below
+static void hkWalk(void) {
+    if (oWalk) oWalk();
+    if (g_capturing && !InterlockedExchange(&g_walkDumped, 1)) { g_dumpAt = "walk"; dumpBlk(g_frame); }
+}
+
 static void installDrawHooks(ID3D11DeviceContext* ctx) {
     if (!ctx || InterlockedExchange(&g_drawHooksDone, 1)) return;
     void** vt = *(void***)ctx;
@@ -775,6 +799,14 @@ static void installDrawHooks(ID3D11DeviceContext* ctx) {
         MH_STATUS a = MH_CreateHook(h[i].target, h[i].detour, h[i].orig);
         MH_STATUS b = (a == MH_OK) ? MH_EnableHook(h[i].target) : a;
         logf("[mh] %-22s create=%d enable=%d", h[i].name, (int)a, (int)b);
+    }
+    if (g_imgBase) {
+        void* wt = (void*)RR_RVA(RR_WALK_FN);
+        MH_STATUS a = MH_CreateHook(wt, (void*)&hkWalk, (void**)&oWalk);
+        MH_STATUS b = (a == MH_OK) ? MH_EnableHook(wt) : a;
+        g_walkHooked = (b == MH_OK);
+        logf("[mh] %-22s create=%d enable=%d  (%p; state dumps %s)", "SpriteWalker", (int)a, (int)b, wt,
+             g_walkHooked ? "after the walk, paired with the same frame" : "fall back to openFrame, pair N<->N+1");
     }
 }
 
@@ -1554,8 +1586,8 @@ static void dumpBlk(unsigned frame) {
     if (fopen_s(&f, path, "wb") == 0 && f) {
         unsigned clk = 0;
         memcpy(&clk, g_blkBuf + 0x3CC8, 4);          // the frame clock, per the DC<->blk map
-        fprintf(f, "{\"frame\":%u,\"clock\":%u,\"size\":%u,\"runs\":%u,\"bytes\":%u,\"full\":%s}\n",
-                frame, clk, RR_BLK_SZ, nruns, nbytes, isFull ? "true" : "false");
+        fprintf(f, "{\"frame\":%u,\"clock\":%u,\"size\":%u,\"runs\":%u,\"bytes\":%u,\"full\":%s,\"at\":\"%s\"}\n",
+                frame, clk, RR_BLK_SZ, nruns, nbytes, isFull ? "true" : "false", g_dumpAt);
         fclose(f);
     }
 }
@@ -1577,12 +1609,12 @@ static bool openFrame(unsigned frame) {
     g_nRtSeen = 0;
     g_frameTex = 0;
     markAllTexDirty();
-    // State snapshot at the START of this frame (= right after the previous Present). The offline
-    // reader pairs the draws of frame N with the block dumped by openFrame(N+1): the walker wrote
-    // frame N's screen coords during N's render and they are still intact here, while the draw
-    // list itself is only cleared at the start of the next registration. Proven on 30 frames
-    // including supers; the Present-time alternative is not (see hkPresent).
-    dumpBlk(frame);
+    // State snapshot. PRIMARY: the sprite-walker hook (hkWalk) dumps right after the walk, i.e. the
+    // block exactly as drawn, paired with this same frame. FALLBACK (hook not installed): dump here,
+    // at the START of the frame; the reader then pairs the draws of frame N with openFrame(N+1) --
+    // exact on 30 match frames, but blind to nodes that exist only between registration and walk.
+    InterlockedExchange(&g_walkDumped, 0);
+    if (!g_walkHooked) { g_dumpAt = "open"; dumpBlk(frame); }
     return true;
 }
 

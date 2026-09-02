@@ -20,7 +20,8 @@ Fighter atlas = its own cid (blk+slot*0x738+0x6C0). Object atlas = its OWNER's c
 u64 at H+0x28 (the owning fighter's H base). Object mirror = face XOR sid bit 15, as in the tape
 adapter. Records inside a body paint in REVERSE list order (ordergate: 59 bodies, 0 violations).
 """
-import glob, json, os, struct, sys
+import glob
+import json, os, struct, sys
 from collections import Counter
 import numpy as np
 from PIL import Image
@@ -309,7 +310,16 @@ def main():
         # frame: the tile-solved origin equals floor(blk(N+1).sy) exactly (446/422/437) while blk(N)
         # holds the previous value (444.11/420.54/439.83); the frames that passed were the ones where
         # nobody moved. Captures made after the shim dumps at Present pair 1:1 instead (`--paired`).
-        use = frame if '--paired' in sys.argv else frame + 1
+        # pairing: a snapshot taken by the walker hook ("at":"walk") describes the same frame as
+        # the draws; a frame-boundary snapshot ("open", or no tag) describes the next one.
+        side = os.path.join(BS.CAP, 'state_%d.json' % frame)
+        at = None
+        if os.path.exists(side):
+            try:
+                at = json.load(open(side)).get('at')
+            except Exception:
+                at = None
+        use = frame if ('--paired' in sys.argv or at == 'walk') else frame + 1
         try:
             meta, blk = BS.load_frame(use)
         except SystemExit:
