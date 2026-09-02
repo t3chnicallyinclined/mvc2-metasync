@@ -33,6 +33,15 @@ ATL = AI.DEF_ATLAS
 H_CID, H_FACING = 0x6c0, 0x154
 TX, TY = 3.0 / 5.0, 7.0 / 15.0
 
+sys.path.insert(0, 'C:/Users/trist/projects/maplecast-flycast/tools')
+import rip_gfx2_assembly as RIP
+_rawc = {}
+def rawcells(cid):
+    if cid not in _rawc:
+        g = glob.glob('C:/Users/trist/projects/maplecast-flycast/dasm_PLDAT/Output/PL%02X_DAT/*GFX_DATA_01.BIN' % cid)
+        _rawc[cid] = RIP.read_cells(open(g[0], 'rb').read())[0] if g else {}
+    return _rawc[cid]
+
 _atlas = {}
 def atlas(cid):
     if cid not in _atlas:
@@ -81,7 +90,9 @@ def emit_frame(blk, base, shape, x0, y0):
                 skipped['unowned object'] += 1
                 continue
             cid = blk[base - base + BS.H0_OFF + slot * BS.SLOT_STRIDE + H_CID]
-            mir = bool(blk[nd['off'] + H_FACING]) != bool(nd['sid'] & 0x8000)
+            # Ghidra (FUN_1406129f0): sid bit 15 selects the RECORD FORMAT (tiled vs assembly), it is
+            # not a flip. The tape adapter XORs it into the mirror; --bit15-flip keeps that for A/B.
+            mir = bool(blk[nd['off'] + H_FACING]) != (bool(nd['sid'] & 0x8000) if '--bit15-flip' in sys.argv else False)
         A = atlas(cid)
         if not A:
             skipped['no atlas PL%02X' % cid] += 1
@@ -99,12 +110,27 @@ def emit_frame(blk, base, shape, x0, y0):
         # floor() here; floor vs trunc differ only for NEGATIVE coords, which this data has not
         # exercised -- flag, do not assume.
         ox, oy = np.floor(nd['sx']) * TX, np.floor(nd['sy']) * TY
-        for r in reversed(recs):
+        # PER-RECORD MIRROR BITS, from the RAW record FLAGS (the deployed json labels them flip/flipy
+        # with the rip's assignment 0x4000=X, 0x8000=Y). Steam's walker (Ghidra, chunk 0x140612f70):
+        # `TEST [rec+4],0x4000` -> V swap (vflip); `CMP [rec+4],0 / JL` = sign bit 0x8000 -> U swap
+        # (hflip), sense XORed with node+0x154. The one single-bit record captured so far agrees with
+        # Steam (0x8000 -> hflip). --flags-rip uses the rip's assignment for A/B.
+        rawr = rawcells(cid)
+        rawr = rawr.get(nd['sid'] & 0x7fff) if isinstance(rawr, dict) else None
+        for ri in range(len(recs) - 1, -1, -1):
+            r = recs[ri]
             p = parts.get(str(r['part']))
             if not p:
                 continue
+            fl = rawr[ri]['flags'] if rawr and ri < len(rawr) else 0
+            if '--flags-rip' in sys.argv:
+                hf, vf = bool(fl & 0x4000), bool(fl & 0x8000)
+            else:
+                hf, vf = bool(fl & 0x8000), bool(fl & 0x4000)
             bmp = idx[p['y']:p['y'] + p['h'], p['x']:p['x'] + p['w']][::-1]
-            if mir:
+            if vf:
+                bmp = bmp[::-1]
+            if mir != hf:
                 bmp = bmp[:, ::-1]
             left = (ox + r['dx'] - p['w']) if mir else (ox - r['dx'])
             top = oy + r['dy']
