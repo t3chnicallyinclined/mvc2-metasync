@@ -101,13 +101,24 @@ def indexed_quads(man, B):
             w=max(gx) - min(gx), h=max(p[1] for p in P) - min(p[1] for p in P),
             u0=min(u for u, v in U), u1=max(u for u, v in U),
             v0=min(v for u, v in U), v1=max(v for u, v in U),
-            mir=U[hi][0] < U[lo][0], vflip=U[yhi][1] > U[ylo][1]))
+            mir=U[hi][0] < U[lo][0], vflip=U[yhi][1] > U[ylo][1],
+            P=P, UV=[(u / tw, v / th) for u, v in U]))
     out.sort(key=lambda q: -q['z'])          # decreasing z == later == on top; paint back first
     return out
 
 
 def raster_truth(man, B, quads):
-    """What Steam drew, from its own pages. The ONE reference nothing of ours has touched."""
+    """What Steam drew, from its own pages. The ONE reference nothing of ours has touched.
+
+    ⚠ EVERY QUAD IS RASTERISED FROM ITS OWN FOUR VERTICES. The first version pasted the page
+    sub-rect into the quad's axis-aligned BOUNDING BOX -- exact for the axis-aligned quads that
+    bodies are made of, and WRONG for a rotated quad: the arm of a 28-degree rocket punch came out
+    as unrotated tiles smeared over their bounding boxes, and the gate then blamed the renderer
+    (76-94% on frames whose rotated tile CENTRES our placement matched to 0.1 px). Here the
+    screen->UV map of each quad is solved from its vertices (a rotated/mirrored rectangle is an
+    affine map) and every pixel centre in the bounding box is inverse-mapped and point-sampled --
+    the same thing the GPU does with point sampling, up to its edge coverage rule. Axis-aligned
+    quads reduce to exactly the old paste."""
     T = man['textures']
     x0 = min(q['sx'] for q in quads)
     y0 = min(q['sy'] for q in quads)
@@ -117,19 +128,35 @@ def raster_truth(man, B, quads):
     for q in quads:
         t = T[q['page']]
         page = np.frombuffer(B(t), np.uint8).reshape(t['h'], t['w'])
-        # ⚠ V IS INVERTED: the screen TOP of this quad is the HIGHER v. Slice low..high then flip.
-        sub = page[int(round(q['v0'])):int(round(q['v1'])),
-                   int(round(q['u0'])):int(round(q['u1']))]
-        if not q.get('vflip'):
-            sub = sub[::-1]
-        if q['mir']:
-            sub = sub[:, ::-1]
-        r0 = int(round(q['sy'] - y0))
-        c0 = int(round(q['sx'] - x0))
-        if sub.size == 0 or r0 + sub.shape[0] > H or c0 + sub.shape[1] > W:
+        P, UV = q['P'], q['UV']
+        if len(P) < 3:
             continue
-        m = sub > 0                                    # index 0 is the transparent entry
-        img[r0:r0 + sub.shape[0], c0:c0 + sub.shape[1]][m] = sub[m]
+        # affine screen->uv from three non-collinear vertices (least squares over all four)
+        A = np.array([[px, py, 1.0] for px, py in P])
+        try:
+            M, *_ = np.linalg.lstsq(A, np.array(UV), rcond=None)      # (3,2): [u v] = [x y 1] @ M
+        except np.linalg.LinAlgError:
+            continue
+        xs = [px for px, _ in P]; ys = [py for _, py in P]
+        r0, r1 = max(0, int(np.floor(min(ys) - y0))), min(H, int(np.ceil(max(ys) - y0)) + 1)
+        c0, c1 = max(0, int(np.floor(min(xs) - x0))), min(W, int(np.ceil(max(xs) - x0)) + 1)
+        if r1 <= r0 or c1 <= c0:
+            continue
+        yy, xx = np.mgrid[r0:r1, c0:c1]
+        X = xx + 0.5 + x0; Y = yy + 0.5 + y0                            # pixel centres, native
+        u = X * M[0, 0] + Y * M[1, 0] + M[2, 0]
+        v = X * M[0, 1] + Y * M[1, 1] + M[2, 1]
+        # inside the quad == inside the quad's own UV rectangle
+        ulo, uhi = min(a for a, _ in UV), max(a for a, _ in UV)
+        vlo, vhi = min(b for _, b in UV), max(b for _, b in UV)
+        eps = 1e-6
+        inside = (u >= ulo - eps) & (u < uhi - eps) & (v >= vlo - eps) & (v < vhi - eps)
+        tu = np.clip(np.floor(u * t['w']).astype(np.int64), 0, t['w'] - 1)
+        tv = np.clip(np.floor(v * t['h']).astype(np.int64), 0, t['h'] - 1)
+        vals = np.zeros_like(tu, dtype=np.uint8)
+        vals[inside] = page[tv[inside], tu[inside]]
+        m = vals > 0                                                  # index 0 is the transparent entry
+        img[r0:r1, c0:c1][m] = vals[m]
     return img, x0, y0
 
 
