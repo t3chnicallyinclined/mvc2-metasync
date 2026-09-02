@@ -258,6 +258,47 @@ a handler per node class. ⚠ And a caution that matters for the whole architect
 are game LOGIC — they update objects.** Porting them is porting a chunk of the game, which is exactly
 what a replay should not have to do.
 
+### ⭐⭐ D2 ANSWERED — the frame function, found from the live game in two runs
+
+Static analysis stalled because the object system dispatches through per-node handler pointers
+Ghidra never resolved. So the shim was taught to record a **backtrace** on every vertex/index buffer
+write. Two runs, and the chain resolves end to end:
+
+```
+  x4719  flags=0x9  2,097,152 B   0x140371740 <- 0x1402B6B34 <- 0x140056020 <- 0x14026DF8A
+  x4719  flags=0x2    524,288 B   0x140371740 <- 0x1402B6B65 <- 0x140056020 <- 0x14026DF8A
+```
+```
+FUN_14026DD20                the game loop
+  └─ FUN_140055D40           ⭐ THE FRAME FUNCTION — ticks ~30 subsystems, then:
+       └─ FUN_1402B6A50      uploads the 2 MiB VERTEX buffer + the 512 KB INDEX buffer
+            └─ FUN_140371620 generic buffer upload -> UpdateSubresource
+```
+
+* **2,097,152 B is exactly the vertex buffer `d3dcap` already dumps.** The chain that writes it is now
+  named, and its two upload calls sit 49 bytes apart in one function.
+* **The game writes geometry through `UpdateSubresource`, never `Map`** — the only `Map` writer in the
+  session is Steam's overlay DLL. Geometry arrives as a whole-buffer push.
+* `FUN_140055D40` calls ~30 subsystem virtuals at `+0x30` on objects held at `param_1+0x3FF60`
+  through `+0x40130`, and only THEN calls the uploader. So the buffer is already full when it uploads.
+
+**⟹ The game rebuilds the ENTIRE 2 MiB vertex buffer in CPU memory every frame, from scratch.**
+
+That is the most important structural fact yet, and it is exactly the shape the architecture needs:
+a whole-buffer rebuild each frame is, by construction, a **pure function of the state at that
+moment**. It does not prove D3 — but a game that incrementally patched its vertex buffer would have
+made D3 false on the spot, and this one does not.
+
+### The honest scoping verdict
+
+The emitter is **one (or a few) of those ~30 subsystems**, not the whole game. Bounded and
+identifiable — but the tick functions are game logic, so porting is real work, not a translation.
+
+**Next, and it is small:** `FUN_140371620` receives a descriptor carrying the SOURCE pointer
+(`+0x20`, or `+0x38` on the alternate path). Log it, and we learn **where the CPU-side vertex buffer
+lives**. If that buffer's contents are derivable from `blk`, the architecture is real; if it is fed
+from an arena we do not carry, we learn that before building anything.
+
 **So the question sharpens again:** for a REPLAY we do not need the spawners or the update logic. We
 need only the path that turns node STATE into draw commands. Is that a separate walk over the pool, or
 is drawing done inside the same handlers that update? **That is the next thing to establish, and it
