@@ -473,14 +473,18 @@ def main():
                 if palkey not in textures:
                     textures[palkey] = {'w': 256, 'h': 1, 'fmt': 28, **intern(pal.tobytes())}
                 fl = at.flag_of(sid, ri)
-                # INFERRED: a tiled record with a flip flag draws its LOGICAL rect (PL2A cell 668
-                # assembles coherently only that way; see v3gate). Scale-walker records always do.
-                bmp, pw, ph = at.part_bitmap(pid, not a.no_vflip, logical=extra['bit15'] or bool(fl & 0xC000))
+                hf, vf = bool(fl & 0x8000), bool(fl & 0x4000)
+                # scale-walker records (sid bit 15) sample only the logical rect; tiled records draw
+                # the FULL storage block (see the placement below for how a flip is anchored).
+                bmp, pw, ph = at.part_bitmap(pid, not a.no_vflip, logical=extra['bit15'])
+                sw, sh, lw, lh = at.dims.get(int(pid), (0, 0, 0, 0))
+                Lw = lw * 8 if 0 < lw <= sw else pw
+                Lh = lh * 8 if 0 < lh <= sh else ph
                 # per-record flags: vflip in the bitmap; hflip in the bitmap too -- the node's mirror
                 # is applied by the UV winding below, so the net is (mir XOR hf), as on Steam.
-                if fl & 0x4000:
+                if vf:
                     bmp = bmp[::-1]
-                if fl & 0x8000:
+                if hf:
                     bmp = bmp[:, ::-1]
                 # ROTATION (SH4 bank03 loc_8c03481c; v3gate 24/24): +0x148 is an angle, 0x8000 =
                 # 180 deg. With a zero hotspot that is a point reflection of the whole assembly
@@ -505,8 +509,17 @@ def main():
                 if key not in textures:
                     textures[key] = {'w': pw, 'h': ph, 'fmt': 61, **intern(bmp.tobytes())}
 
-                left = (ox + rec['dx'] - pw) if mir else (ox - rec['dx'])
-                top = oy + rec['dy']
+                if extra['bit15']:
+                    left = (ox + rec['dx'] - pw) if mir else (ox - rec['dx'])
+                    top = oy + rec['dy']
+                else:
+                    # TILED flip anchoring, SH4-confirmed (v3gate has the citations): the full
+                    # storage block is drawn, reflected about the LOGICAL box; padding hangs outside
+                    # on the mirrored side. Reduces to the proven law for flags 0.
+                    mirX = (mir != hf)
+                    X0 = (ox + rec['dx'] - Lw) if mir else (ox - rec['dx'])
+                    left = X0 + (Lw - pw) if mirX else X0
+                    top = oy + rec['dy'] + ((Lh - ph) if vf else 0)
                 if rot180:
                     left, top = 2 * ox - left - pw, 2 * oy - top - ph
                 # corners in native px: TL, BL, TR, BR (index order the IB below expects)

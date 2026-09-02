@@ -172,30 +172,47 @@ def emit_frame(blk, base, shape, x0, y0):
                 hf, vf = bool(fl & 0x8000), bool(fl & 0x4000)
             bmp = idx[p['y']:p['y'] + p['h'], p['x']:p['x'] + p['w']][::-1]
             pw, ph = p['w'], p['h']
-            # logical clip (see gfx1dims): top-left lw*8 x lh*8 of the DC-oriented image, applied
-            # BEFORE any flip; the placement then uses the logical size. SCALE-WALKER RECORDS ONLY
-            # (sid bit 15): the tiled builder (bit 15 clear) uses STORAGE dims -- clipping tiled
-            # bodies LOST 11 matched tiles on f8940. --no-logical / --logical-all for A/B.
             dm = gfx1dims(cid).get(r['part'])
-            # INFERRED (2026-09-02): a TILED record carrying a flip flag (0x4000/0x8000) also draws
-            # its LOGICAL rect -- PL2A cell 668 (Storm knocked down, 7 records flagged 0xC000 on
-            # 64x64/128x16 parts with 48x48/80x16 logical) only assembles coherently that way; the
-            # proven frames hold flipped 8x8 parts only, so this is not pixel-gated yet.
-            # --flip-storage keeps the old behaviour for A/B.
-            if dm and '--no-logical' not in sys.argv and                     (nd['sid'] & 0x8000 or '--logical-all' in sys.argv or
-                     (fl & 0xC000 and '--flip-storage' not in sys.argv)):
-                sw, sh, lw, lh = dm
-                cw = lw * 8 if 0 < lw <= sw else pw
-                ch = lh * 8 if 0 < lh <= sh else ph
-                if (cw, ch) != (pw, ph):
-                    bmp = bmp[:ch, :cw]
-                    pw, ph = cw, ch
-            if vf:
-                bmp = bmp[::-1]
-            if mir != hf:
-                bmp = bmp[:, ::-1]
-            left = (ox + r['dx'] - pw) if mir else (ox - r['dx'])
-            top = oy + r['dy']
+            sw, sh, lw, lh = dm if dm else (0, 0, 0, 0)
+            Lw = lw * 8 if 0 < lw <= sw else pw
+            Lh = lh * 8 if 0 < lh <= sh else ph
+            if nd['sid'] & 0x8000 and '--no-logical' not in sys.argv:
+                # SCALE WALKER (sid bit 15): samples ONLY the logical sub-rect (bank03 loc_8c0348c8)
+                # and places by the logical width. Proven 24/24 + P4's 22-record pose.
+                if (Lw, Lh) != (pw, ph):
+                    bmp = bmp[:Lh, :Lw]
+                    pw, ph = Lw, Lh
+                if vf:
+                    bmp = bmp[::-1]
+                if mir != hf:
+                    bmp = bmp[:, ::-1]
+                left = (ox + r['dx'] - pw) if mir else (ox - r['dx'])
+                top = oy + r['dy']
+            else:
+                # TILED BUILDER (bit 15 clear), SH4-confirmed (mvc2-sh4-re-expert, bank03
+                # loc_8c033b0a / loc_8c0346c4 / loc_8c034762, bank12 loc_8c12476c/8a, re_kb/99):
+                # EVERY tile of the FULL storage block is emitted (the builder never reads the flags
+                # for geometry), but a flip reflects the tile grid about the LOGICAL box, so the
+                # storage padding hangs OUTSIDE the logical box on the mirrored side:
+                #   X0 = facing ? Xpen - Lw : Xpen      (logical box left)   Y0 = Ypen (top)
+                #   mirX = facing XOR (flags & 0x8000)   mirY = flags & 0x4000 (no facing XOR)
+                #   block_left = mirX ? X0 + Lw - Sw : X0 ; block_top = mirY ? Y0 + Lh - Sh : Y0
+                # Reduces to the proven flags-0 law (facing 1: Xpen - Sw, columns reversed). The
+                # proven frames only held flipped 8x8 parts; PL2A cell 668 (0xC000 on 64x64 [48x48]
+                # and 128x16 [80x16]) is the case that exposed it. --flip-storage = old rule for A/B.
+                mirX = (mir != hf)
+                X0 = (ox + r['dx'] - Lw) if mir else (ox - r['dx'])
+                Y0 = oy + r['dy']
+                if '--flip-storage' in sys.argv:
+                    left = (ox + r['dx'] - pw) if mir else (ox - r['dx'])
+                    top = Y0
+                else:
+                    left = X0 + (Lw - pw) if mirX else X0
+                    top = Y0 + (Lh - ph) if vf else Y0
+                if vf:
+                    bmp = bmp[::-1]
+                if mirX:
+                    bmp = bmp[:, ::-1]
             if rot180:
                 left, top = 2 * ox - left - pw, 2 * oy - top - ph
                 bmp = bmp[::-1, ::-1]
