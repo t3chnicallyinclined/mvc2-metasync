@@ -113,8 +113,8 @@ Paste this section (or link it) into every task prompt. Violating any of these i
   `~/src/maplecast-flycast` + `~/roms/mvc2.gdi`. *(mem: rr-flycast-resim-confirmed-tape)*
 
 ### C. The KB — `re_kb` (SurrealDB, namespace `re`). RE knowledge graph; query, don't re-derive.
-⚠ A copy is live on **both** boxes (rise3 and `149.28.44.118`, both `127.0.0.1:8000`). Confirm
-which is authoritative before writing to it; prefer rise3 (prod).
+**On rise3** (`127.0.0.1:8000`) — that copy is **AUTHORITATIVE** (settled 2026-09-02). A stale
+copy still runs on `149.28.44.118`; read it if you must, never write to it.
 
 ### D. The disassembly — `marvelous2` / `maplecast-flycast/_marv_re/build/*.asm`
    (`loc_8c…` label address == PC). e.g. camera in `bank03.asm:1281,1495-1516`, `bank12.asm:5271`.
