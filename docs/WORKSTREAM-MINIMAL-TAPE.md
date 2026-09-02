@@ -129,6 +129,61 @@ the payload. The distribution says what to do instead:
   cold boots — for a portable anchor. Different set, same idea.)
 Realistic target with a proper encoder: **~0.6-0.9 KB/frame, 6-10 MB per 3-minute match.**
 
+### D1b — `blk` DECOMPOSED. Tris's hypothesis holds, and the structure is now explicit.
+
+Tris: *"the first frames of the match load all the data — that's probably what's in blk too."*
+Measured, with the per-word change histogram saved from a second 600-frame run:
+
+```
+REGION                            words   volatile        %
+fighter slots (6 x 0x738)         2,772        269     9.7%
+match options                        50          9    18.0%
+camera                                4          3    75.0%
+object pool                      44,810     14,147    31.6%     <- 84.6% of blk
+everything else                   5,301        267     5.0%     <- ESSENTIALLY STATIC
+```
+
+**"Everything else" is 95% static over 600 frames.** That is the loaded match data, exactly as
+predicted: it ships ONCE in the anchor and never again.
+
+**And the dominant region is confirmed to BE the object pool, by periodicity rather than by
+assertion.** Testing candidate strides for how cleanly volatility separates into hot/cold columns:
+
+```
+stride 0x280 (160 words) x 280 rows -> 85.0% of columns decisive, 69 hot columns
+stride 0x400                        -> 16.0%
+stride 0x380 / 0x300 / 0x200 / 0x180 -> ~15.6% each
+```
+
+`0x280` wins by 5x. That independently corroborates `mvc2-dc-steam-block-map` ("object pool CONFIRMED
+live, stride 0x280, inside blk, node = fighter-struct prefix") from a completely different direction —
+a volatility histogram, not a disassembly.
+
+**The pool, located and sized:**
+```
+base   byte 0x6908 in blk (word 6,722)
+shape  280 nodes x 0x280 B
+live   241 of 280 nodes changed at least once over 600 frames; 191 have >20 hot words
+hot    69 of 160 words per node are volatile in >50% of nodes
+```
+
+**8 of the 69 hot columns match known fighter-struct fields** — `+0x124 screenX`, `+0x144 sprite_id`,
+`+0x154 facing`, `+0x168 anim_ptr`, `+0x170 drawn`, `+0x188 sid`, `+0x1A0 gfx1`, `+0x1D0 anim_state`.
+Which confirms "node = fighter-struct prefix" and **names the gap: 61 hot columns are unidentified.**
+
+### ⭐ Why the state tape hits a ceiling, in one line
+
+The agent's tape carries **32 B per object node**. Steam's emitter reads a node whose volatile part is
+**69 words = 276 B**. **The tape is a lossy projection that keeps roughly 8 of 69 live fields.** That
+is not a bug in the tape — it is why reconstruction has a ceiling and always will, and it is why
+`blk` is the right feed for a pixel-exact replay while the tape stays right for everything else.
+
+### The per-frame economics
+
+Although 241 nodes are live across 600 frames, only **~3.5 nodes' worth of hot columns change per
+frame** (244 changed words / 69 per node). The pool is mostly quiescent frame to frame — which is
+precisely why the delta stays under a kilobyte while the full state is 211 KB.
+
 ### Where that lands it
 
 | feed | per frame | 3-min match | needs |
