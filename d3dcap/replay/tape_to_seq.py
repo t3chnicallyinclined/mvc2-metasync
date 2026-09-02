@@ -40,9 +40,13 @@ was given the other's answer.
   uses the atlas `bodyBank` and colours may be wrong even when the pose is exact. It cannot be
   derived from the captures either: those are a DIFFERENT match, so their costumes do not apply.
   `--bank N` overrides. Wrong colours here are an open question, not a placement error.
-* Effects, the HUD and the stage are NOT drawn. This is the body walker's output only, on a black
-  field, because that is the only part the law has been measured against. A missing HUD here is not
-  a bug -- it is scope.
+* LAYER DIRECTION. Bodies and objects are ordered by the tape's `layer`, descending. Which end of
+  that range is "back" is NOT measured: the captures carry no game state, so layer cannot be
+  correlated against Steam's draw index there. `--layer-asc` flips it.
+* OBJECTS use the OWNER slot's character atlas with `sid & 0x7fff`. If object sids do not resolve,
+  the run reports them and they are probably indexed against an effects bank instead -- `gfx1` in
+  the row is the content key that would say which.
+* The HUD and the stage are NOT drawn, on a black field. Not a bug -- scope.
 
 ⚠ ROM-derived. The .seq embeds the game's own pixels. Never commit one, never serve it publicly.
 """
@@ -106,8 +110,19 @@ class Atlas:
         # one about how to draw. Comparing two representations that share a defect cannot reveal it.
         return (a[::-1].copy() if vflip else a.copy()), p['w'], p['h']
 
-    def palette(self, bank=None):
-        b = self.banks[self.bodyBank if bank is None else bank]
+    def palette(self, bank=None, costume=0):
+        # ⭐ costume c -> ROM palette row block 8*c. Established from the palette DATA, not guessed:
+        # grouping identical rows in PLxx_lut.json, rows repeat at +8 and NEVER at +4 (checked on
+        # PL00/PL17/PL2A/PL32/PL0A: 25-35 of 40 rows equal at +8, 0 of 44 equal at +4). Rows 0..47
+        # are 6 costume blocks of 8. This matches CLAUDE.md's PVR formula 16*(pair+1) + 8*side --
+        # eight PAL4 banks per fighter slot.
+        # ⚠ The SUB-ROW within the block (0..7) is a documented GAP. A capture's PL32 body needed
+        # sub-row 2, and that assembly's records all carry FLAGS 0x0000, so the record's 0x0070
+        # field cannot be the whole story -- node+0x12d/+0x12e are the missing terms. Sub-row 0 is
+        # the default here; --bank overrides absolutely.
+        if bank is None:
+            bank = 8 * int(costume)
+        b = self.banks[bank % len(self.banks)]
         pal = np.zeros((256, 4), np.uint8)
         for i, c in enumerate(b[:256]):
             pal[i] = c
@@ -149,6 +164,10 @@ def main():
     ap.add_argument('--forward-records', action='store_true',
                     help='draw assembly records in list order. Measured WRONG -- capes and limbs '
                          'punch through bodies. Diagnostic only.')
+    ap.add_argument('--no-objs', action='store_true',
+                    help='bodies only. Capes and projectiles that are their own pool node vanish.')
+    ap.add_argument('--layer-asc', action='store_true',
+                    help='order by ASCENDING layer instead. Which end is "back" is not measured.')
     ap.add_argument('--flip-facing', action='store_true')
     ap.add_argument('--swap-teams', action='store_true')
     a = ap.parse_args()
@@ -164,11 +183,19 @@ def main():
     if not rows:
         sys.exit('no rows in that range (tape has %d)' % len(tape['frames']))
     p1, p2 = tape['p1_team'], tape['p2_team']
+    costume = tape.get('costume') or [0] * 6
     if a.swap_teams:
         p1, p2 = p2, p1
     print('tape %s: %d frames, using %d from %d'
           % (os.path.basename(a.tape), len(tape['frames']), len(rows), a.start))
     print('  P1 %s   P2 %s' % (['PL%02X' % c for c in p1], ['PL%02X' % c for c in p2]))
+
+    objs = {}
+    if not a.no_objs:
+        for fr, lst in tape.get('objs', ()):
+            objs[int(fr)] = lst
+    print('  objs stream: %d frames carry objects (%d rows total)'
+          % (len(objs), sum(len(v) for v in objs.values())))
 
     man, tdraw, tcbs = template(a.template)
     print('  state copied from %s draw %d (%s/%s)'
@@ -189,38 +216,72 @@ def main():
 
     for r in rows:
         verts, idxs, draws = bytearray(), [], []
+
+        # ── ONE ordered list of bodies AND objects ───────────────────────────────────────────────
+        # ⭐ `layer` is the ordering field, and it is carried on BOTH: the six fighter slots have
+        # layer[6] (255 = not drawn) and every object row has its own. They share one space, 3..11.
+        # Tris asked "there has to be a pointer or function telling that object what order to draw
+        # in" -- this is it, and it is already in every tape we have recorded.
+        items = []
         for slot in range(6):
             if not r[C['drawn[6]']][slot]:
                 continue
-            cid = (p1 if slot % 2 == 0 else p2)[slot // 2]
-            at = Atlas.get(a.atlas, cid)
-            if at is None:
-                missing['PL%02X (no atlas)' % cid] += 1
+            lay = r[C['layer[6]']][slot] if 'layer[6]' in C else 8
+            items.append((lay, Atlas.get(a.atlas, (p1 if slot % 2 == 0 else p2)[slot // 2]),
+                          int(r[C['sid[6]']][slot]),
+                          r[C['sx[6]']][slot], r[C['sy[6]']][slot],
+                          bool(r[C['facing[6]']][slot]), 'body', costume[slot]))
+        # OBJECTS -- capes, projectiles, satellites. Not drawing these is why a cape can simply
+        # VANISH on one animation and be fine on another: in some poses it is part of the body
+        # sprite, in others it is its own pool node.
+        # Row layout, from the tape's own objs_enc header:
+        #   [sid(|0x8000 = the object's OWN hflip), sx, sy, zx(scale x4096), face, cat, owner, layer,
+        #    gfx1, _]
+        # zx is 6826 in every row of this tape = 5/3 exactly, i.e. the same 640->384 factor the
+        # origins use, so the native scale is 1 and no scaling is applied here. A tape where zx
+        # VARIES would need it -- that is the DC walker's scaled branch, and it is not exercised yet.
+        for ob in objs.get(int(r[C['frame']]), ()):
+            sid_raw, osx, osy, zx, face, cat, owner, lay = ob[0], ob[1], ob[2], ob[3], ob[4], ob[5], ob[6], ob[7]
+            if owner > 5:
+                missing['object with owner %d (unowned)' % owner] += 1
                 continue
-            sid = int(r[C['sid[6]']][slot])
+            items.append((lay, Atlas.get(a.atlas, (p1 if owner % 2 == 0 else p2)[owner // 2]),
+                          sid_raw & 0x7FFF, osx, osy,
+                          bool(face) != bool(sid_raw & 0x8000), 'obj', costume[owner]))
+
+        # Back to front. Which end of `layer` is "back" is NOT measured -- the captures carry no
+        # game state, so layer cannot be correlated with Steam's draw index there. --layer-asc flips
+        # it. Ties keep list order, which puts bodies before their own objects.
+        items.sort(key=lambda t: t[0], reverse=not a.layer_asc)
+
+        for lay, at, sid, tsx, tsy, mir, kind, cos in items:
+            if at is None:
+                missing['no atlas'] += 1
+                continue
             recs = at.asm.get(str(sid))
             if not recs:
-                missing['%s sel %d' % (at.name, sid)] += 1
+                missing['%s %s sel %d' % (at.name, kind, sid)] += 1
                 continue
-            ox = r[C['sx[6]']][slot] * TAPE_X
-            oy = r[C['sy[6]']][slot] * TAPE_Y
-            mir = bool(r[C['facing[6]']][slot]) != a.flip_facing
+            ox, oy = tsx * TAPE_X, tsy * TAPE_Y
+            if a.flip_facing:
+                mir = not mir
 
-            pal = at.palette(a.bank)
+            pal = at.palette(a.bank, cos)
             palkey = '%s_pal_%s' % (at.name, sha8(pal.tobytes()))
             if palkey not in textures:
                 textures[palkey] = {'w': 256, 'h': 1, 'fmt': 28, **intern(pal.tobytes())}
 
-            # ⭐ DRAW ORDER IS THE REVERSE OF THE RECORD LIST. Recovered from the captures, where
-            # the submission order is known exactly: match each body's tiles back to their part, then
-            # compare Steam's first draw index per part against the part's index in the assembly.
+            # ⭐ DRAW ORDER WITHIN AN ASSEMBLY IS THE REVERSE OF THE RECORD LIST. Recovered from the
+            # captures, where submission order is known exactly: match each body's tiles back to
+            # their part, then compare Steam's first draw index per part against that part's index
+            # in the assembly.
             #     f5630 PL32 sel 13   record indices [17, 7]   descending
             #     f2574 PL17 sel 189  [7, 6]   sel 197 [10, 7]   sel 201 [10, 7]
             #     f5630 PL2A sel 83   [4, 1]
             # Three characters, four sels, no exceptions. Steam gives each draw a DECREASING z, so
             # submission order IS back-to-front: get it wrong and a cape draws through the body.
-            # ⚠ The ROM walker itself counts UP (bank03 loc_8c03489e: index+1, record ptr +8), so the
-            # reversal is in OUR rip, not in the game. Worth chasing in rip_gfx2_assembly.py -- but
+            # ⚠ The ROM walker itself counts UP (bank03 loc_8c03489e: index+1, record ptr +8), so
+            # the reversal is in OUR rip, not the game. Worth chasing in rip_gfx2_assembly.py -- but
             # what the renderer must do is measured either way.
             for rec in (recs if a.forward_records else reversed(recs)):
                 pid = rec['part']
