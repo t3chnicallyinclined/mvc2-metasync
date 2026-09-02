@@ -1700,6 +1700,11 @@ static HRESULT STDMETHODCALLTYPE hkPresent(IDXGISwapChain* sc, UINT si, UINT fla
         if (openFrame(g_frame + 1)) {
             g_burstFirst = g_frame + 1;
             g_burstGot = 0;
+            // every burst starts with a FULL state block: the delta chain must not run across bursts
+            // (the first guided session did exactly that -- burst 2's first frame was a delta against
+            // burst 1's last frame; the reader now reassembles either way, but a chain that spans
+            // minutes of uncaptured frames is fragile for no reason)
+            g_blkHavePrev = false;
             g_burstLeft = g_burst > 1 ? g_burst - 1 : 0;
             // ⚠ THE DUMP BUDGET IS PER BURST, NOT PER SESSION.
             // It was a running total, so once a run had recorded MAX_BUF_DUMPS frames every later

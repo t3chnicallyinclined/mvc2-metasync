@@ -79,6 +79,47 @@ def atlas(cid):
     return _atlas[cid]
 
 
+rotated = Counter()
+
+
+def paint_rotated(img, bmp, left, top, pw, ph, nd, ang, hot, mir, x0, y0):
+    """Paint `bmp` (screen-oriented, native px, unrotated rect at left/top) rotated rigidly about
+    the node pivot. Geometry in 640x480 space (square pixels): P = (floor(sx) + s*hotX/TX,
+    floor(sy) + hotY/TY); theta = ((mir ? -A : A) & 0xFFFF) * 2pi/65536; forward map
+    R(x,y) = (x*c + y*s, -x*s + y*c). Inverse-map every destination pixel centre of the rotated
+    quad's bounding box back into the unrotated rect and sample nearest."""
+    import math
+    H, W = img.shape
+    sgn = -1.0 if mir else 1.0
+    Px, Py = math.floor(nd['sx']) + sgn * hot[0] / TX, math.floor(nd['sy']) + hot[1] / TY
+    th = (((-ang) if mir else ang) & 0xFFFF) * (2.0 * math.pi / 65536.0)
+    c, sn = math.cos(th), math.sin(th)
+    # unrotated rect in 640-space
+    L, T = left / TX, top / TY
+    R_, B_ = (left + pw) / TX, (top + ph) / TY
+    corners = [(L, T), (R_, T), (R_, B_), (L, B_)]
+    rc = [(Px + (x - Px) * c + (y - Py) * sn, Py - (x - Px) * sn + (y - Py) * c) for x, y in corners]
+    # destination bbox in native raster coords
+    xs = [x * TX - x0 for x, _ in rc]; ys = [y * TY - y0 for _, y in rc]
+    r0, r1 = max(0, int(math.floor(min(ys)))), min(H, int(math.ceil(max(ys))) + 1)
+    c0, c1 = max(0, int(math.floor(min(xs)))), min(W, int(math.ceil(max(xs))) + 1)
+    if r1 <= r0 or c1 <= c0:
+        return
+    yy, xx = np.mgrid[r0:r1, c0:c1]
+    # pixel centres -> 640-space -> inverse rotate about P -> unrotated rect -> bitmap indices
+    X = (xx + 0.5 + x0) / TX - Px
+    Y = (yy + 0.5 + y0) / TY - Py
+    ux = Px + X * c - Y * sn
+    uy = Py + X * sn + Y * c
+    bx = np.floor((ux - L) / (R_ - L) * pw).astype(np.int64)
+    by = np.floor((uy - T) / (B_ - T) * ph).astype(np.int64)
+    ok = (bx >= 0) & (bx < pw) & (by >= 0) & (by < ph)
+    vals = np.zeros_like(bx, dtype=np.uint8)
+    vals[ok] = bmp[by[ok], bx[ok]]
+    m = vals > 0
+    img[r0:r1, c0:c1][m] = vals[m]
+
+
 def emit_frame(blk, base, shape, x0, y0):
     """Paint the engine draw list (from blk) into an index raster the size of the truth raster."""
     H, W = shape
@@ -116,11 +157,19 @@ def emit_frame(blk, base, shape, x0, y0):
         # layout through (floor(sx), floor(sy)), texels flipped both ways. --rot180 paints that;
         # any other angle is still skipped (not exercised by this data).
         ang = struct.unpack_from('<I', blk, nd['off'] + 0x148)[0] & 0xFFFF
-        rot180 = False
+        hot = struct.unpack_from('<hh', blk, nd['off'] + 0x178)
+        rot180 = rot_gen = False
         if ang:
-            hot = struct.unpack_from('<hh', blk, nd['off'] + 0x178)
             if '--rot180' in sys.argv and ang == 0x8000 and hot == (0, 0):
                 rot180 = True
+            elif '--rot-general' in sys.argv:
+                # GENERAL ROTATION (SH4 bank03 loc_8c03481c / bank12 loc_8C1244B0): rigid rotation
+                # of the A=0 layout about P = floor(E0/E4) + scale*hotspot, in 640x480 space, angle
+                # negated by facing. Rasterised here by inverse-mapping each destination pixel
+                # (nearest sample), which is what a point-sampled rotated quad does on the GPU up
+                # to edge-pixel coverage rules.
+                rot_gen = True
+                rotated['0x%04X hot %s' % (ang, hot)] += 1
             elif '--draw-rotated' not in sys.argv:
                 skipped['rotation-path node (angle 0x%04X hot %s)' % (ang, hot)] += 1
                 continue
@@ -216,6 +265,9 @@ def emit_frame(blk, base, shape, x0, y0):
             if rot180:
                 left, top = 2 * ox - left - pw, 2 * oy - top - ph
                 bmp = bmp[::-1, ::-1]
+            if rot_gen:
+                paint_rotated(img, bmp, left, top, pw, ph, nd, ang, hot, mir, x0, y0)
+                continue
             r0 = int(round(top - y0)); c0 = int(round(left - x0))
             rs, re = max(0, r0), min(H, r0 + ph)
             cs, ce = max(0, c0), min(W, c0 + pw)
@@ -225,6 +277,9 @@ def emit_frame(blk, base, shape, x0, y0):
             m = sub > 0
             img[rs:re, cs:ce][m] = sub[m]
         drawn += 1
+    if rotated:
+        skipped.update({'ROTATED (general path, painted) ' + k: v for k, v in rotated.items()})
+        rotated.clear()
     return img, drawn, skipped
 
 

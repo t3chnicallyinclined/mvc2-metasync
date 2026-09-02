@@ -76,18 +76,83 @@ H_LAYER = 0x38
 H_SORT = 0x4D
 
 
+_chain_cache = {'cap': None, 'frames': None, 'last': None}   # last = (frame, bytes)
+
+
+def _captured_state_frames(cap):
+    if _chain_cache['cap'] != cap or _chain_cache['frames'] is None:
+        fr = []
+        for n in os.listdir(cap):
+            if n.startswith('state_') and n.endswith('.json') and n[6:-5].isdigit():
+                fr.append(int(n[6:-5]))
+        _chain_cache['cap'] = cap
+        _chain_cache['frames'] = sorted(fr)
+        _chain_cache['last'] = None
+    return _chain_cache['frames']
+
+
+def _apply_delta(buf, path):
+    d = open(path, 'rb').read()
+    o = 0
+    while o + 8 <= len(d):
+        off, ln = struct.unpack_from('<II', d, o)
+        o += 8
+        buf[off:off + ln] = d[o:o + ln]
+        o += ln
+    return buf
+
+
 def load_frame(frame, cap=CAP):
+    """The whole rollback block for `frame`.
+
+    The shim writes blk_<f>_full.bin for the first frame it dumps and blk_<f>_delta.bin (runs of
+    u32 off, u32 len, payload) for every later CAPTURED frame -- relative to the previously
+    CAPTURED frame, whatever its number. ⚠ That chain runs across bursts: the second burst's first
+    frame is a delta against the first burst's last frame (g_blkHavePrev was never reset), so the
+    reassembly walks the sorted list of captured frames from the nearest full block forward,
+    skipping nothing. The last reassembled block is cached so a sequential scan applies one delta
+    per frame instead of replaying the chain.
+    """
     side = os.path.join(cap, 'state_%d.json' % frame)
     if not os.path.exists(side):
         sys.exit('no state sidecar for frame %d (%s)' % (frame, side))
     meta = json.load(open(side))
-    # the first shim build wrote whole blocks named by hash; the delta build writes
-    # blk_<frame>_full.bin + blk_<frame>_delta.bin. Support both rather than force a re-capture.
-    for cand in ('blk_%s.bin' % meta.get('blk'), 'blk_%d_full.bin' % frame):
-        p = os.path.join(cap, cand)
-        if meta.get('blk') and os.path.exists(p):
+    # the first shim build wrote whole blocks named by hash; support it rather than force a re-capture
+    if meta.get('blk'):
+        p = os.path.join(cap, 'blk_%s.bin' % meta['blk'])
+        if os.path.exists(p):
             return meta, open(p, 'rb').read()
-    sys.exit('frame %d has a sidecar but no blk blob; delta chains are not reassembled yet' % frame)
+    full = os.path.join(cap, 'blk_%d_full.bin' % frame)
+    if os.path.exists(full):
+        b = open(full, 'rb').read()
+        _chain_cache['last'] = (frame, b)
+        return meta, b
+    frames = _captured_state_frames(cap)
+    if frame not in frames:
+        sys.exit('frame %d is not among the captured state frames' % frame)
+    i = frames.index(frame)
+    last = _chain_cache['last']
+    if last and i > 0 and frames[i - 1] == last[0]:
+        buf = bytearray(last[1])                       # one step from the cached predecessor
+        start = i
+    else:
+        j = i
+        while j >= 0 and not os.path.exists(os.path.join(cap, 'blk_%d_full.bin' % frames[j])):
+            j -= 1
+        if j < 0:
+            sys.exit('frame %d: no full block precedes it in the capture -- chain cannot be rebuilt' % frame)
+        buf = bytearray(open(os.path.join(cap, 'blk_%d_full.bin' % frames[j]), 'rb').read())
+        start = j + 1
+    for k in range(start, i + 1):
+        dp = os.path.join(cap, 'blk_%d_delta.bin' % frames[k])
+        if not os.path.exists(dp):
+            sys.exit('frame %d: delta for captured frame %d is missing -- chain broken' % (frame, frames[k]))
+        _apply_delta(buf, dp)
+    b = bytes(buf)
+    _chain_cache['last'] = (frame, b)
+    if len(b) != meta.get('size', BLK_SZ):
+        sys.exit('frame %d: reassembled %d bytes, sidecar says %s' % (frame, len(b), meta.get('size')))
+    return meta, b
 
 
 def find_base(blk):
