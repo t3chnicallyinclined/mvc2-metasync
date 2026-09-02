@@ -1445,37 +1445,69 @@ static void probeSample() {
 #define RR_BLK_PTR 0x140AC6EF0ULL
 #define RR_BLK_SZ  0x33B18u
 
-static uint8_t*  g_blkBuf = nullptr;
-static uint32_t  g_blkSeen[512];
-static int       g_nBlkSeen = 0;
+static uint8_t* g_blkBuf = nullptr;      // this frame's blk
+static uint8_t* g_blkPrev = nullptr;     // the previous CAPTURED frame's blk
+static uint8_t* g_blkDelta = nullptr;    // scratch for the encoded runs
+static bool     g_blkHavePrev = false;
 
+// ⚠ WHOLE-BLOCK DEDUPE DOES NOT WORK HERE, and assuming it did was an error worth naming.
+// `blk` is zeroed at match init and then ~570 of its 211 KB change EVERY frame (measured live:
+// median 507 changed bytes, p99 2,278, over 600 consecutive in-battle frames). So every frame's
+// full-block hash is distinct, a content-hash cache never hits, and "300 frames costs less than a
+// texture page" was wrong by three orders of magnitude -- it would be 63 MB.
+// The same measurement says what DOES work: store frame 1 whole, then per-frame RUNS of changed
+// bytes. At ~236 runs of ~2.4 bytes that is ~2.5 KB/frame, so a 300-frame burst is under a
+// megabyte. Same information, exactly reconstructible, three orders of magnitude smaller.
 static void dumpBlk(unsigned frame) {
     if (!g_imgBase) return;
     uintptr_t blk = 0;
     if (!safeRead((const void*)RR_RVA(RR_BLK_PTR), &blk, sizeof(blk)) || !blk) return;
-    if (!g_blkBuf) g_blkBuf = (uint8_t*)malloc(RR_BLK_SZ);
-    if (!g_blkBuf || !safeRead((const void*)blk, g_blkBuf, RR_BLK_SZ)) return;
-
-    const uint32_t h = fnv1a(g_blkBuf, RR_BLK_SZ);
-    bool fresh = true;
-    for (int i = 0; i < g_nBlkSeen; ++i) if (g_blkSeen[i] == h) { fresh = false; break; }
-    if (fresh && g_nBlkSeen < (int)(sizeof(g_blkSeen) / sizeof(g_blkSeen[0])))
-        g_blkSeen[g_nBlkSeen++] = h;
+    if (!g_blkBuf) {
+        g_blkBuf   = (uint8_t*)malloc(RR_BLK_SZ);
+        g_blkPrev  = (uint8_t*)malloc(RR_BLK_SZ);
+        g_blkDelta = (uint8_t*)malloc(RR_BLK_SZ + (RR_BLK_SZ / 8) + 64);   // worst case + headers
+    }
+    if (!g_blkBuf || !g_blkPrev || !g_blkDelta) return;
+    if (!safeRead((const void*)blk, g_blkBuf, RR_BLK_SZ)) return;
 
     char path[MAX_PATH];
-    if (fresh) {
-        _snprintf_s(path, sizeof(path), _TRUNCATE, "%s\\blk_%08X.bin", g_dir, h);
+    unsigned nruns = 0, nbytes = 0;
+    // ⚠ carry this explicitly. Inferring "full" from nruns==0 mislabels a delta frame in which
+    // NOTHING changed -- which is exactly what a paused or rollback-stalled frame looks like.
+    const bool isFull = !g_blkHavePrev;
+    if (isFull) {
+        _snprintf_s(path, sizeof(path), _TRUNCATE, "%s\\blk_%u_full.bin", g_dir, frame);
         writeAsyncCopy(path, g_blkBuf, RR_BLK_SZ);
+        nbytes = RR_BLK_SZ;
+    } else {
+        // (u32 offset, u32 length, payload) per contiguous changed run
+        size_t o = 0;
+        for (unsigned i = 0; i < RR_BLK_SZ; ) {
+            if (g_blkBuf[i] == g_blkPrev[i]) { ++i; continue; }
+            unsigned s = i;
+            while (i < RR_BLK_SZ && g_blkBuf[i] != g_blkPrev[i]) ++i;
+            const unsigned len = i - s;
+            memcpy(g_blkDelta + o, &s, 4);       o += 4;
+            memcpy(g_blkDelta + o, &len, 4);     o += 4;
+            memcpy(g_blkDelta + o, g_blkBuf + s, len); o += len;
+            ++nruns; nbytes += len;
+        }
+        _snprintf_s(path, sizeof(path), _TRUNCATE, "%s\\blk_%u_delta.bin", g_dir, frame);
+        writeAsyncCopy(path, g_blkDelta, o);
     }
-    // one tiny sidecar per frame says WHICH state this frame was drawn from, so the packer never
-    // has to guess and a deduped blob is still unambiguously attributable.
+    memcpy(g_blkPrev, g_blkBuf, RR_BLK_SZ);
+    g_blkHavePrev = true;
+
+    // A sidecar per frame so a delta chain is never ambiguous. `clock` is blk+0x3CC8; it mirrors
+    // GGPO's _framecount and is assigned BACKWARD on a rollback, so a step that is not exactly +1
+    // means the offline reader must not assume this delta follows the previous one.
     _snprintf_s(path, sizeof(path), _TRUNCATE, "%s\\state_%u.json", g_dir, frame);
     FILE* f = nullptr;
     if (fopen_s(&f, path, "wb") == 0 && f) {
         unsigned clk = 0;
         memcpy(&clk, g_blkBuf + 0x3CC8, 4);          // the frame clock, per the DC<->blk map
-        fprintf(f, "{\"frame\":%u,\"blk\":\"%08X\",\"clock\":%u,\"size\":%u}\n",
-                frame, h, clk, RR_BLK_SZ);
+        fprintf(f, "{\"frame\":%u,\"clock\":%u,\"size\":%u,\"runs\":%u,\"bytes\":%u,\"full\":%s}\n",
+                frame, clk, RR_BLK_SZ, nruns, nbytes, isFull ? "true" : "false");
         fclose(f);
     }
 }
