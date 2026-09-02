@@ -38,18 +38,92 @@ export const P2_SLOTS = [1, 3, 5];
 
 // 0.3.28 frame schema field indices. VERIFIED against the tape's own schema string in the
 // constructor; a mismatch throws loudly rather than silently mis-reading a column.
-const F = {
-  frame: 0, hp: 4, vx: 12, vy: 13, combo_dealt: 10, p1_meter: 7, p2_meter: 8, meter_fill: 9,
-  red_hp: 14, facing: 15, hitstun: 16, drawn: 17, sid: 18, atimer: 19,
-  sx: 24, sy: 25, zx: 26, zy: 27, flash: 28, glow: 29, layer: 30, timer: 31,
-  p2_meter_fill: 32, round_no: 33,
+// ⭐ INDICES ARE RESOLVED FROM THE TAPE'S OWN SCHEMA STRING, not hardcoded.
+// They used to be a fixed map plus a SCHEMA_EXPECT assertion, which is correct but brittle: the
+// moment a column is added or removed every index below it shifts and the map has to be re-cut by
+// hand. Resolving by NAME makes a column drop a no-op here.
+//
+// ⚠ REQUIRED vs OPTIONAL is the whole point. `frame` and `hp` are required -- `hp` is what the
+// server derives the objective winner from, so a tape without it is not a tape. Every PER-SLOT
+// RENDER column is OPTIONAL, because tape v3 removes them: they are duplicated, at better
+// precision, by the `nodes` stream (fsx/fsy are f32; the columns rounded to i16). If a render
+// column is missing AND there is no `nodes` stream, that is a real error and we say so.
+const F_REQUIRED = ['frame', 'hp'];
+const F_NAMES = {
+  frame: 'frame', hp: 'hp[6]', vx: 'vx[6]', vy: 'vy[6]', combo_dealt: 'combo_dealt[6]',
+  p1_meter: 'p1_meter', p2_meter: 'p2_meter', meter_fill: 'meter_fill', red_hp: 'red_hp[6]',
+  facing: 'facing[6]', hitstun: 'hitstun[6]', drawn: 'drawn[6]', sid: 'sid[6]',
+  atimer: 'atimer[6]', sx: 'sx[6]', sy: 'sy[6]', zx: 'zx[6]', zy: 'zy[6]',
+  flash: 'flash[6]', glow: 'glow[6]', layer: 'layer[6]', timer: 'timer',
+  p2_meter_fill: 'p2_meter_fill', round_no: 'round_no',
 };
-const SCHEMA_EXPECT = [
-  ['frame', 0], ['hp[6]', 4], ['p1_meter', 7], ['p2_meter', 8], ['meter_fill', 9],
-  ['combo_dealt[6]', 10], ['red_hp[6]', 14], ['facing[6]', 15], ['drawn[6]', 17],
-  ['sid[6]', 18], ['atimer[6]', 19], ['sx[6]', 24], ['sy[6]', 25], ['zx[6]', 26],
-  ['zy[6]', 27], ['flash[6]', 28], ['glow[6]', 29], ['layer[6]', 30], ['timer', 31],
-];
+// the per-slot columns tape v3 drops; absent is fine IFF the nodes stream is present
+const F_RENDER = ['facing', 'drawn', 'sid', 'atimer', 'sx', 'sy', 'zx', 'zy', 'flash', 'glow', 'layer'];
+
+function bindSchema(schemaStr, hasNodes) {
+  const toks = String(schemaStr || '').replace(/^\[|\]$/g, '').split(',').map(t => t.trim());
+  const F = {};
+  for (const [key, col] of Object.entries(F_NAMES)) F[key] = toks.indexOf(col);
+  const missingReq = F_REQUIRED.filter(k => F[k] < 0);
+  if (missingReq.length) {
+    throw new Error(`tape-adapter: schema has no ${missingReq.map(k => F_NAMES[k]).join(', ')} — ` +
+                    `this is not a usable tape (hp is what the winner is derived from).`);
+  }
+  if (!hasNodes) {
+    const missingRender = F_RENDER.filter(k => F[k] < 0);
+    if (missingRender.length) {
+      throw new Error(`tape-adapter: schema is missing render columns ` +
+        `[${missingRender.map(k => F_NAMES[k]).join(', ')}] and the tape carries no \`nodes\` stream. ` +
+        `A v3 tape must ship one; a v2 tape must keep the columns.`);
+    }
+  }
+  return F;
+}
+
+// ⭐ TAPE v3 — the engine's own draw list, fighters and pool objects INTERLEAVED, in paint order.
+// The index of a record IS its z-order (back to front), exactly as FUN_140620F10 walks it. There is
+// no sort to apply here on purpose: the engine's array is already sorted, and every ordering bug in
+// this renderer came from trying to rebuild that order instead of recording it.
+//   44 B: u8 kind, u8 slot, u8 cat, i8 sort, u8 layer, u8 face, u8 owner, u8 drawn,
+//         u16 sid, u16 pal, u16 flash, u8 glow, u8 is_effect, u8 blend, u8 atimer,
+//         u16 zx, u16 zy, u16 effect_key, f32 fsx, f32 fsy, f32 depth, u32 gfx1, u32 gfx2
+export function decodeNodesBytes(bytes) {
+  const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const byFrame = new Map();
+  let off = 0;
+  while (off + 6 <= bytes.length) {
+    const frame = dv.getUint32(off, true); off += 4;
+    const count = dv.getUint16(off, true); off += 2;
+    const out = [];
+    for (let i = 0; i < count && off + 44 <= bytes.length; i++) {
+      out.push({
+        kind: bytes[off], slot: bytes[off + 1], cat: bytes[off + 2],
+        sort: dv.getInt8(off + 3), layer: bytes[off + 4], face: bytes[off + 5],
+        owner: bytes[off + 6], drawn: bytes[off + 7],
+        sid: dv.getUint16(off + 8, true), pal: dv.getUint16(off + 10, true),
+        flash: dv.getUint16(off + 12, true), glow: bytes[off + 14],
+        isEffect: bytes[off + 15], blend: bytes[off + 16], atimer: bytes[off + 17],
+        zx: dv.getUint16(off + 18, true) / 4096, zy: dv.getUint16(off + 20, true) / 4096,
+        effectKey: dv.getUint16(off + 22, true),
+        sx: dv.getFloat32(off + 24, true), sy: dv.getFloat32(off + 28, true),
+        depth: dv.getFloat32(off + 32, true),
+        gfx1: dv.getUint32(off + 36, true), gfx2: dv.getUint32(off + 40, true),
+        z: i,                       // paint order, and the ONLY ordering input the renderer needs
+      });
+      off += 44;
+    }
+    byFrame.set(frame, out);
+  }
+  return byFrame;
+}
+
+// the palette table `pal` indexes into: N x 32 B ARGB4444 (16 colours), first-seen order.
+export function decodePals(bytes) {
+  const out = [];
+  for (let o = 0; o + 32 <= bytes.length; o += 32) out.push(bytes.subarray(o, o + 32));
+  return out;
+}
+
 
 // Decode the OBJS byte stream. Supports BOTH record layouts:
 //   0.3.28 (16 B): {u16 sid, i16 sx, i16 sy, u16 zx_q, u8 face, u8 cat, u8 owner, u8 layer, u32 gfx}
@@ -129,6 +203,14 @@ export class TapeAdapter {
     // regardless. On a 0.3.29 tape, flip effectsOn to route cat 1-4 sprite-class effects
     // through the emitter (GFX2, sel=sid) part-assembly, own-origin, additive.
     this.effectsOn = false;
+    // ⭐ TAPE v3. `nodesByFrame` is the engine's own draw list -- fighters AND pool objects,
+    // interleaved, in paint order. When it is present it SUPERSEDES both objsByFrame and the
+    // per-slot render columns: index is z-order, so there is nothing to sort and no layer
+    // direction to choose. Must be set BEFORE _verifySchema, which uses its presence to decide
+    // whether the (now optional) render columns are allowed to be missing.
+    this.nodesByFrame = decoded.nodesByFrame || new Map();
+    this.pals = decoded.pals || [];
+    this.isV3 = this.nodesByFrame.size > 0;
     if (this.schema) this._verifySchema(this.schema);
   }
 
@@ -138,6 +220,9 @@ export class TapeAdapter {
       schema: rawTape.schema, frames: rawTape.frames, costume: rawTape.costume,
       p1_team: rawTape.p1_team, p2_team: rawTape.p2_team, objRecBytes: recBytes,
       objsByFrame: objsBytes ? decodeObjsBytes(objsBytes, recBytes) : new Map(),
+      // v3 streams, when the tape carries them. Both are gunzipped by the caller, like objs.
+      nodesByFrame: rawTape.nodesBytes ? decodeNodesBytes(rawTape.nodesBytes) : new Map(),
+      pals: rawTape.palsBytes ? decodePals(rawTape.palsBytes) : [],
       stage_id: rawTape.stage_id,
     });
   }
@@ -248,14 +333,9 @@ export class TapeAdapter {
     return (!realOnly && TapeAdapter.FX_ADDITIVE_BANKS.has(bank)) ? 0x11 : 0x45;
   }
 
+  // kept as a method name for callers; it now BINDS indices instead of asserting fixed ones.
   _verifySchema(schemaStr) {
-    const toks = String(schemaStr).replace(/^\[|\]$/g, '').split(',').map(s => s.trim());
-    for (const [name, idx] of SCHEMA_EXPECT) {
-      if (toks[idx] !== name) {
-        throw new Error(`tape-adapter: schema drift at index ${idx}: expected "${name}", got "${toks[idx]}". ` +
-          `The 0.3.28 column map changed — update F{} before rendering.`);
-      }
-    }
+    this.F = bindSchema(schemaStr, !!(this.nodesByFrame && this.nodesByFrame.size));
   }
 
   charIdForSlot(s) {
@@ -264,7 +344,7 @@ export class TapeAdapter {
 
   _pointCombo(row, sideSlots) {
     let best = 0;
-    const cd = row[F.combo_dealt] || [];
+    const cd = row[this.F.combo_dealt] || [];
     for (const s of sideSlots) { const c = cd[s] | 0; if (c > best) best = c; }
     return best;
   }
@@ -272,7 +352,7 @@ export class TapeAdapter {
   // ROLLBACK-SMEAR DE-JITTER (INTERIM, window._deJitter DEFAULT ON). A rollback-heavy online tape
   // stores some PREDICTED frames whose per-slot screen pos SPIKES one frame then REVERSES the next
   // (the catch-up teleport the render replays as stutter). Detect a one-frame outlier — a jump
-  // beyond one-frame world motion (tape vx/vy at F.vx/F.vy) that reverses on the next frame — and
+  // beyond one-frame world motion (tape vx/vy at this.F.vx/this.F.vy) that reverses on the next frame — and
   // interpolate across it. A REAL move continues same-direction (dPrev and dNext share sign) so it
   // is never touched. Stateless (uses fi-1/fi/fi+1) => scrub-safe. The EXACT fix is reader 0.3.33
   // confirmed-only capture; this is the on-existing-tapes interim. Returns [sx,sy] for slot s.
@@ -280,8 +360,8 @@ export class TapeAdapter {
     if (typeof window !== 'undefined' && window._deJitter === false) return [sx0, sy0];
     const prev = this.frames[fi - 1], next = this.frames[fi + 1], cur = this.frames[fi];
     if (!prev || !next || !cur) return [sx0, sy0];
-    const psx = prev[F.sx], psy = prev[F.sy], nsx = next[F.sx], nsy = next[F.sy];
-    const vx = cur[F.vx], vy = cur[F.vy];
+    const psx = prev[this.F.sx], psy = prev[this.F.sy], nsx = next[this.F.sx], nsy = next[this.F.sy];
+    const vx = cur[this.F.vx], vy = cur[this.F.vy];
     if (!psx || !psy || !nsx || !nsy) return [sx0, sy0];
     const fix = (c, p, n, v) => {
       const dP = c - p, dN = n - c, thr = 3 * Math.abs(v || 0) + 8;   // world motion + camera/round slack
@@ -301,9 +381,9 @@ export class TapeAdapter {
       : ((typeof performance !== 'undefined') ? performance.now() : 0);
     sc.inMatch = 1; sc.screenW = 640; sc.screenH = 480;
 
-    const hp = row[F.hp], red = row[F.red_hp], face = row[F.facing], drawn = row[F.drawn];
-    const sid = row[F.sid], sx = row[F.sx], sy = row[F.sy], zx = row[F.zx], zy = row[F.zy];
-    const layer = row[F.layer], glow = row[F.glow], flash = row[F.flash];
+    const hp = row[this.F.hp], red = row[this.F.red_hp], face = row[this.F.facing], drawn = row[this.F.drawn];
+    const sid = row[this.F.sid], sx = row[this.F.sx], sy = row[this.F.sy], zx = row[this.F.zx], zy = row[this.F.zy];
+    const layer = row[this.F.layer], glow = row[this.F.glow], flash = row[this.F.flash];
 
     for (let s = 0; s < 6; s++) {
       const sl = sc.slot[s];
@@ -333,9 +413,9 @@ export class TapeAdapter {
       // the hitstun RISING EDGE (a fresh hit: this frame's hitstun > the previous frame's) —
       // one flash per hit, matching the engine. buildEmitterDrawList tints the body white when
       // sl.hitFx is set. A later capture that ships a varying `flash` word should override this.
-      sl.hitstun = (row[F.hitstun] ? (row[F.hitstun][s] | 0) : 0);
+      sl.hitstun = (row[this.F.hitstun] ? (row[this.F.hitstun][s] | 0) : 0);
       const prevRow = (fi > 0) ? this.frames[fi - 1] : null;
-      const prevHs = (prevRow && prevRow[F.hitstun]) ? (prevRow[F.hitstun][s] | 0) : 0;
+      const prevHs = (prevRow && prevRow[this.F.hitstun]) ? (prevRow[this.F.hitstun][s] | 0) : 0;
       sl.hitFx = (sl.hitstun > prevHs) ? 1 : 0;
       // costume (H+0x6C1, 0=LP/1=LK/… confirm-button color index). 0 is a VALID costume
       // (LP/default), so DON'T `|| 1`-coerce it — that mapped every costume-0 fighter (all
@@ -345,17 +425,17 @@ export class TapeAdapter {
     }
 
     sc.hud = {
-      timer: row[F.timer] | 0,
-      p1lvl: row[F.p1_meter] | 0, p2lvl: row[F.p2_meter] | 0,
+      timer: row[this.F.timer] | 0,
+      p1lvl: row[this.F.p1_meter] | 0, p2lvl: row[this.F.p2_meter] | 0,
       // meter_fill (idx 9) is P1's lifetime METER ACCUMULATOR, p2_meter_fill (idx 32) is P2's
       // — NOT a within-level 0..144 fill (confirmed: both rise monotonically 0->496 / 0->3526
       // over the match while the LEVEL goes up/down as levels are spent). So the LEVEL (0..5)
       // is the reliable meter readout; the fine fill is shown as the fractional shimmer only.
-      p1fill: row[F.meter_fill] | 0, p2fill: row[F.p2_meter_fill] | 0,
+      p1fill: row[this.F.meter_fill] | 0, p2fill: row[this.F.p2_meter_fill] | 0,
       p1combo: this._pointCombo(row, P1_SLOTS), p2combo: this._pointCombo(row, P2_SLOTS),
     };
 
-    const gframe = row[F.frame] | 0;
+    const gframe = row[this.F.frame] | 0;
     const raw = this.objsByFrame.get(gframe) || [];
     const objects = [];
     const diag = { total: raw.length, effect: 0, satellite: 0, drawn: 0, gated: 0, threeD: 0, ownerless: 0, additive: 0 };
@@ -432,7 +512,7 @@ export class TapeAdapter {
   buildHudState(fi) {
     const row = this.frames[fi];
     if (!row) return { inMatch: false };
-    const hp = row[F.hp], red = row[F.red_hp], drawn = row[F.drawn];
+    const hp = row[this.F.hp], red = row[this.F.red_hp], drawn = row[this.F.drawn];
     // STATELESS HUD HIT-FLASH (spec §6). The engine flashes the victim's LIFE BAR white on a fresh
     // hit. Fire on the `hitstun` RISING EDGE (this frame's hitstun > prev — one flash per hit; the
     // constant `flash` column is a mis-wired capture, see applyFrame). We compute it STATELESSLY:
@@ -442,11 +522,11 @@ export class TapeAdapter {
     // duration H+0x172 (a one-time sh4-re read) — swap the confirmed value in; nothing else changes.
     const HUD_FLASH_LEN = 6;
     const hitFlashFor = (s) => {
-      if (!row[F.hitstun]) return 0;
+      if (!row[this.F.hitstun]) return 0;
       for (let age = 0; age < HUD_FLASH_LEN; age++) {
         const f = fi - age; if (f <= 0) break;
-        const cur = this.frames[f] && this.frames[f][F.hitstun] ? (this.frames[f][F.hitstun][s] | 0) : 0;
-        const prv = this.frames[f - 1] && this.frames[f - 1][F.hitstun] ? (this.frames[f - 1][F.hitstun][s] | 0) : 0;
+        const cur = this.frames[f] && this.frames[f][this.F.hitstun] ? (this.frames[f][this.F.hitstun][s] | 0) : 0;
+        const prv = this.frames[f - 1] && this.frames[f - 1][this.F.hitstun] ? (this.frames[f - 1][this.F.hitstun][s] | 0) : 0;
         if (cur > prv) return 1 - age / HUD_FLASH_LEN;   // latest rising edge within the window
       }
       return 0;
@@ -466,23 +546,23 @@ export class TapeAdapter {
       // glide (hud-client HudAnim) is a forward function of it: replaying frames in order and
       // running the glide reproduces the engine bar. Pure render field — no reader/tape change.
       frameIdx: fi,
-      timer: row[F.timer] | 0, round: row[F.round_no] | 0,
+      timer: row[this.F.timer] | 0, round: row[this.F.round_no] | 0,
       slots,
-      p1: { fill: row[F.meter_fill] | 0, lvl: row[F.p1_meter] | 0, combo: this._pointCombo(row, P1_SLOTS) },
-      p2: { fill: row[F.p2_meter_fill] | 0, lvl: row[F.p2_meter] | 0, combo: this._pointCombo(row, P2_SLOTS) },
+      p1: { fill: row[this.F.meter_fill] | 0, lvl: row[this.F.p1_meter] | 0, combo: this._pointCombo(row, P1_SLOTS) },
+      p2: { fill: row[this.F.p2_meter_fill] | 0, lvl: row[this.F.p2_meter] | 0, combo: this._pointCombo(row, P2_SLOTS) },
     };
   }
 
   objGating(fi) {
     const row = this.frames[fi]; if (!row) return null;
-    const raw = this.objsByFrame.get(row[F.frame] | 0) || [];
+    const raw = this.objsByFrame.get(row[this.F.frame] | 0) || [];
     const cat = {}; let sprite = 0, owned = 0;
     for (const o of raw) {
       cat[o.cat] = (cat[o.cat] | 0) + 1;
       if (o.cat >= 1 && o.cat <= 4) sprite++;
       if (o.owner < 6) owned++;
     }
-    return { gameFrame: row[F.frame], objs: raw.length, spriteClass: sprite, owned,
+    return { gameFrame: row[this.F.frame], objs: raw.length, spriteClass: sprite, owned,
              recBytes: this.objRecBytes, byCat: cat };
   }
 }
