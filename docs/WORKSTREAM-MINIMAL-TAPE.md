@@ -1096,6 +1096,14 @@ binary in Ghidra or the DC disassembly. `v3gate.py` is the falsifier: **30 state
   bank03 `loc_8c0348c8`), sampling the top-left of the storage block; mirrored placement uses the
   logical width. sid-bit15 records ONLY — tiled bodies keep storage dims (clipping them lost tiles).
   The deployed atlas json carries STORAGE dims; `v3gate.gfx1dims` reads the ROM header.
+* **Record flip flags on the TILED path reflect about the LOGICAL box** (SH4-confirmed, bank03
+  `loc_8c033b0a`/`loc_8c0346c4`/`loc_8c034762`, bank12 `loc_8c12476c/8a`; re_kb/99): the builder
+  emits every tile of the full storage block and never reads the flags for geometry; the walker
+  offsets the pen by `lw·8 − m` / `lh·8`, so `block_left = mirX ? X0 + Lw − Sw : X0`,
+  `block_top = mirY ? Y0 + Lh − Sh : Y0` with `X0 = facing ? Xpen − Lw : Xpen`, `mirX = facing ⊕
+  (flags & 0x8000)`, `mirY = flags & 0x4000`. ⚠ The 30 proven frames only held flipped 8×8 parts,
+  so the earlier "flag mapping proven" claim covered nothing; PL2A cell 668 (Storm knocked down)
+  exposed it. The rip's `flip`/`flipy` json keys are axis-swapped — read raw flags.
 * **`flash` is the per-slot PALETTE-BANK BASE**, not a flash: DC `+0x12E` = Steam `+0x172` =
   `{0x10,0x18,0x20,0x28,0x30,0x38}` by slot (bank13 `loc_8c1355d4`); per-part bank = base +
   `((flags&0x3FF)>>4)`. A fighter with `sid 0x8000` is the scale walker on its own cell 0 — a real
