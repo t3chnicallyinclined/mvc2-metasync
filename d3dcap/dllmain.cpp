@@ -1586,8 +1586,12 @@ static void dumpBlk(unsigned frame) {
     if (fopen_s(&f, path, "wb") == 0 && f) {
         unsigned clk = 0;
         memcpy(&clk, g_blkBuf + 0x3CC8, 4);          // the frame clock, per the DC<->blk map
-        fprintf(f, "{\"frame\":%u,\"clock\":%u,\"size\":%u,\"runs\":%u,\"bytes\":%u,\"full\":%s,\"at\":\"%s\"}\n",
-                frame, clk, RR_BLK_SZ, nruns, nbytes, isFull ? "true" : "false", g_dumpAt);
+        // `base` = where the block lived. The offline reader used to RECOVER it by voting over the
+        // draw-list handles, and that vote cannot tell the true base from one shifted by whole
+        // fighter slots -- every super-step capture of 2026-09-02 was read from a base 0xE70 too
+        // high. The shim knows the address; say it.
+        fprintf(f, "{\"frame\":%u,\"clock\":%u,\"size\":%u,\"runs\":%u,\"bytes\":%u,\"full\":%s,\"at\":\"%s\",\"base\":%llu}\n",
+                frame, clk, RR_BLK_SZ, nruns, nbytes, isFull ? "true" : "false", g_dumpAt, (unsigned long long)blk);
         fclose(f);
     }
 }

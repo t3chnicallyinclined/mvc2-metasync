@@ -325,6 +325,7 @@ def main():
         except SystemExit:
             continue
         base, score, _ = BS.find_base(blk)
+        if meta.get('base'): base = int(meta['base'])   # exact, from the shim (sidecar)
         if not base:
             continue
         man, B = EG.load_pack(pk)

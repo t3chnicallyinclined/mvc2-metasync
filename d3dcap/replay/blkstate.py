@@ -84,9 +84,14 @@ def _captured_state_frames(cap):
         fr = []
         for n in os.listdir(cap):
             if n.startswith('state_') and n.endswith('.json') and n[6:-5].isdigit():
-                fr.append(int(n[6:-5]))
+                fr.append((os.path.getmtime(os.path.join(cap, n)), int(n[6:-5])))
         _chain_cache['cap'] = cap
-        _chain_cache['frames'] = sorted(fr)
+        # ⚠ CAPTURE ORDER, NOT FRAME ORDER. A delta is relative to the previously WRITTEN frame.
+        # With -Keep the directory holds several game sessions whose frame numbers restart, so
+        # sorting by number interleaves sessions and applies one session's deltas onto another's
+        # block (storm-down re-gated at 73-97% after two more sessions were kept alongside it).
+        # The sidecar's mtime is the write order. (Copy state files with `cp -p` to keep it.)
+        _chain_cache['frames'] = [f for _, f in sorted(fr)]
         _chain_cache['last'] = None
     return _chain_cache['frames']
 
@@ -156,7 +161,9 @@ def load_frame(frame, cap=CAP):
 
 
 def find_base(blk):
-    """Recover the absolute address blk lived at, from the draw-list handles themselves."""
+    """Recover the absolute address blk lived at, from the draw-list handles themselves.
+    Prefers the sidecar's exact base when the caller passes one via find_base.hint."""
+    blk_ref = blk
     handles = []
     for L in range(N_LAYERS):
         n = min(blk[DRAWLIST_COUNTS + L], MAX_PER_LAYER)
@@ -175,8 +182,59 @@ def find_base(blk):
                 votes[b] += sum(1 for x in handles if b <= x < b + BLK_SZ)
     if not votes:
         return None, 0, handles
-    base, score = votes.most_common(1)[0]
-    return base, score, handles
+    # ⚠⚠ THE VOTE IS BLIND TO A WHOLE-SLOT SHIFT. Every handle is stride-aligned, so a base that is
+    # off by k*0x738 collects exactly the same votes (a fighter in slot 2 "is" slot 0 from a base
+    # 0xE70 too high) and most_common() then picks whichever was inserted first. That is how every
+    # super-step capture of 2026-09-02 read the PARKED point characters (slots 0/1) as the
+    # fighters, with +0x170 == 0 and constant sids, while the active pair sat in slots 2/3 -- the
+    # block was right, the base was 0xE70 off. Break the tie by things a shifted base cannot fake,
+    # i.e. by reading POINTER FIELDS at candidate-relative offsets: under the true base an object
+    # node's owner (+0x28) is 0 or a fighter handle, and the System-A lists at blk+0x2EDE8+L*8
+    # chain through `next` (+0x10) pointers that all stay inside the block; under a shifted base
+    # both reads land mid-struct in other nodes and come back as garbage. (Do NOT use +0x170 here:
+    # a post-walk snapshot has it cleared on the very nodes that were drawn.)
+    def fighter_slot(off):
+        if 0 <= off - H0_OFF < 6 * SLOT_STRIDE and (off - H0_OFF) % SLOT_STRIDE == 0:
+            return (off - H0_OFF) // SLOT_STRIDE
+        return None
+    def coherence(b):
+        sc = 0
+        for h in handles:
+            off = h - b
+            if not (0 <= off and off + 0x1C0 <= BLK_SZ):
+                sc -= 3
+                continue
+            sl = fighter_slot(off)
+            if sl is not None:
+                sc += 1 if blk_ref[off + 0x6C0] <= 0x40 else -2
+            else:
+                own = struct.unpack_from('<Q', blk_ref, off + H_OBJ_OWNER)[0]
+                sc += 1 if (own == 0 or fighter_slot(own - b) is not None) else -2
+        for L in range(16):
+            head = struct.unpack_from('<Q', blk_ref, 0x2EDE8 + L * 8)[0]
+            p, n, ok = head, 0, True
+            while p and n < 128:
+                off = p - b
+                if not (0 <= off and off + 0x18 <= BLK_SZ):
+                    ok = False
+                    break
+                p = struct.unpack_from('<Q', blk_ref, off + 0x10)[0]
+                n += 1
+            if head:
+                sc += 2 if ok else -4
+        return sc
+    ranked = votes.most_common()
+    top = ranked[0][1]
+    cands = [(b, sc) for b, sc in ranked if sc >= top - 1]
+    best = max(cands, key=lambda t: (coherence(t[0]), t[1]))
+    # ⚠ A ROLLBACK COPY of the block (the first captures read the save-state buffer through
+    # 0x140AC6EF0) carries the LIVE block's absolute pointers, so relative to the copy every
+    # pointer anchor is garbage for EVERY candidate. In that case the anchors say nothing and the
+    # old vote order stands (it was pixel-exact on those captures). New captures carry the exact
+    # base in the sidecar and never reach this code path.
+    if coherence(best[0]) <= 0:
+        best = ranked[0]
+    return best[0], best[1], handles
 
 
 def nodes(blk, base):

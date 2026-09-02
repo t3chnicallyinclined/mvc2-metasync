@@ -104,6 +104,7 @@ def main():
         except SystemExit:
             print('frame %d: no state' % use); continue
         base, score, _ = BS.find_base(blk)
+        if meta.get('base'): base = int(meta['base'])   # exact, from the shim (sidecar)
         if not base:
             continue
         nodes = BS.nodes(blk, base)
