@@ -887,6 +887,529 @@ window** to prove the run wasn't a neutral re-run. KILL = any divergence at/afte
   Capture spec: `rip_hud_quads.py` against a **full-band (BAND_H=480)** HUD TA capture mid-match (running timer, built
   meter, active combo; ∞ badge for training tapes) — same method that baked the top-band bars, real texAddrs+coords.
 
+- **2026-09-01 — capture-session findings (maplecast `_capture_2026_09_01/FINDINGS-2026-09-01.md`), incl. a
+  CORRECTION to my HUD diagnosis.** (1) ⚠ **CORRECTION:** the earlier "HUD overlays missing = top-band BAND cull"
+  diagnosis is WRONG. The default cull keeps `cy<120 OR cy>=420`, so the TIME badge + bottom gauges ALREADY survive
+  it — `BAND_H=480`/`TOPY` is a non-fix. The real reason the deployed `hud_quads.json` is top-band-only is the
+  **capture game-STATE** (no running timer / built meter / active combo when it was taken) or last-pass-wins across
+  STARTRENDER passes. Capture condition = a live match with timer+meter+combo, NOT a band setting. (2) ⚠⚠ **NEW BUG
+  — `MAPLECAST_REPLICA_LIVE` corrupts the flycast render**: it force-enables the dynarec hooks and live-patches
+  `0x8C034864` (per-part body render) + `0x8C1248CC` (bank12 quad submit) with NO env escape (`maplecast_replica_live.cpp:530-534`).
+  3-run bisect confirms: probes+replica-live → sheared HUD / scattered parts; probes−replica-live → clean. INFERRED
+  but important: **prod runs replica-live headless → nobody ever saw its picture → this is a candidate ROOT CAUSE for
+  the live render-replica "garbling" class.** Log in re_kb; investigate independently. (3) PARTDUMP is superseded —
+  use `MAPLECAST_GFX1DUMP` (partDump reads stale mid-match scratch; both clobber the same filenames). Dumps need a
+  mirror-WS subscriber or `MAPLECAST_STATELOG=<path>` to fire at 60Hz headless. (4) The clean cell path = decode every
+  selector offline from the **full 16MB guest-RAM** region of the replica-live MCRR prefix (`maplecast_replica_live.cpp:580`)
+  — no `rsel<512` cap, no pose-grind — gated behind a ~3-line opt-out of finding-2's render patches (needs a rebuild).
+  (5) FREE GROUND TRUTH: the attract-mode demo dumped real Magneto/Sentinel/Colossus cells → `C:\dev\shm\_attract_demo_dumps\`
+  (validate the offline decoder against these). Status: neither capture taken; both gated on the finding-2 opt-out call.
+
+- **2026-09-01 - PATH B CAPTURE SHIM BUILT (`d3dcap/`), and two Ghidra findings that materially weaken the
+  2026-08-31 NO-GO verdict.** (1) CONFIRMED (Ghidra, `FUN_1402b80f0`): the game resolves D3D11 **at runtime**
+  via `LoadLibraryA("d3d11.dll")` (string `14095d180`, err `ERR03 : Failed to d3d11.dll Load.`) then calls
+  create-device through `FUN_1407fd5de`; arg shape matches `D3D11CreateDeviceAndSwapChain` exactly. Out-params:
+  **swapchain -> renderer+0xC8, device -> +0xB8, immediate context -> +0xC0**; HARDWARE driver, feature level
+  0xB000, SDK 7. Swapchain desc: **format 0x1C = R8G8B8A8_UNORM**, 60/1, BufferCount 1, RENDER_TARGET_OUTPUT,
+  Windowed, SwapEffect DISCARD. (2) The verdict's blocker was "capture implies injection into a DRM'd binary" -
+  but **the tray already ships exactly that**: `sync.rs:4200-4278` injects `hook/d3dhook.dll` by
+  CreateRemoteThread+LoadLibraryW and already hooks D3D11 palette COPY/COPYSUB in production. Injection is not a
+  blocker here, it is an existing capability. (Corrects the handover's "reuse the proven injector": d3dhook.dll
+  has **no source in any repo** - it is a prebuilt blob, so the technique is reusable, the code is not.)
+  **BUILT (untested against the live game):** `d3dcap/` - an injected DLL that hooks the immediate-context draw
+  entry points + `IDXGISwapChain::Present` by patching the **shared vtable** read off our own throwaway device
+  (so: no code patched inside Capcom's binary, no game offsets, no Detours). vtable indices CONFIRMED against
+  Windows SDK 10.0.26100.0 declaration order (DrawIndexed 12 / Draw 13 / DrawIndexedInstanced 20 /
+  DrawInstanced 21; `IDXGISwapChain::Present` 8). F9 dumps ONE frame to `%TEMP%
+rcaprame_<n>.ndjson`:
+  per draw = kind/counts, topology, VS/PS/input-layout identity, VB+stride+size, IB+format, PS SRV slots 0-3
+  with texture w/h/format/mips, **full blend desc**, depth state, render target, viewport. `summarize.py` turns
+  that into the A.5 fork answer. This single artifact replaces the RenderDoc spike AND is the capture format's
+  foundation. Blend descs alone settle the additive heuristic (`FX_ADDITIVE_BANKS` guess) with ground truth,
+  and the texture list tests whether skins survive - both are Path-A dividends even if the fork lands NO-GO.
+  **NEXT: live run** (`d3dcap/build.bat` -> `inject.ps1` -> F9 in a real VS match -> `summarize.py`).
+
+- **2026-09-01 - PATH B INSTRUMENTATION (`d3dcap/`) + a CORRECTION TO MY OWN CLAIM. The prior verdict
+  (`:528-543`, MT Framework / D3D11 / textured-quad draws) STANDS - do not retract it.** I first wrote
+  here that "Steam MvC2 issues ZERO D3D11 draw calls, contradicting the verdict." **That was an
+  overreach and is withdrawn.** `steam-d3d11-capture-expert` refuted it with evidence I did not have:
+  `Get-Counter '\GPU Engine(*)\Utilization Percentage'` shows **`pid_..._engtype_3d = 9.26%` under the
+  game's own PID with every video engine at zero** => something in that process IS rasterizing. The
+  verdict is further CORROBORATED by `config.ini` (`RenderingThread=OFF`, `DeferredLighting*`, `SMAA`)
+  and by `nativeDX11x64\app_shader\` (the `AppShaderPackage` the Ghidra verdict named).
+  **WHAT IS ACTUALLY MEASURED (the honest, narrower claim):** the game issues no draws *through the four
+  vtable slots d3dcap patched, on the one context object d3dcap patched*, over ~41,000 frames:
+  `Draw/DrawIndexed/DrawIndexedInstanced/DrawInstanced/DrawAuto/both Indirects/Dispatch = 0`,
+  `ExecuteCommandList=0`, `CreateDeferredContext=0`, `ClearRenderTargetView=0`, `UpdateSubresource=0`,
+  `CopySubresourceRegion=0`, `CopyResource=1` (init only), `Map=3,764,626` at a **dead-constant
+  ~100.0/frame** (3-4/frame in the collection shell, stepping to 100 when the arcade title starts).
+  **THE HOOK ITSELF IS SOUND (so the zero is a real blind spot, not a broken tool):** presenting
+  swapchain HWND `0x3B932370` == the process's `MainWindowHandle`; `config.ini [DISPLAY]
+  Resolution=1280x768` matches the swapchain exactly; Present ticks at **60.06fps across 41k frames**;
+  `GetImmediateContext` twice returns the same pointer; the displaced originals
+  (`DrawIndexed=0x7FFC85144B70`) are owned by **d3d11.dll**; and `Map` (slot 14) DOES fire on that same
+  vtable 100x/frame - proving the patch mechanism and the slot numbering are correct.
+  **REFUTED HYPOTHESES:** (a) *D3D9 renders it* - NO: `nvd3dumx.dll` (the NVIDIA D3D9 UMD) is absent;
+  only `nvwgf2umx.dll` (D3D11 UMD) is loaded. `d3d9.dll` is present only because
+  `gameoverlayrenderer64.dll` and `nvspcap64.dll` LoadLibrary it. (b) *another hook wrapped us* - NO,
+  originals are genuine d3d11.dll. (c) *the NV12 path is the render path* - NO, video engines idle.
+  **THE NV12 READBACK IS A CAPTURE PATH, NOT THE GAME (INFERRED-strong):** the per-frame `Map READ` on a
+  `640x1152 R8G8_UNORM` STAGING texture is a byte-exact **NV12 1280x768 GPU->CPU download** (640*2=1280
+  B/row; 768+384=1152 rows), and `nvspcap64.dll` (ShadowPlay) + `MFPlat.DLL`/`MFReadWrite.dll` are
+  loaded in-process; the init-only `CopyResource` RT->SRV is a capture tool building its conversion
+  source. RGB->NV12 with no Draw/Dispatch implies `ID3D11VideoContext::VideoProcessorBlt` - a SEPARATE
+  vtable we never patched. ⚠ the earlier "overlay disabled" control does NOT cover this: `nvspcap64` is
+  independent of `gameoverlayrenderer64`, and both were loaded in the quoted run.
+  **KNOWN BLIND SPOTS IN `d3dcap` (cited):** `dllmain.cpp:336` `hookGameDevice` is a HARD ONE-SHOT, so a
+  second device or second swapchain has never been examined (and `14095dbd0` says `mDisplay[i].pSwapChain`
+  = an ARRAY); `dllmain.cpp:110` `patch()` verifies the readback ONCE at t=0, never again; the
+  `n <= 8` cap at `:264` means we know 8 of 3.76M Maps; `capture.ps1` sleeps 5s before injecting, so
+  anything cached at renderer init is missed.
+  **LEADING HYPOTHESIS (H1):** draws are submitted via a path that bypasses the patched slots - either
+  MT Framework caching the context's hot-path function pointers at init (H1a; vtable hooking can then
+  NEVER work on this title), a second device (H1b), or a different context object (H1c).
+  **THE DECISIVE, ZERO-BUILD TEST:** read `renderer+0xB8` (device), `+0xC0` (context), `+0xC8` (swapchain)
+  out of the LIVE process (rr-agent already does `process_vm_read` on it) and compare to what d3dcap
+  logged (`device=0x0687EC90`, `ctx=0x39587838`). Equal => H1b/H1c dead, it is H1a/reversion.
+  Different => the second device is found instantly.
+  **FORK STATUS: UNDECIDED, and it MUST NOT be decided on this data.** The draw-call fork is
+  **un-costed, not disproven** - draw/shader/device counts remain unmeasured. The framebuffer fork is
+  ~40 lines on the confirmed Present hook (`GetBuffer(0)` -> `CopyResource` to STAGING+CPU_READ -> `Map`
+  -> encode) and needs none of the unknowns resolved. ⚠ Tris's call, and the tradeoff is unchanged:
+  framebuffer = Steam's real pixels shipping now but **skins impossible**; draw-call = skins survive at
+  an unknown cost. Do not let "the one that works today" decide a product requirement by default.
+  Also corrects the handover's "reuse the proven injector `hook/d3dhook.dll`": that DLL is a prebuilt
+  blob with NO SOURCE in any repo - the technique is reusable, the code is not.
+
+- **2026-09-01 - ROOT CAUSE FOUND: the D3D11 context's dispatch table is REWRITTEN at runtime, so
+  vtable patching CANNOT hold on this title. Both earlier claims are resolved; neither was right.**
+  Probe 1 (in-process, addresses rebased off the live module) settled targeting: `renderer` =
+  `*(0x142EBD8F0)` = `0x29B79B20`; **`renderer+0xC0` (context) = `0x39592FC8` == the exact pointer
+  d3dcap patched** => the hook was on the right object all along, and `renderer+0xB8` (device) matches
+  the censused device too. So "we hooked a decoy" is DEAD.
+  **THE MECHANISM (CONFIRMED by re-verification across a run):** `[verify] ctx vtable slot12 still
+  ours=1` on the FIRST check, then `ours=0` on every subsequent check. Something restores the original
+  `Draw`/`DrawIndexed` pointers into the context's inline dispatch table (the vtable sits at `ctx+8`,
+  heap, per-instance). Our hooks are therefore absent for most of any run, which is exactly why
+  `draws=0` was measured while the GPU 3D engine was 9.26% busy. **Hypothesis H5 (silent reversion),
+  which the expert flagged as "not yet refuted, cheap to kill", is CONFIRMED.**
+  ⚠ **This makes vtable patching UNSAFE here, not merely ineffective:** after a rewrite, the originals
+  we saved may not match what d3d11 reinstalled, so forwarding through them can call a stale pointer.
+  A game crash was observed on the probe run. **Do not ship or reuse the vtable-patch approach on this
+  title.** (The DXGI `Present` patch is the exception and IS stable - `IDXGISwapChain`'s vtable lives in
+  `dxgi.dll .rdata`, is shared, and has held across 41k+ frames.)
+  **ALSO CONFIRMED this run:** exactly 1 device + 1 swapchain (no hidden second of either);
+  `CreateDeferredContext` never called; the context DOES expose `ID3D11VideoContext`
+  (`vt=0x7FFC851C2090`) = the ShadowPlay/Media-Foundation NV12 readback path, not the game's render;
+  `gateA (renderer+0x38)` is set in ~14% of 2.5k samples, so the executor is NOT permanently skipped;
+  the nDraw queue read at `*(0x142EF0AB0)+0x1E0080` was flat 0 - UNRESOLVED, likely a rebasing or
+  wrong-global issue given the exe is packed, NOT yet evidence the queue is idle.
+  **CONSEQUENCE FOR PATH B:** the draw inventory is still UNMEASURED. To get it, hooks must be INLINE
+  trampolines on the d3d11.dll draw functions themselves (they cannot be undone by a table rewrite), or
+  the capture must come from RenderDoc, which wraps the device from creation and is immune to all of
+  this. **The FRAMEBUFFER path, by contrast, needs only the DXGI Present hook that is already proven
+  stable** - `GetBuffer(0)` -> `CopyResource` to a STAGING+CPU_READ texture -> `Map` -> encode.
+  ⚠ FORK STILL UNDECIDED AND STILL TRIS'S CALL: framebuffer = Steam's real pixels, available now,
+  **skins impossible**; draw-call = skins survive, cost still unknown.
+  **ALSO CORRECTED (senior-re-generalist, full disassembly):** `FUN_140620F10` contains **ZERO indirect
+  calls** - it is a game-side software display list (16 layers, `0x2f4d0`..`0x324d0`, stride `0x300`),
+  three layers above any GPU call; `FUN_1406129F0`/`FUN_140612F70` are ONE function that does GFX2
+  piece-list quad assembly with sin/cos LUTs and **performs no decompression at all**. The
+  `:531-532` clause "decompress twiddled 4bpp parts -> upload to D3D11 textures -> issue textured-quad
+  D3D11 draws" was an INFERENCE presented as a traced call chain and is **FALSE for those functions**;
+  where texture decode actually lives is **UNLOCATED - do not guess**. The real D3D11 executor is
+  `FUN_1402B6F30` (Draw at vtable 0x68, DrawIndexed 0x60, Map 0x70 - all on the same object we hooked),
+  called from `FUN_1402B6A50` = `IRender::flip`, with Present at `0x1402B6BBD`. Same correction is
+  owed in `docs/RENDER-PIPELINE-HANDOVER.md` and `docs/REPLAY-ENGINE-DESIGN.md:113`.
+
+- **2026-09-01 - PATH B CAPTURE WORKS. Both halves proven on one run, with the fix that mattered:
+  INLINE (MinHook) hooks instead of vtable patches.** After the dispatch-table-rewrite root cause
+  (previous entry), ALL context vtable patching was removed from `d3dcap/` and replaced with MinHook
+  trampolines on the d3d11.dll draw functions themselves - the game rewriting its context table puts
+  those SAME addresses back, so inline hooks survive what vtable patches did not.
+  **DRAW-CALL HALF - MEASURED AT LAST (the number Path B has never had):** over ~4,800 frames of live
+  training-mode play, `Draw` (NON-indexed) fires at **~750 per frame** (3,362,283 by frame 4800) with
+  `DrawIndexed` at only ~2/frame (50,695 total) and `DrawIndexedInstanced`/`DrawInstanced` at **0**.
+  ⟹ the 2D scene is submitted as **unbatched non-indexed draws**, almost certainly 4-vertex quads.
+  Bounded, order-hundreds-per-frame, single draw kind = the tractable shape for a browser re-render.
+  **PROBE 2 ALSO CAME ALIVE:** the nDraw command queue (`*(0x142EF0AB0)+0x1E0080`) is churning, up to
+  **90,040 bytes**, and `gateA (renderer+0x38)` fires ~20% of samples. The earlier flat-zero reading was
+  a menu/idle artefact, NOT a bad address - the RE's queue layout is CONFIRMED live.
+  **FRAMEBUFFER HALF - SHIPPING QUALITY NOW:** `GetBuffer(0)` -> STAGING copy -> `Map` -> BMP, taken
+  BEFORE Present (SwapEffect=DISCARD leaves the backbuffer undefined after). Output is Steam's real
+  1280x768 R8G8B8A8 backbuffer, 3.75 MB/frame, auto-captured every 8s to `%TEMP%\rrcap\shot_*.bmp`.
+  Verified visually: a real Magneto-vs-Cable training frame, full HUD, correct stage, correct
+  pillarboxing. This is the "faithful FIXED VIDEO" path from the 2026-08-31 product decision, and it is
+  now real rather than scoped.
+  **WHAT THIS SETTLES AND WHAT IT DOES NOT.** Settled: Path B is viable; the capture mechanism is
+  solved; the draw count is finally known. NOT settled: what each of those ~750 draws IS - topology,
+  vertex layout, bound texture, blend state - which is the remaining input to the fork. Next step is
+  the per-draw inventory (the original `frame_*.ndjson` + `summarize.py`), now re-pointed at the INLINE
+  hooks that actually fire. ⚠ FORK REMAINS TRIS'S CALL: framebuffer = Steam's real pixels, working
+  today, **skins impossible**; draw-call = skins survive, and its cost is now looking affordable rather
+  than unknown.
+  **TOOLING NOTE:** `d3dcap/` builds against MinHook (`vcpkg install minhook:x64-windows-static`, /MT).
+  The ONLY vtable still patched is `IDXGISwapChain::Present` (dxgi.dll .rdata, shared, stable across
+  41k+ frames). RenderDoc is now installed on the dev box as the independent cross-check.
+
+- **2026-09-01 - THE FORK IS ANSWERED BY MEASUREMENT: the DRAW-CALL re-render is VIABLE **and skins
+  survive**. Per-draw inventory captured live on gameplay frames, every draw attributed to a Ghidra
+  call site.** Method: inline (MinHook) draw hooks now record a full per-draw state dump to
+  `frame_<n>.ndjson` AND a `shot_<n>.bmp` of the SAME frame, so every inventory is paired with the
+  picture it produced. Each record carries `ret` = the game return address rebased to 0x140000000.
+  **CALL-SITE ATTRIBUTION CONFIRMS THE DISASSEMBLY TO THE BYTE:** 649 of 653 gameplay draws return to
+  **`0x1402B72F4`** = the instruction after the call at **`0x1402B72F0`**, which the RE named as Draw
+  site #1 inside **`FUN_1402B6F30`** (the D3D11 command executor). Also seen: `0x1402B7183`
+  (->`0x1402B717F`, DrawIndexed site #1) and `0x1402B7649` (->`0x1402B7645`, Draw site #2). The only
+  other sites are in a `0x7FFC...` module (overlay/ShadowPlay), not the game. ⟹ **ONE game code path
+  produces essentially the entire scene.**
+  **GEOMETRY (measured, gameplay frame 5275 = a 22-hit combo mid-super):** 653 draws; **one shared
+  2 MiB DYNAMIC vertex buffer** (`0x39AB7E60`, 2,097,152 bytes -- this is the same 2 MB buffer seen
+  being `Map`'d READ_WRITE every frame, i.e. the per-frame VB upload); **stride = 40 bytes** on 99% of
+  draws; topology **TRIANGLESTRIP with 4 verts x423** (quads) plus TRIANGLELIST 6-vert x103 and a tail
+  of 3/5/8/9/11/12-vert strips. Vertex-layout construction is `FUN_1402BD9A0` = the
+  `CreateInputLayout` builder (device vtable +0x58 = index 11; assert string at `0x14095ECA0`;
+  semantic-name table at `PTR_s_POSITION_140969f50`).
+  **⭐ SKINS SURVIVE - the decisive texture finding.** In-game sprite draws bind **UNCOMPRESSED
+  `R8G8B8A8_UNORM`, mips=1** atlases: 256x256 (used by 986 draws in frame 1460), plus 64x64, 128x128,
+  512x512. They are per-part uploads, NOT a pre-composited sheet ⟹ a texture-upload intercept can swap
+  them, exactly as the current skin hook does for palettes. (By contrast the Collection's own UI/menu
+  frames bind BC7/BC1 compressed art -- a different pipeline, irrelevant to the arcade surface.)
+  **⭐ BLEND GROUND TRUTH - retires the `FX_ADDITIVE_BANKS` heuristic (a Path-A dividend regardless of
+  fork).** Only two states matter on the game call site: `SRC_ALPHA x INV_SRC_ALPHA` x586 (normal) and
+  **`SRC_ALPHA x ONE` x53 = ADDITIVE**. Depth on the sprite path: `en=1 func=4 write=0`.
+  Per-object additive is therefore DIRECTLY OBSERVABLE at the API, not a guess from gfx1 bank ids.
+  **SCENE STRUCTURE:** the arcade image is rendered into an OFFSCREEN RT and then composited - e.g. the
+  character-select frame draws 1250 quads into a `2048x1024 B8G8R8A8` RT at viewport `384,32 1280x960`.
+  Frame cost scales with scene: 28 draws (menu) -> 191 (char select UI) -> 653-1300 (gameplay/supers).
+  **VERDICT: bounded draw count, ONE call site, ONE vertex format, TWO blend states, uncompressed
+  swappable atlases. This is the "re-renderable" branch of the A.5 rubric, not the record-only branch.**
+  ⚠ STILL TRIS'S CALL, but the tradeoff has moved: the draw-call fork no longer costs "unknown" - and
+  it is the ONLY branch that keeps custom skins. The framebuffer path remains built and working as the
+  immediate deliverable / fallback.
+  **NOT YET DONE:** the exact 40-byte vertex semantics (declared layout is in `FUN_1402BD9A0`'s
+  semantic table; the stronger evidence is a live dump of the VB bytes, not yet taken), and HLSL->WGSL
+  for the sprite VS/PS. Neither blocks the decision.
+
+- **2026-09-01 - ⚠ FALSIFIED (maplecast lane, relayed): the `MAPLECAST_REPLICA_LIVE` dynarec-hook
+  theory for the in-match render corruption is DEAD. Do not act on it.** The earlier entry in this log
+  called it "a candidate ROOT CAUSE for the live render-replica garbling class" (INFERRED). It has been
+  disproved by its own author: a `MAPLECAST_NO_ORACLE_HOOK` opt-out was added and rebuilt, the log
+  shows **zero hook injections, and it still garbles**. The original "confirmed" 3-run bisect compared
+  runs differing by **two** variables, observed by different people on different game content -- a
+  textbook false confirm. **The corruption is real; its cause is OPEN.** Best surviving hypothesis
+  (UNTESTED): `MAPLECAST_HUD_TA`'s second `ta_parse` racing the DX11 parse.
+  **STILL STANDING from that findings doc, and these DO change Path-A plans:** (a) `bakes-RUNBOOK.md`'s
+  PARTDUMP recipe reaches only **~11-17% of cells** and **fails silently** (probes gate `rsel<512`,
+  atlases use selectors to 4685) -- fix is to pull the full 16 MB RAM from the replica-live prefix and
+  decode every selector offline (a working `ram16.bin` was captured, so this is demonstrated, not
+  theoretical); (b) use `MAPLECAST_GFX1DUMP`, **not** PARTDUMP -- PARTDUMP reads transient scratch that
+  is stale mid-match, and **both write the same filenames**, so enabling both clobbers; (c) dumps do
+  not fire without a mirror-WS subscriber -- `MAPLECAST_STATELOG=<path>` is the lever; (d) ⚠ **new:
+  `MAX_HUD=256` truncates SILENTLY** (45 of 658 frames in a real capture hit the cap with quads
+  dropped), and with the band cull off the collector picks up playfield geometry (only 224/256 quads
+  came from the HUD VRAM slab) -- frame selection must reject 256-quad frames and rank on HUD-VRAM
+  content. Neither capture is taken yet; that lane owns it.
+  **⭐ CROSS-LANE NOTE FROM PATH B (may retire the whole PARTDUMP problem):** `d3dcap/` now dumps the
+  sprite atlases straight out of Steam's live D3D11 as **uncompressed R8G8B8A8, mips=1** pages
+  (256x256 / 128x128 / 64x64 / 512x512), deduped per frame. If those are the same cell pixels PARTDUMP
+  is trying to reach, the `rsel<512` gate, the stale-scratch problem and the LZSS-back-ref-into-
+  runtime-scratch dead-end (lesson 4 of the render handover) are all SIDESTEPPED -- Steam has already
+  decoded them for us. **Worth one comparison before more effort goes into the flycast bake path.**
+
+- **2026-09-01 - PATH B CAPTURE IS ONE COMMAND, AND SHADER/LAYOUT COVERAGE IS SOLVED via a SUSPENDED
+  LAUNCH.** `d3dcap/collect.ps1` is now the single entry point: build -> launch -> inject -> wait
+  while you play -> detect the first COMPLETE gameplay frame -> print the analysis -> exit by itself.
+  **THE CATCH-22 THAT FORCED IT (both halves observed):** the game creates its D3D11 device very early
+  in startup, so (a) injecting after the Windows loader settles is ALREADY TOO LATE - the
+  `D3D11CreateDeviceAndSwapChain` hook never fires and shader/input-layout bytecode is unrecoverable
+  (`ID3D11VertexShader` has no `GetBytecode`); and (b) injecting the instant the process appears
+  CRASHES it - `LoadLibraryW` via `CreateRemoteThread` while the loader is initialising deadlocks the
+  process. Both failure modes were reproduced live.
+  **SOLUTION (CONFIRMED WORKING): `CREATE_SUSPENDED`.** `launch_suspended.ps1` starts
+  `MarvelVsCapcomFightingCollection.exe` directly with CREATE_SUSPENDED (Steam already running,
+  `SteamAppId`/`SteamGameId` set so the DRM accepts a direct launch), injects into the quiet process,
+  then `ResumeThread`. **The DRM did NOT refuse it.** Result, measured: `[game] LAUNCHED 73624` ->
+  `[init] game created device=... ctx=... swapchain=...` -> `Present hooked=1` ->
+  **`captured at creation: inputLayouts=32 VS=32 PS=116`** (previously 0). The `.cso` bytecode and the
+  `D3D11_INPUT_ELEMENT_DESC[]` for every layout are now on disk -- the authoritative vertex format,
+  no value-range guessing.
+  **⚠ BUG FOUND AND FIXED IN THE SAME RUN:** `MH_Initialize FAILED` -> draw hooks never installed ->
+  every inventory read `0 draws`. Cause: the worker calls `MH_Initialize()` to hook the device-creation
+  export, then `installDrawHooks` calls it AGAIN and gets `MH_ERROR_ALREADY_INITIALIZED`, which the
+  code treated as fatal. Now accepts OK **or** ALREADY_INITIALIZED. (The creation hooks were unaffected
+  because they never call MH_Initialize - which is exactly why coverage worked while draws did not.)
+  **ALSO IN THIS BUILD (closing the expert's full minimum set in ONE pass rather than one per run):**
+  `ClearRenderTargetView`/`ClearDepthStencilView` interleaved in draw order (an uncleared intermediate
+  RT carries last frame's contents, so a replay starting black is wrong); 8 slots everywhere (SRVs,
+  samplers, VS **and** PS constant buffers, VB streams 1-3, all 8 RTVs) instead of 1-4; the DSV desc;
+  blend factor + sample mask (previously computed and discarded); rasterizer + scissor; full
+  depth/stencil incl. StencilRef. Plus a crash fix: the texture dump assumed 4 bytes/pixel and walked
+  y to Height, which reads ~4x past the end of every BC7/BC1 texture -- it now dumps only uncompressed
+  R8G8B8A8/B8G8R8A8 (which is what the arcade atlases are) and skips compressed UI art.
+  **ASSET EXTRACTION PROVEN:** live sprite atlases pulled straight from Steam's D3D11 as uncompressed
+  RGBA with real alpha (a 256x256 char-select text page verified visually; one 256x256 page served 972
+  of 1216 draws in a gameplay frame). ⚠ note they are stored VERTICALLY FLIPPED - that is the V
+  orientation the WebGPU port must match.
+  **REMAINING:** re-run `collect.ps1` with the MinHook fix to get draws + the authoritative layout
+  decode in one pass; then HLSL->WGSL for the 2-3 hot shaders (one VS+PS pair covered 1061 of 1267
+  draws). `D3DCOMPILER_43.dll` is already loaded in-process, so `D3DDisassemble`/`D3DReflect` are free.
+
+- **2026-09-01 - ⭐⭐ FULL IN-MATCH CAPTURE ACHIEVED, and the sprite pipeline is INDEXED + 256x1
+  PALETTE LUT -- a Steam skin swap is 16 RGBA values.** One `collect.ps1` run, frame 4828: 1252 draws,
+  **189 distinct textures**, coverage **8/8 input layouts, 8/8 VS, 16/16 PS**, disjointness gate PASSED
+  (1237 ranges, 0 overlaps, 83% density). Every gate green on a real match frame.
+  **⭐ THE PALETTE FINDING (CONFIRMED, dumped and inspected):** sprite draws bind a `256x1
+  R8G8B8A8_UNORM` texture to **PS slot 1** (110 draws on one, 39 on another, 21 on a third). Dumped and
+  decoded: **256 entries, only 16 UNIQUE COLOURS**, index 0 = `(0,0,0,0)` fully transparent, all others
+  alpha 255. Sixteen colours = **4bpp indexed sprites**, i.e. the SAME palette model MvC2 uses on
+  DC/CPS2. The observed table is Magneto's ((204,119,221),(136,68,153),(102,34,119) purples + skin
+  tones + yellow). ⟹ **Steam's sprite path = indexed page in slot 0 + palette LUT in slot 1, resolved
+  in the PS.** A skin swap on Path B is therefore writing **16 RGBA values into a 256x1 texture** --
+  no atlas rebuild, no re-bake -- and it maps directly onto the existing palette-based skin system.
+  This is a much cheaper skin story than "patch the texture upload".
+  **⭐ VERTEX FORMAT SETTLED FROM BYTECODE, not from value ranges** (`d3dcap/inspect_shader.py`, new:
+  parses the DXBC ISGN/OSGN chunks). Layout `stride=40`: `POSITION float4 @+0`, `NORMAL float2 @+16`,
+  `TANGENT unorm4 @+24`, `BINORMAL unorm4 @+28`, `TEXCOORD float2 @+32`. The dominant VS's input
+  signature says what is actually CONSUMED: **POSITION read `xyz` only** (the `.w` denormal is
+  ignored), **NORMAL read mask is EMPTY - NEVER READ**, TANGENT/BINORMAL/TEXCOORD fully read.
+  ⟹ the real sprite vertex is **position.xyz + two RGBA8 vertex colours + uv**, with **8 DEAD BYTES at
+  +16** the game never initialises. ⚠ That is why decoded NORMALs show `(nan,nan)` and `-2.5e+38` in
+  some frames and clean values in others - it is uninitialised buffer memory, NOT a decode bug and NOT
+  a capture bug. A port must IGNORE that field. (Exactly the trap value-range guessing would have hit.)
+  **SCENE PROFILE for the kept frame:** blend is `SRC_ALPHA x INV_SRC_ALPHA` x1225 vs additive
+  `SRC_ALPHA x ONE` x7 -- ⚠ note this is the INVERSE of character select (1006 additive), so the
+  additive/alpha ratio is SCENE-DEPENDENT and no single frame settles the additive question. Depth:
+  `en=1 func=4(LESS_EQUAL)` with stencil enabled on 980 draws, `write=0` on 245. 1228 of 1245 draws go
+  into the `2048x1024 B8G8R8A8` offscreen RT at viewport `(384,32,1280,960)`, then a 9-pass chain down
+  to the 1280x768 backbuffer. Clears captured in order: depth to `1.0`, intermediates to `[0,0,0,1]`,
+  the scene RT to `[0,0,0,0]`.
+  **TOOLING NOW ONE COMMAND, WITH GATES THAT REFUSE BAD DATA:** `collect.ps1` = build -> CREATE_SUSPENDED
+  launch -> inject pre-execution -> wait -> keep recording 45s after the first match frame -> keep the
+  RICHEST frame -> print the analysis -> exit. Gate 0 rejects menu/char-select frames by distinct
+  texture count (measured: menus 9-30, char select 21-24, in-match 96-298 - draw count CANNOT separate
+  them, both render ~1200 draws into the same offscreen RT). Gate 1 = VB-range disjointness. Gate 2 =
+  creation-time coverage. Frames failing any gate are skipped, never analysed.
+  **⚠ FIXED THIS SESSION (my bugs, each cost a run):** double `MH_Initialize` returning
+  ALREADY_INITIALIZED treated as fatal (draw hooks never installed, every inventory read 0 draws);
+  a texture-reference LEAK on two early-return paths in `dumpCapturedBuffers` that exhausted the
+  device and crashed the game on character select; a BC7 out-of-bounds read in the texture dump
+  (block-compressed data has ceil(h/4) rows, not h); `summarize.py` KeyError on the new Clear records.
+  **NEXT:** HLSL->WGSL for the 2-3 hot shaders (one VS+PS pair covers 975 of 1252 draws;
+  `D3DCOMPILER_43.dll` is in-process so `D3DDisassemble`/`D3DReflect` are free), then a scene-RT-only
+  pixel diff via `gsta-verification-harness` BEFORE attempting the post/bloom chain.
+
+- **2026-09-01 - ⚠ CORRECTION TO MY OWN PALETTE CLAIM + THE SHADERS ARE PORTED. The previous entry
+  said "a Steam skin swap is 16 RGBA values". That is WRONG for the main character path.** Disassembly
+  of the actual bytecode (fxc `/dumpbin`, shaders captured at creation time) shows Steam runs **TWO**
+  sprite paths, and the palette one is the minority:
+  * **`ps_000000006420CEB8` — DIRECT RGBA, 975 of 1252 draws.** Binds `t0` ONLY. Slot-0 textures are
+    `256x256` (631 draws) and `128x128` (347) `R8G8B8A8_UNORM`. **This is what draws the characters.**
+    A skin swap here means replacing ATLAS PIXELS, not a palette write.
+  * **`ps_00000000642D7378` — INDEXED + PALETTE, 152 draws.** `idx = sample(t0).x` on a `32x32`
+    **`R8_UNORM` (fmt 61)** index texture, then `pal = sample(t1, vec2(idx,0))` on the `256x1` palette
+    with a **POINT** sampler (`SSPoint`, s1). The palette really does hold 16 entries + transparent
+    index 0 (4bpp, the DC/CPS2 model) — but it recolours SMALL EFFECTS, not fighters.
+  ⟹ the palette finding stands as a mechanism; my claim about what it covers did not. Skins on Path B
+  are a texture-upload intercept on the RGBA pages, with the palette path as a bonus for effects.
+  **⭐ THE FULL SPRITE PIPELINE, PORTED LITERALLY** (`d3dcap/replay/sprite.wgsl`, new). Vertex shader
+  (`vs_0000000039E22A38`, 16 instrs) is `pos.xyz -> mul(fWorld 3x4, float4(pos,1)) -> mul(fViewProj
+  4x4)`, passing colour0/colour1/uv through: positions are **MODEL space**, both matrices come from
+  constant buffers we capture (`CBWorld` cb0 48B, `CBViewProjection` cb1). Pixel shader is
+  `rgb = tex.rgb * colour0.rgb + colour1.rgb` with **alpha taken from the VERTEX, not the texture**,
+  and an alpha-test discard.
+  **⭐ TWO RUNTIME CONSTANTS SETTLED FROM THE CAPTURED BUFFERS (not assumed):**
+  `CBROPTest.fAlphaRef = **0.0**` (the alpha test discards only fully transparent texels) and
+  `CBFog.fFogDensity = **0.0**` ⟹ **the fog term in the pixel shader is a NO-OP.** That
+  INDEPENDENTLY CONFIRMS `mvc-render-composite-model`'s "**NO fog**" claim, this time from Steam's own
+  live constant buffer rather than from the DC disassembly. The WGSL port omits fog on that basis and
+  says so in a comment.
+  **NEW TOOL:** `d3dcap/inspect_shader.py` parses the DXBC ISGN/OSGN chunks to report what a shader
+  DECLARES vs what it actually READS (per-component mask). That is what proved `NORMAL`'s read mask is
+  empty, explaining the NaNs as uninitialised-by-design rather than a capture bug.
+  ⚠ **The WGSL is UNVALIDATED** — hand-translated from the disassembly, not yet compiled or pixel
+  diffed. `steam-d3d11-capture-expert` + `mvc2-sprite-render-expert` engaged to review before it is
+  trusted. Next gate remains a **scene-RT-only** diff (draws into the `2048x1024` offscreen RT at
+  viewport `384,32,1280,960`), NOT the final backbuffer, which has been through the bloom chain.
+
+- **2026-09-01 - ⚠⚠ RETRACTION: "fFogDensity = 0 so fog is a no-op" and "fAlphaRef = 0" are NOT
+  EVIDENCE. The constant buffers were STALE at snapshot time.** (steam-d3d11-capture-expert, verified
+  against the dumped bytes.) I logged both as CONFIRMED from Steam's live constant buffers. They were
+  read at Present, and **the post-processing chain reuses the SAME constant-buffer objects and
+  overwrites them in place** before that point. Proof: `buf_4828_cb0_*.bin` (CBWorld) is an **exact
+  identity** `(1,0,0,0 / 0,1,0,0 / 0,0,1,0)` and `buf_4828_pscb_0000000039744D20.bin`
+  (CBViewProjection) is an **exact identity** with `fCameraPos=(-0,-0,-0)`, `fCameraTargetDist=100`,
+  `fCameraFarClipLog2=1` -- the canonical FULLSCREEN-QUAD setup used by the post chain (draws
+  1230-1251), on the same buffer pointer. But the frame's own vertices decode to e.g.
+  `pos=(1070.78, 140.40, -2653.40)`: under an identity view-projection every sprite would be clipped
+  away, and they plainly rendered. ⟹ the snapshot describes the BLOOM pass, not the sprite pass.
+  **⚠ MY DISJOINTNESS GATE CANNOT CATCH THIS BY CONSTRUCTION** -- it tests vertex-buffer RANGE overlap,
+  and a constant buffer is overwritten IN PLACE with no ranges to overlap. Different failure class,
+  needs a different gate. (The vertex data itself is fine: draws 5/6/7 occupy 33152..33352,
+  33352..33552, 33552..33792 -- contiguous, disjoint, UVs in 0..1.)
+  **⟹ The project's "NO fog" finding stands on its ORIGINAL DC-disassembly evidence only. My claim to
+  have independently confirmed it from Steam is WITHDRAWN.** The WGSL port must KEEP the fog term and
+  bind the real per-draw constants; it is a bit-exact no-op when density really is 0, so keeping it
+  costs nothing and removes a silent-failure class we cannot currently rule out.
+  **FIX (being implemented): snapshot constant buffers at DRAW time, not at Present** -- shadow them
+  via hooked `Map`/`Unmap` and dedupe by content hash. They are tiny (CBWorld 48B, CBFog 80B, largest
+  seen 432B), so even undeduped this is under 1 MB/frame.
+  **⚠ GENERAL LESSON, worth more than the specific bug:** a Present-time snapshot is only valid for
+  resources the frame does not REUSE. It happened to be valid for the 2 MiB vertex buffer (the game
+  appends) and is invalid for constant buffers (overwritten per draw). Do not assume a capture point
+  generalises across resource types.
+
+- **2026-09-01 - PORT REVIEW: 4 bugs found in `d3dcap/replay/sprite.wgsl` before it was trusted.**
+  (The WGSL validates under `naga`, which proves syntax, NOT correctness.) CONFIRMED CORRECT: the
+  vertex math instruction-by-instruction incl. left-to-right accumulation order; `NORMAL` omitted (the
+  VS declares `v0,v2,v3,v4` -- **there is no `v1`**); alpha from the vertex; discard semantics; and
+  **`unorm8x4` byte order needs NO swizzle** (D3D byte0->R and WebGPU byte0->x agree).
+  **BUGS:** (1) `fs_indexed` was paired with the wrong vertex shader -- the 152 indexed draws ALWAYS
+  use `vs_0000000063F9C9F8`, a **pass-through with NO constant buffers** that emits only THREE
+  varyings, with **uv at TEXCOORD2 (`v3`), not TEXCOORD3**; sharing one VSOut made it sample using
+  `worldPos.xy`. (2) The index texture must be **POINT** sampled -- captured `D3D11_SAMPLER_DESC`
+  `filter:0` on BOTH s0 and s1 for all 152 draws; linear-filtering a palette INDEX blends indices into
+  arbitrary colours. ⚠ root cause: the port trusted the shader's sampler NAME (`SSJackShader`) instead
+  of the captured desc -- a name is a binding label, not state. (3) Samplers are **per-draw state**:
+  character draws are 933 `filter:21` (LINEAR), 24 `filter:0` (POINT), 16 with `u/v/w:1` = **WRAP**,
+  not CLAMP. ⚠ WebGPU's default `createSampler()` is nearest+clamp, which is right for the indexed path
+  and wrong for 933 character draws. (4) A THIRD sprite shader is unported: `ps_00000000642D7078`,
+  69 draws, samples `r0.xyzw` and uses **per-texel alpha** (`a = tex.a * colour0.a`) -- 2 lines, takes
+  coverage 1127/1252 -> 1196/1252.
+  **WEBGPU TRAPS CONFIRMED FROM THE CAPTURE:** DXBC `linear` = **perspective-correct**, which is WGSL's
+  DEFAULT -- so specifying nothing is right and must be commented so nobody "fixes" it to
+  `@interpolate(linear)` (= noperspective). **No `_SRGB` format anywhere** (scene RT fmt 87, backbuffer
+  fmt 28, textures f28) ⟹ linear throughout; a `bgra8unorm-srgb` canvas injects a global gamma error
+  that looks "close". Depth NDC is [0,1] in **both** APIs. ⚠ **DSV is `fmt:44` = R24G8_TYPELESS ⟹
+  D24_UNORM_S8_UINT**, so use `depth24plus-stencil8`; this **CONFLICTS with the existing depth32float
+  fix in sprite-gpu** (tuned for Path A/DC) -- resolve explicitly, do not inherit. Cull is per-draw and
+  VARIES (FRONT x870, BACK x183, NONE x172). Blend alpha is `srcA=ONE, dstA=ZERO` -- destination alpha
+  is REPLACED, not `one/one-minus-src-alpha`, and the post chain samples that alpha. `writeMask` varies
+  (one draw has mask 0). Non-issues: `bfactor` all `[1,1,1,1]`, `smask` all `0xFFFFFFFF`, `nrt`=1,
+  scissor disabled on every scene draw. ⚠ **V-flip: no flip is needed at the API level** (both APIs put
+  v=0 at the top row) -- our dumped atlases look flipped because of MY BMP WRITER, so fix the dumper,
+  not the UVs; flipping UVs would also break the palette lookup, which uses `v = 0.0` literally.
+  **STENCIL IS SAFE TO DROP for a scene-RT colour diff:** every scene draw is `sten:0` (245) or
+  `sten:1` with **`srmask:0`** (982), and `(ref & 0) vs (buf & 0)` is content-independent. ⚠ INFERRED
+  from the read mask, not measured -- `StencilFunc` and the three ops are not yet captured; add them.
+  **THE FIRST DIFF, STAGED:** the scene RT `0x766FBCA0` is bound for draws 2..1229 and **never rebound
+  in the frame**, so it can be snapshotted in `hkPresent` like the backbuffer -- no pass-boundary hook
+  needed. Then **Diff 0 = ONE draw** (draw 5: 5-vert strip, one 256x256 texture, `c0=(145,159,164,255)`)
+  to catch winding/cull inversion, UV flip, byte order and blend errors with a signal readable by eye;
+  **Diff 1 = draws 2..1229** into 2048x1024 `bgra8unorm` + `depth24plus-stencil8`, clear `[0,0,0,0]`,
+  depth 1.0, viewport `(384,32,1280,960)`, diffed against the dumped scene RT **cropped to
+  (384,32)-(1664,992)** -- outside that rect is untouched clear and would flatter the number.
+  Diff 2 = the post chain vs `shot_*.bmp`, later. ⚠ capture the reference with BOTH overlays disabled.
+  Budget ±1 ULP: `mad` fusion is undefined in both APIs.
+
+- **2026-09-01 - ⚠⚠⚠ THE PREMISE WAS INVERTED. The 975 direct-RGBA draws are the 3D STAGE; the 152
+  "small effect" INDEXED draws are THE CHARACTERS.** (mvc2-sprite-render-expert, proved three
+  independent ways.) I had it backwards in every prior entry today and in the first WGSL port.
+  (1) **Spatial:** computing the NDC bbox of every draw in `frame_4828.ndjson` and mapping it through
+  `vp=[384,32,1280,960]` into backbuffer space, the draws landing on Sentinel's body are **41 draws,
+  ALL `ps_00000000642D7378`, ALL t0 = 32x32 `DXGI_FORMAT_R8_UNORM` (fmt 61)**. Zero RGBA draws are
+  centred there. (2) **The textures:** the dumped 256x256 RGBA pages are photographic 3D STAGE art --
+  metal pillars, chains, a ship's wheel, sails -- and their alpha is uniformly 255 (which is why that
+  shader sets IgnoreTexA). (3) **The palettes:** the 256x1 t1 textures are **4bpp MvC2 CHARACTER
+  palettes** -- 15 non-transparent entries with index 0 transparent, every channel a multiple of 0x11
+  (ARGB4444 bit-replicated to 8-bit); one holds 240 = **16 banks x 16**, which is literally the shape
+  of our `PLxx_lut.json` `banks[]`.
+  **⟹ SKINS ARE A PALETTE WRITE AFTER ALL.** My earlier "correction" (that skins need atlas-pixel
+  replacement because characters take the RGBA path) is ITSELF WITHDRAWN. `sprite-gpu.mjs
+  setSkin(charId, bodyColors16)` already does exactly the right thing; the Steam equivalent is writing
+  those 16 RGBA into the first texels of the 256x1 t1 texture. Index byte -> `bank = idx>>4`,
+  `entry = idx&15` is precisely our `_idx.png` R/G encoding. Nothing in the skin architecture changes.
+  **⚠⚠ CAPTURE BUG THIS EXPOSED — WE HAD ZERO CHARACTER PIXELS.** `isRGBA32()` in `d3dcap/dllmain.cpp`
+  accepted only 4-byte RGBA formats, and **144 of the 189 textures bound in frame 4828 are fmt 61
+  (R8_UNORM)**. Every character index tile was silently skipped, as was the **256x128 RGBA HUD bank**.
+  FIXED: `isDumpableTex()` now also accepts `R8_UNORM` and the row width follows the format.
+  ⭐ Side effect worth having: per `mvc-hud-list0b-live-re` the UI sprite bank **cannot be obtained
+  offline at all** -- this path now hands it over as flat RGBA, closing a standing blocker in that lane.
+  **⭐⭐ STEAM'S RENDERER IS A PVR2 EMULATOR RUNNING FLYCAST'S SHADING SEMANTICS.** All four pixel
+  shaders are specialisations of the DX11 macro matrix in
+  `maplecast-flycast/core/rend/dx11/dx11_shaders.cpp`: `6420CEB8` = ShadInstr 3 + IgnoreTexA 1 +
+  Offset 1 + fog (opaque stage, depth write=1); `642D7078` = same without IgnoreTexA (translucent
+  stage, write=0); `642D7378` = + `pp_Palette` (**the characters**, write=0); `643231F8` = no fog
+  (**the HUD**, 256x128 bank). Model them as flycast tuples, not as ad-hoc shaders.
+  **TWO VERTEX SHADERS, NOT ONE:** the stage uses `vs_0000000039E22A38` (fWorld 3x4 then fViewProj
+  4x4); the characters and HUD use `vs_0000000063F9C9F8`, a **pure pass-through with NO constant
+  buffers** whose positions are ALREADY IN NDC (measured -0.4042, -0.6375, z 0.98153). My first port
+  ran character verts through both matrices. FIXED: two `@vertex` entries, two varying structs (the
+  pass-through emits THREE varyings with uv at TEXCOORD2, not four).
+  **MEASURED, AND USEFUL BEYOND PATH B:** the characters use only **SEVEN distinct z values** across
+  all 152 draws -- one z per body/layer, NOT per part. That directly corroborates the order-key model
+  in `mvc-render-composite-model` and tells the emitter it can assign one z per character.
+  **V-FLIP SETTLED BY MEASUREMENT:** decoding draw 1056's verts, `v` DECREASES as screen y goes down,
+  so the flip is baked into the game's OWN UVs. ⟹ replaying the captured stream: **flip nothing**.
+  Harvesting Steam textures into our atlases: **flip at atlas-build time** -- never at upload, never in
+  the shader. (Our convention is fixed and load-bearing: `setAtlas`/`setIndexedAtlas` pass
+  `flipY:false`, atlas row 0 = sprite top; and the `flipY` vertex attribute at shaderLocation 5 is the
+  per-part Y-MIRROR from `flags & 0x8000`, NOT an orientation control -- putting a global flip there
+  would collide with mirrored parts.)
+  **⚠ PATH A IS **NOT** OBSOLETED -- tell the maplecast lane it is NOT solved.** Steam does not hand us
+  uncompressed character pages: characters go through `pp_Palette` (R8 index + 256x1 palette), which is
+  **the same PAL4 model Path A already produces**. The LZSS / `0x0CE60000`-scratch dead-end is
+  unchanged for OFFLINE extraction; Steam is a second LIVE source, not an offline one. A Steam tile is
+  also a single per-part tile (32x32 dominant), whereas a `PLxx.json` entry is a composited
+  whole-sprite crop with `dx,dy,wG,hG` -- different granularity and anchoring, **not drop-in**.
+  ⭐ What IS genuinely valuable to that lane: Steam R8 tiles are **comparable to `MAPLECAST_PARTDUMP`
+  output tile-for-tile**, i.e. an independent second witness for **re_kb/68** (column-pair-major wide-
+  part tile order) and **re_kb/66** (sel==0xFF blank records consuming tiledesc slots).
+  **RENDERER DECISION (Tris):** build a CLEAN renderer for the Steam stream rather than extending
+  either existing one. Justified: `sprite-gpu.mjs` has **no depth buffer at all** and synthesises quads
+  from an instance attribute (no geometry input, two hardcoded blend states); `pvr2-renderer.mjs` uses
+  **reversed-Z with a log-depth write** (`depthClearValue 0.0`, greater-equal) where Steam is forward-Z,
+  clear 1.0, LESS_EQUAL with z straight from the vertex. And we no longer need anyone's reconstructed
+  semantics -- we have Steam's own shaders. Both experts engaged on the design.
+
+- **2026-09-01 - ⭐⭐⭐ THE CAPTURE IS COMPLETE. Every input a pixel-accurate replay needs is on disk
+  for frame 6108, and all four gates pass.** `d3dcap/replay/frame_6108.pack` (4.4 MB) written by
+  `pack_replay.py`.
+  **GATE RESULTS:** in-match (234 distinct textures, vs menus 9-30 / char-select 21-24); coverage
+  **8/8 input layouts, 8/8 VS, 16/16 PS**; VB-range disjointness **499 ranges, 0 partial overlaps**;
+  and texture coverage **224/224 bound textures have pixel dumps** (the packer REFUSES to pack below
+  100% -- it rejected two earlier frames for exactly this).
+  **⭐ THE STALE-CONSTANT-BUFFER BUG IS DEAD, and the fix was not where I first looked.** Shadowing
+  `Map`/`Unmap` captured NOTHING: all 501 draws in frame 4730 reported hash `00000000` while 496 of
+  them had constant buffers BOUND. Root cause: `D3D11_USAGE_DEFAULT` constant buffers **cannot be
+  Mapped at all** -- the game writes them with **`UpdateSubresource`** (vtable index 48, confirmed
+  against the SDK). With that hooked: **69 distinct CB payloads**, and critically **55 DISTINCT WORLD
+  MATRICES** with real translations (+5.0, -14.0, -71.0) plus **6 view-projections**. The identity
+  matrix now appears on exactly the 31 fullscreen-quad draws where identity is CORRECT, instead of on
+  everything. The captured `fViewProj` is a genuine perspective matrix with the translation in ROW 3
+  (`[-2437.07, -872.39, 810.36, 812.36]`), which matches the shader's row-major
+  `r1.x*cb1[0] + r1.y*cb1[1] + r1.z*cb1[2] + cb1[3]` accumulation exactly.
+  **SCENE PROFILE:** 490 of 507 draws into the `2048x1024 B8G8R8A8` offscreen RT at viewport
+  `(384,32,1280,960)`; 408 strips + 82 lists -> **3390 triangle-list indices** after the packer's
+  strip conversion; state space **4 blend / 4 depth / 4 raster / 7 sampler** (so the pipeline cache is
+  ~30 entries, small enough to review exhaustively). **SIX 256x1 palettes** bound at slot 1
+  (95/73/50/25/18/11 draws) = six characters on screen. R8 index tiles now dumping at 8x8, 16x16,
+  32x16, 32x32, **64x32**.
+  **TOOLING BUILT THIS SESSION (`d3dcap/replay/`):** `sprite.wgsl` (Steam's own shaders: 2 vertex
+  entries, 4 fragment entries, naga-validated); `state.mjs` (D3D11->WebGPU translation tables,
+  exercised against the real captured tuples -- BORDER address mode correctly THROWS rather than
+  silently becoming clamp); `pack_replay.py` (offline packer: strips->lists, drops the post chain,
+  content-hashes shaders/layouts so nothing is keyed on a runtime pointer that rots across launches,
+  and asserts 100% texture coverage); `inspect_shader.py` (DXBC ISGN read masks).
+  ⚠ **THE STRIP TRAP, worth remembering:** 408 of 490 scene draws are TRIANGLESTRIP and adjacent
+  character quads share both state and contiguous VB ranges -- so "merge adjacent draws with equal
+  state" FUSES two strips and manufactures bridging triangles. It fails silently and looks plausible.
+  The packer converts to triangle lists offline, which makes merging safe AND halves the pipeline space.
+  **NEXT:** the replayer itself, then the staged diff -- scene RT first, post/bloom chain second.
+  ⚠⚠ **EPISTEMIC RULE FOR THAT DIFF (re_kb, 2026-09-01):** a pixel diff that improves is a
+  MEASUREMENT, not a mechanism. A matching replay would show our translation of the captured state
+  reproduces the pixels; it would establish NOTHING about MvC2 itself. That is
+  `record_attempt(..., outcome='masks_only')`, never a `finding`. The diff tool must print this
+  alongside its number rather than leaving it to the reader.
+  ⚠ **CORRECTION TO MY OWN EARLIER CLAIM:** I twice said the captured 64x32 / 128x32 R8 tiles would be
+  "a live arbiter" for the wide-part tile-order question. **FALSE.** `finding:wide_part_colpair_order`
+  and `finding:blank_record_desc_slot` are both **confirmed AND FIXED 2026-07-09** from the engine's
+  own desc builder (`loc_8c033ba8..ce0`) and walker (`loc_8c0344d4`) -- code-grade disassembly
+  evidence, far stronger than any texture comparison. A Steam tile dump is an independent
+  CROSS-CHECK of a settled finding, not a resolution of an open one. (I was also citing them by
+  number, "re_kb/66"/"re_kb/68", second-hand from an expert report; the KB addresses findings by SLUG.
+  Resolve citations before propagating them.)
+
 ## 7. OPEN QUESTIONS PARKING LOT
 - Does the Option-B camera focal 812.357 stay constant across a superjump? (Oracle probe
   `0x8C26A518+0x20` + `blk+0x6990/0x6994`) — Track A7 dependency.

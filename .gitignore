@@ -38,6 +38,7 @@ credentials.json
 **/*.blk
 **/*.rrtape
 **/*.rr4
+**/*.rdc
 # Tape render inputs + rendered game pixels + ROM-derived stage/HUD assets
 /web/tapecanvas/tape.json
 /web/tapecanvas/tape_*.json

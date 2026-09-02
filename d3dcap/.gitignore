@@ -1,0 +1,16 @@
+# ── build artifacts (the DLL is rebuilt from dllmain.cpp by build.bat) ──
+d3dcap.dll
+*.obj
+*.lib
+*.exp
+*.pdb
+__pycache__/
+
+# ── ROM-DERIVED CAPTURE OUTPUT — NEVER COMMIT (BYOR ground rule) ──
+# A .pack embeds the game's own texture pixels, vertex buffer and shader bytecode.
+# Live captures land in %TEMP%\rrcap and never here, but guard anyway.
+*.pack
+*.cso
+*.bin
+*.bmp
+*.ndjson
