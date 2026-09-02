@@ -252,3 +252,55 @@ two nodes share `+0x4D`. Independently rebuild that row from the node lists usin
 **If the handle sequences differ, the registration-order claim is wrong.** Single variable, one
 frozen frame, and the comparison is a byte-exact full-frame diff — not a sampled screenshot, because
 z-order errors on ties are precisely what periodic capture aliases away.
+
+
+## 9. TAPE v5 — the System-A (world-space) stream  *(spec, 2026-09-02; not yet in the agent)*
+
+Everything the bodies needed is now proven at 100% from the System-B list. What is still missing
+from a frame — shadows, 1P/2P markers, super glows, hail chunks, the HUD, stage props — is drawn
+by the game's OTHER render system, and it is now mapped end to end (Ghidra `FUN_140620740` /
+`FUN_140620cd0`, capture f4445):
+
+* **Lists** at `blk + 0x2EDE8 + L*8`, singly linked by `node+0x10`, gate `node+0x170`. Seen in a
+  Hail Storm frame: list 6 stage backdrop, **list 7 hail chunks and the fighter's shadow/marker
+  set**, list 8 3D models (`+0xE8`), list 11 the HUD (77 nodes), list 12 stage root.
+* **Matrix.** `node+0xA8` is a column-major 4×4 (16 f32). Its row-major 3×4 transpose is,
+  byte for byte, the `CBWorld` Steam binds for the node's draws: 254 of 307 world-space draws on
+  the frame (the rest are children composed on the engine's matrix stack — model parts).
+* **Geometry + texture.** `node+0xA0` is not a texture handle; it is a DC Tile-Accelerator
+  polygon-list object the recompile still consumes: header 0x18, then records of a 0x50 header
+  (`PCW, ISP, TSP, TCW`, floats, payload size at +0x4C) and a payload of 32-byte vertices
+  `x y z nx ny nz u v`. Those vertices are exactly the vertices in Steam's vertex buffer for the
+  draw (checked live). **The TCW is the stable texture identity** (a DC VRAM address); a
+  TCW→page library is built from captures (`replay/tcw_pages/`).
+* **Colour / blend.** `node+0x94..0x9C` (×`blk+0x6ca8..` when flag 0x800), flags `node+0xF0`
+  (0x20 alpha mode, 0x2000/0x8000 blend paths, 0x100/0x80 billboard toward the camera).
+
+### 9.1 What the agent must record per drawn System-A node (lists 5..13)
+| field | source | bytes |
+|---|---|---|
+| list | L | 1 |
+| flags | `+0xF0` | 4 |
+| matrix | `+0xA8`, 16 f32 (or pos `+0x50`, scale `+0x6C` and rebuild — record the matrix, it is what is consumed) | 64 |
+| colour | `+0x94..0x9C` | 12 |
+| object | the records at `*(+0xA0)`: for each record `TCW, TSP, PCW` + vertex payload — **interned by content hash** in an `aobjs` table (a hail chunk's quad is the same 200 B every frame) | 2 (index) |
+| model | `+0xE8 != 0` → the model asset id is a separate, static rip (stage/props); record the pointer only | 8 |
+
+~90 B per node per frame plus an interned object table; a super frame has ~20 such nodes.
+
+### 9.2 Renderer
+Emit each node as a `vs_world` draw: CBWorld = transposed matrix, view-projection from the camera
+block (`blk+0x6920/0x6924/0x6928`, the Option-B camera already used for the stage), vertices from
+the interned object, texture = `tcw_pages[TCW]`, colour/blend from the node. The player already
+runs this shader path for the stage.
+
+### 9.3 Gate
+`v3gate` gains a world-space pass: for each captured frame, paint the System-A nodes through the
+same emitter and diff against the `vs_world` draws, exactly as the sprite pass is diffed today.
+The matrix identity is already a pixel-free proof of placement; the texture identity is what the
+TCW library proves.
+
+### 9.4 What is needed from a play session
+The TCW of a transient effect (hail, glow, marker) can only be read while it is on screen. One
+guided capture session with the agent (or the live reader) logging `(matrix, TCW)` per node beside
+the shim gives the library for every effect exercised. The static set (HUD, stage) is already in.
