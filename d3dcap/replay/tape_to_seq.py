@@ -52,6 +52,7 @@ was given the other's answer.
 """
 import argparse
 import base64
+import glob
 import gzip
 import hashlib
 import json
@@ -77,6 +78,12 @@ def sha8(b):
     return hashlib.sha256(b).hexdigest()[:16]
 
 
+sys.path.insert(0, 'C:/Users/trist/projects/maplecast-flycast/tools')
+try:
+    import rip_gfx2_assembly as RIP
+except Exception:
+    RIP = None
+
 class Atlas:
     """One character's index pixels, packed parts and assemblies."""
 
@@ -89,6 +96,22 @@ class Atlas:
         self.parts, self.asm = a['parts'], a['assemblies']
         lut = json.load(open(os.path.join(base, self.name + '_lut.json')))
         self.banks, self.bodyBank = lut['banks'], lut.get('bodyBank', 0)
+        # ⭐ PER-RECORD PALETTE ROW. The deployed _asm.json drops the record FLAGS word; bits 4-6 of
+        # it are the palette row (SH4 expert: body cells row 0, Storm's lightning row 2, her
+        # satellites row 1; roster histogram {0:7462, 0x10:1708, 0x20:747, 0x30:26}). On Steam the
+        # row is applied by WHICH 256x1 palette the draw binds (the index pages are plain 1..15
+        # under every palette -- measured, 0 texels > 15 in 130k). This is the "PL32 needs sub-row
+        # 2" gap, closed: the sub-row is per RECORD, from the ROM, not per costume.
+        self.rows = {}
+        g = glob.glob('C:/Users/trist/projects/maplecast-flycast/dasm_PLDAT/Output/%s_DAT/*GFX_DATA_01.BIN' % self.name)
+        if RIP and g:
+            cells = RIP.read_cells(open(g[0], 'rb').read())[0]
+            for sel, recs in (cells.items() if isinstance(cells, dict) else enumerate(cells)):
+                self.rows[int(sel)] = [((r['flags'] >> 4) & 7) for r in (recs or [])]
+
+    def row_of(self, sel, ri):
+        rows = self.rows.get(int(sel))
+        return rows[ri] if rows and ri < len(rows) else 0
 
     @classmethod
     def get(cls, base, cid):
@@ -357,12 +380,20 @@ def main():
                 mir = not mir
 
             if v3nodes and a.bank is None and 0 <= cos < len(v3pals):
-                pal = v3pals[cos]                      # v3: `cos` is the resolved palette index
+                base_pal = v3pals[cos]                 # v3: `cos` is the resolved palette index
+                blk_base = None                        # locate its row-0 in the LUT for sibling rows
+                for bi, bk in enumerate(at.banks):
+                    if all(list(bk[i]) == base_pal[i].tolist() for i in range(16)):
+                        blk_base = bi - (bi % 8); break
             else:
-                pal = at.palette(a.bank, cos)
-            palkey = '%s_pal_%s' % (at.name, sha8(pal.tobytes()))
-            if palkey not in textures:
-                textures[palkey] = {'w': 256, 'h': 1, 'fmt': 28, **intern(pal.tobytes())}
+                base_pal = at.palette(a.bank, cos); blk_base = None
+            pal_cache = {}
+            def pal_for_row(row):
+                if row == 0 or blk_base is None or blk_base + row >= len(at.banks):
+                    return base_pal
+                if row not in pal_cache:
+                    pal_cache[row] = at.palette(blk_base + row, 0)
+                return pal_cache[row]
 
             # ⭐ DRAW ORDER WITHIN AN ASSEMBLY IS THE REVERSE OF THE RECORD LIST. Recovered from the
             # captures, where submission order is known exactly: match each body's tiles back to
@@ -376,10 +407,14 @@ def main():
             # ⚠ The ROM walker itself counts UP (bank03 loc_8c03489e: index+1, record ptr +8), so
             # the reversal is in OUR rip, not the game. Worth chasing in rip_gfx2_assembly.py -- but
             # what the renderer must do is measured either way.
-            for rec in (recs if a.forward_records else reversed(recs)):
+            for ri, rec in (enumerate(recs) if a.forward_records else reversed(list(enumerate(recs)))):
                 pid = rec['part']
                 if str(pid) not in at.parts:
                     continue
+                pal = pal_for_row(at.row_of(sid, ri))
+                palkey = '%s_pal_%s' % (at.name, sha8(pal.tobytes()))
+                if palkey not in textures:
+                    textures[palkey] = {'w': 256, 'h': 1, 'fmt': 28, **intern(pal.tobytes())}
                 bmp, pw, ph = at.part_bitmap(pid, not a.no_vflip)
                 key = '%s_p%d_%s' % (at.name, pid, sha8(bmp.tobytes()))
                 if key not in textures:
