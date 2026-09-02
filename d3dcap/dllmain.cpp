@@ -175,6 +175,51 @@ static void writeAsyncCopy(const char* path, const void* src, size_t n) {
     writeAsync(path, buf, n);
 }
 
+// -- WHO WRITES THE GEOMETRY? --------------------------------------------------------------------
+// ⭐ The question the Ghidra walk kept circling: which function turns game state into the vertices
+// Steam draws? Static analysis is slow here because the object system dispatches through per-node
+// handler pointers that Ghidra's auto-analysis never resolves (LAB_140653CE0 is not even a defined
+// function). But we already hook Map and UpdateSubresource — we just never recorded the CALLER.
+//
+// A return address names the emitter with no guessing at all. Every distinct call site that writes a
+// VERTEX or INDEX buffer is logged once, with its rebased address, so it can be pasted straight into
+// Ghidra. This is the same trick that found the draw executor: the capture already knew
+// 885 of 890 draws came from 0x1402B72F4 and nobody had looked.
+struct WriteSite { uintptr_t ret; unsigned kind; unsigned hits; };
+static WriteSite g_wsite[64];
+static int g_nwsite = 0;
+
+static void noteWriter(void* ret, ID3D11Resource* r, const char* how) {
+    if (!r) return;
+    D3D11_RESOURCE_DIMENSION dim = D3D11_RESOURCE_DIMENSION_UNKNOWN;
+    r->GetType(&dim);
+    if (dim != D3D11_RESOURCE_DIMENSION_BUFFER) return;
+    ID3D11Buffer* b = nullptr;
+    if (FAILED(r->QueryInterface(__uuidof(ID3D11Buffer), (void**)&b)) || !b) return;
+    D3D11_BUFFER_DESC bd = {};
+    b->GetDesc(&bd);
+    b->Release();
+    // vertex/index buffers only — constant buffers are already shadowed elsewhere and their writers
+    // are the renderer, not the game.
+    if (!(bd.BindFlags & (D3D11_BIND_VERTEX_BUFFER | D3D11_BIND_INDEX_BUFFER))) return;
+
+    uintptr_t a = (uintptr_t)ret;
+    for (int i = 0; i < g_nwsite; ++i)
+        if (g_wsite[i].ret == a) { ++g_wsite[i].hits; return; }
+    if (g_nwsite >= 64) return;
+    g_wsite[g_nwsite].ret = a;
+    g_wsite[g_nwsite].kind = bd.BindFlags;
+    g_wsite[g_nwsite].hits = 1;
+    ++g_nwsite;
+
+    uintptr_t rebased = 0;
+    const char* mod = "game";
+    if (g_imgBase && a >= g_imgBase && a < g_imgBase + g_imgSize) rebased = a - g_imgBase + 0x140000000ULL;
+    else mod = moduleOf((void*)a);
+    logf("[emit] NEW %s writer: ret=0x%llX (%s) buffer=%u bytes flags=0x%X  <- paste into Ghidra",
+         how, (unsigned long long)(rebased ? rebased : a), mod, bd.ByteWidth, bd.BindFlags);
+}
+
 static bool safeRead(const void* src, void* dst, size_t n) {
     __try { memcpy(dst, src, n); return true; }
     __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
@@ -231,6 +276,7 @@ static HRESULT STDMETHODCALLTYPE hkMap(ID3D11DeviceContext* c, ID3D11Resource* r
                                        D3D11_MAP type, UINT flags, D3D11_MAPPED_SUBRESOURCE* mp) {
     HRESULT hr = oMap ? oMap(c, r, sub, type, flags, mp) : E_FAIL;
     if (SUCCEEDED(hr) && r && mp && mp->pData && sub == 0) {
+        if (type != D3D11_MAP_READ) noteWriter(_ReturnAddress(), r, "Map");
         // A texture mapped for writing is about to change, so anything a later draw samples from it
         // is NOT what an earlier draw saw. See the stale-texture note above noteTexVersioned.
         if (type != D3D11_MAP_READ) markTexDirty(r);
@@ -287,7 +333,7 @@ static PFN_UpdateSubresource oUpdateSub = nullptr;
 
 static void STDMETHODCALLTYPE hkUpdateSub(ID3D11DeviceContext* c, ID3D11Resource* r, UINT sub,
                                           const D3D11_BOX* box, const void* src, UINT rp, UINT dp) {
-    if (r && src) markTexDirty(r);
+    if (r && src) { markTexDirty(r); noteWriter(_ReturnAddress(), r, "UpdateSubresource"); }
     if (r && src && sub == 0) {
         D3D11_RESOURCE_DIMENSION dim = D3D11_RESOURCE_DIMENSION_UNKNOWN;
         r->GetType(&dim);
@@ -1455,6 +1501,16 @@ static HRESULT STDMETHODCALLTYPE hkPresent(IDXGISwapChain* sc, UINT si, UINT fla
         // game time instead of once a frame.
         if (!g_burstLeft) {
             logf("[cap] frame %u inventory: %u draws", g_frame, g_drawIdx);
+        if (g_nwsite) {
+            logf("[emit] %d distinct geometry writers seen so far:", g_nwsite);
+            for (int i = 0; i < g_nwsite; ++i) {
+                uintptr_t a = g_wsite[i].ret, rb = 0;
+                if (g_imgBase && a >= g_imgBase && a < g_imgBase + g_imgSize)
+                    rb = a - g_imgBase + 0x140000000ULL;
+                logf("[emit]   0x%llX  flags=0x%X  x%u",
+                     (unsigned long long)(rb ? rb : a), g_wsite[i].kind, g_wsite[i].hits);
+            }
+        }
         } else if ((g_burstGot % 60) == 0) {
             logf("[burst] %u/%u frames (%u draws, %d textures, %lld MB queued to disk)",
                  g_burstGot, g_burst, g_drawIdx, g_frameTex, (long long)(g_wqueued >> 20));
