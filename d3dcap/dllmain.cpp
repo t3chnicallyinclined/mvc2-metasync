@@ -1076,8 +1076,24 @@ static HRESULT STDMETHODCALLTYPE hkPresent(IDXGISwapChain* sc, UINT si, UINT fla
         // character select (both render ~1200 draws into the same 2048x1024 offscreen RT), but the
         // distinct-texture count can: measured, menus 9-30, char select 21-24, in-match 96-298.
         // g_nCapTex IS that count, so the in-process gate matches the offline one exactly.
-        if (g_drawIdx >= 300 && g_nCapTex >= 50) dumpCapturedBuffers(sc, g_frame);
-        else { releaseCapBufs(); releaseCapTex(); }
+        if (g_drawIdx >= 300 && g_nCapTex >= 50) {
+            // The SCENE RT is the diff target. The backbuffer has been through a 9-pass bloom/SMAA
+            // chain, so diffing against it would only prove that bloom exists. The scene RT is bound
+            // for the whole sprite pass and never rebound in the frame, so Present is a valid
+            // snapshot point -- no pass-boundary hook needed.
+            ID3D11Device* sdev = nullptr;
+            ID3D11DeviceContext* sctx = nullptr;
+            if (SUCCEEDED(sc->GetDevice(__uuidof(ID3D11Device), (void**)&sdev)) && sdev) {
+                sdev->GetImmediateContext(&sctx);
+                if (sctx) { captureSceneRT(sdev, sctx, g_frame); sctx->Release(); }
+                sdev->Release();
+            }
+            dumpCapturedBuffers(sc, g_frame);
+        } else {
+            releaseCapBufs();
+            releaseCapTex();
+            g_nRtSeen = 0;
+        }
         logf("[cap] frame %u inventory: %u draws", g_frame, g_drawIdx);
     } else if (InterlockedExchange(&g_armDraws, 0)) {
         char path[MAX_PATH];

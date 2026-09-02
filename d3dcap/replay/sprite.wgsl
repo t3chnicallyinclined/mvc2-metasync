@@ -59,19 +59,37 @@
 //   an inverted enum deletes 870 draws and looks identical to a broken replayer.
 
 // ── uniforms ─────────────────────────────────────────────────────────────────────────────────────
-// ⚠ MUST be the PER-DRAW values. A Present-time snapshot of these is STALE — the post chain reuses
-// the same buffer objects and overwrites them with an identity matrix and a camera at the origin.
-struct World    { r0 : vec4f, r1 : vec4f, r2 : vec4f };                       // CBWorld, float3x4
-struct ViewProj { r0 : vec4f, r1 : vec4f, r2 : vec4f, r3 : vec4f, cameraPos : vec4f };
-struct Rop      { alphaRef : f32, _pad : vec3f };                             // CBROPTest
-struct Fog      { color : vec3f, density : f32, start : f32, invRange : f32, _pad : vec2f };
+// ⚠ THESE MUST BE THE PER-DRAW VALUES. A Present-time snapshot of the game's constant buffers is
+// STALE: the post chain reuses the same buffer objects and overwrites them with an identity matrix
+// and a camera at the origin. The capture shadows them at UpdateSubresource instead, and measured 55
+// DISTINCT world matrices in one frame — so this genuinely varies per draw.
+//
+// All four of the game's constant buffers are packed into ONE uniform block, bound once with a
+// dynamic offset per draw. One 256-byte-aligned slice per draw (490 draws = 125 KB) costs a single
+// setBindGroup offset instead of four buffer bindings, and keeps the bind-group layout constant so
+// the pipeline cache stays small.
+struct DrawUniforms {
+    // CBWorld: row_major float3x4 fWorld
+    world0 : vec4f,
+    world1 : vec4f,
+    world2 : vec4f,
+    // CBViewProjection: row_major float4x4 fViewProj (translation is in ROW 3, matching the shader's
+    // r1.x*cb1[0] + r1.y*cb1[1] + r1.z*cb1[2] + cb1[3] accumulation)
+    vp0 : vec4f,
+    vp1 : vec4f,
+    vp2 : vec4f,
+    vp3 : vec4f,
+    cameraPos : vec4f,          // fCameraPos at CBViewProjection +64, used by the fog term
+    // CBFog: rgb = fFogColor, w = fFogDensity
+    fogColor : vec4f,
+    // x = fFogStart, y = fFogInvRange, z = CBROPTest.fAlphaRef, w = unused
+    fogParams : vec4f,
+};
 
-@group(0) @binding(0) var<uniform> uWorld : World;
-@group(0) @binding(1) var<uniform> uViewProj : ViewProj;
-@group(0) @binding(2) var<uniform> uRop : Rop;
-@group(0) @binding(3) var<uniform> uFog : Fog;
+@group(0) @binding(0) var<uniform> u : DrawUniforms;
 
-// Binding SLOTS. Real sampler objects come per draw from the captured desc.
+// s0/s1 are BINDING SLOTS. The replayer supplies real sampler objects per draw, built from the
+// captured D3D11_SAMPLER_DESC — sampler state is per-draw, not a shader constant.
 @group(1) @binding(0) var samp0 : sampler;
 @group(1) @binding(1) var samp1 : sampler;
 @group(1) @binding(2) var tBase : texture_2d<f32>;   // t0 (RGBA page, or R8 index tile)
@@ -106,13 +124,13 @@ struct VSOutFlat {           // vs_0000000063F9C9F8: THREE varyings, uv arrives 
 @vertex
 fn vs_world(in : VSIn) -> VSOutWorld {
     let p = vec4f(in.position.xyz, 1.0);
-    let world = vec3f(dot(uWorld.r0, p), dot(uWorld.r1, p), dot(uWorld.r2, p));
+    let world = vec3f(dot(u.world0, p), dot(u.world1, p), dot(u.world2, p));
 
     var out : VSOutWorld;
-    out.pos = world.x * uViewProj.r0
-            + world.y * uViewProj.r1
-            + world.z * uViewProj.r2
-            + uViewProj.r3;
+    out.pos = world.x * u.vp0
+            + world.y * u.vp1
+            + world.z * u.vp2
+            + u.vp3;
     out.color0   = in.color0;
     out.color1   = in.color1.rgb;
     out.worldPos = world;
@@ -141,10 +159,10 @@ fn vs_flat(in : VSIn) -> VSOutFlat {
 // ⚠ config-conditional (HDR=DEFAULT), not structurally absent — unlike the HUD shader, which has no
 // fog instructions at all.
 fn apply_fog(rgb : vec3f, worldPos : vec3f) -> vec3f {
-    let d = length(worldPos - uViewProj.cameraPos.xyz);
-    var f = saturate((d - uFog.start) * uFog.invRange) * uFog.density;
+    let d = length(worldPos - u.cameraPos.xyz);
+    var f = saturate((d - u.fogParams.x) * u.fogParams.y) * u.fogColor.w;
     f = sqrt(f);
-    return rgb * (1.0 - f) + uFog.color * f;
+    return rgb * (1.0 - f) + u.fogColor.rgb * f;
 }
 
 // ── fragment: OPAQUE STAGE (ps_000000006420CEB8, 975 draws) ──────────────────────────────────────
@@ -157,7 +175,7 @@ fn fs_stage_opaque(in : VSOutWorld) -> @location(0) vec4f {
     let tex = textureSample(tBase, samp0, in.uv).rgb;   // texcol.a forced to 1
 
     let a = in.color0.a;                                // = 1.0 * colour0.a
-    if (uRop.alphaRef >= a) { discard; }
+    if (u.fogParams.z >= a) { discard; }
 
     return vec4f(apply_fog(tex * in.color0.rgb + in.color1, in.worldPos), a);
 }
@@ -169,7 +187,7 @@ fn fs_stage_texalpha(in : VSOutWorld) -> @location(0) vec4f {
     let tex = textureSample(tBase, samp0, in.uv);
 
     let a = tex.a * in.color0.a;
-    if (uRop.alphaRef >= a) { discard; }
+    if (u.fogParams.z >= a) { discard; }
 
     return vec4f(apply_fog(tex.rgb * in.color0.rgb + in.color1, in.worldPos), a);
 }
@@ -189,7 +207,7 @@ fn fs_character(in : VSOutFlat) -> @location(0) vec4f {
     let pal = textureSample(tPal, samp1, vec2f(idx, 0.0));
 
     let a = pal.a * in.color0.a;
-    if (uRop.alphaRef >= a) { discard; }
+    if (u.fogParams.z >= a) { discard; }
 
     return vec4f(pal.rgb * in.color0.rgb + in.color1, a);
 }
@@ -204,7 +222,7 @@ fn fs_hud(in : VSOutFlat) -> @location(0) vec4f {
     let tex = textureSample(tBase, samp0, in.uv);
 
     let a = tex.a * in.color0.a;
-    if (uRop.alphaRef >= a) { discard; }
+    if (u.fogParams.z >= a) { discard; }
 
     return vec4f(tex.rgb * in.color0.rgb + in.color1, a);
 }

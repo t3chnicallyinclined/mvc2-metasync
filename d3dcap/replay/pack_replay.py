@@ -225,8 +225,19 @@ def main():
         payloads.append(data)
         return {"off": off, "len": len(data)}
 
+    # The ground-truth image is REFERENCED, not embedded: it is 8 MB and would double the pack, and
+    # the diff tool wants it as a separate input anyway. This is the PRE-BLOOM scene RT -- diffing
+    # against the backbuffer instead would only prove that the bloom chain exists.
+    scene_hits = glob.glob(os.path.join(CAP, "scene_%s_*.bmp" % a.frame))
+    if scene_hits:
+        print("ground truth: %s" % os.path.basename(scene_hits[0]))
+    else:
+        print("⚠ NO scene RT dump for this frame -- there is nothing to diff against")
+
     manifest = {
         "frame": a.frame,
+        "sceneRTFile": os.path.basename(scene_hits[0]) if scene_hits else None,
+        "viewport": next((d.get("vp") for d in out_draws if d.get("vp")), None),
         "sceneRT": {"w": rt0["w"], "h": rt0["h"], "fmt": rt0["fmt"]},
         "clears": clears,
         "vb": add(vb),
