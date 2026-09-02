@@ -1791,3 +1791,33 @@ texture payload is exactly `w*h*bpp`, every draw's index range lies inside its f
 and every vertex fetch lands inside its frame's vertex buffer. The module graph imports clean. The
 playback itself is unproven until a burst is captured — this is scaffolding plus one validated
 container, not a demonstrated replay.
+
+### The sequence's own version of the texture-identity bug
+
+The player worked on the first attempt, and some frames rendered perfectly while others showed the
+familiar garbled character shards. The frames themselves were fine — packed and rendered alone,
+frame 3893 diffs at **136 wrong pixels of 1,228,800 (0.011%)** against its own ground truth.
+
+The fault was in the sequence, and it was mine: the shared-texture optimisation keyed on the pack's
+texture key, `pointer#generation`. **That is a content identity WITHIN one frame and nowhere else.**
+In this capture the shim reset its version table every frame, so the same pointer is `#0` in every
+frame while holding completely different pixels. Measured across the 6 test frames: **175 of 317
+texture keys mean different bitmaps in different frames.** The shared map — and the bind-group cache,
+which is keyed the same way — handed frame N's art to frame N+1. Clean frames and garbled frames
+alternated depending on which pointers happened to repeat.
+
+This is the same class of bug as the `tex_*` glob that matched every captured frame, reintroduced one
+layer up by an optimisation. Fixed in `pack_sequence.py` by re-keying textures to `t<pool offset>` —
+the pool dedupes on sha256, so the offset IS a content identity — and rewriting every draw's `tex`
+references to match.
+
+**And made into a gate**, because an argument would not have caught it: `pack_sequence.py` now
+refuses to write a sequence unless every texture key resolves to exactly one bitmap across every
+frame, and every draw reference resolves at all.
+
+```
+gate: 597 texture keys, one bitmap each, 597 draw references all resolve
+```
+
+⚠ The general rule, now paid for three times: **a runtime pointer is never an identity, and a
+per-frame identity is never a cross-frame one.** Key by content, and assert the keying.

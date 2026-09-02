@@ -60,6 +60,16 @@ def longest_run(ids):
     return best
 
 
+def pool_bytes(pool, rec):
+    """The bytes a {off,len} record points at, without concatenating the whole pool."""
+    at = 0
+    for chunk in pool:
+        if at == rec["off"]:
+            return chunk[:rec["len"]]
+        at += len(chunk)
+    raise SystemExit("pool offset %d does not start a chunk -- the merge is inconsistent" % rec["off"])
+
+
 def load_pack(path):
     b = open(path, "rb").read()
     if b[:4] != b"RRPK":
@@ -125,9 +135,25 @@ def main():
         # rewrite every blob reference in this frame's head to point into the shared pool
         head["vb"] = intern(payload[head["vb"]["off"]: head["vb"]["off"] + head["vb"]["len"]])
         head["ib"] = intern(payload[head["ib"]["off"]: head["ib"]["off"] + head["ib"]["len"]])
+        # ⚠⚠ RE-KEY TEXTURES BY CONTENT, NOT BY POINTER.
+        # A frame's texture key is "pointer#generation", which is a content identity WITHIN one
+        # frame and nowhere else: the same pointer with #0 in two frames is two different bitmaps.
+        # Carrying those keys into a sequence let the player's shared texture map -- and its
+        # bind-group cache -- hand frame N's pixels to frame N+1, which drew clean frames and
+        # garbled ones alternately depending on which pointers happened to repeat. Same class of bug
+        # as the `tex_*` glob that matched every captured frame; this is the sequence's version of it.
+        # The pool offset IS a content identity, because intern() dedupes on sha256 of the bytes.
+        rekey = {}
+        textures = {}
         for key, rec in head["textures"].items():
             body = payload[rec["off"]: rec["off"] + rec["len"]]
             rec.update(intern(body))
+            newkey = "t%d" % rec["off"]
+            rekey[key] = newkey
+            textures[newkey] = rec
+        head["textures"] = textures
+        for d in head["draws"]:
+            d["tex"] = [rekey.get(t) if t else None for t in (d.get("tex") or [])]
         for key, rec in head["constantBuffers"].items():
             body = payload[rec["off"]: rec["off"] + rec["len"]]
             rec.update(intern(body))
@@ -157,6 +183,27 @@ def main():
         "sceneRTFile": truth,
         "note": "each entry is a pack_replay head with blob offsets rewritten into a shared pool",
     }
+    # GATE: the invariant the player depends on -- one texture key means one bitmap, everywhere in
+    # the sequence. Carrying the per-frame "pointer#generation" keys into a sequence broke this for
+    # 175 of 317 keys and handed frame N's pixels to frame N+1. Assert it here rather than discover
+    # it as "some frames look garbled".
+    seen, clashes = {}, 0
+    for h in heads:
+        for key, rec in h["textures"].items():
+            digest = hashlib.sha256(pool_bytes(pool, rec)).hexdigest()
+            if seen.setdefault(key, digest) != digest:
+                clashes += 1
+    refs = {t for h in heads for d in h["draws"] for t in (d.get("tex") or []) if t}
+    if clashes:
+        sys.exit("%d texture keys mean different pixels in different frames -- the player's shared "
+                 "texture map would hand one frame's art to another" % clashes)
+    missing = refs - set(seen)
+    if missing:
+        sys.exit("%d draw texture references resolve to nothing: %s"
+                 % (len(missing), sorted(missing)[:5]))
+    print("gate: %d texture keys, one bitmap each, %d draw references all resolve"
+          % (len(seen), len(refs)))
+
     out = a.out or os.path.join(HERE, "seq_%d_%d.seq" % (frames[0], frames[-1]))
     head_bytes = json.dumps(manifest).encode("utf-8")
     with open(out, "wb") as f:
