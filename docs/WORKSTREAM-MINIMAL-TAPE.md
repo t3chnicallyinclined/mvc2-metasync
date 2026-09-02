@@ -1109,6 +1109,22 @@ binary in Ghidra or the DC disassembly. `v3gate.py` is the falsifier: **30 state
   `((flags&0x3FF)>>4)`. A fighter with `sid 0x8000` is the scale walker on its own cell 0 — a real
   pose (P4/Sentinel: 22 records, all matched).
 
+### 15.5 Guided capture, 2026-09-02 evening — general rotation and flipped tiles PIXEL-PROVEN
+`session-guided.ps1` (5 prompted 3-s bursts, capture cost 8.6–9.4 ms/frame, packing 28 s/step):
+* **sent-rocket** (angle `0x1400` = 28.125°, hotspot (−56,−124)): **8/8 frames 100.00%** with the
+  general rotation — pivot `floor(origin) + s·hot·(5/3, 15/7)` in 640×480 space, angle negated
+  by facing, rigid about the pivot, point-sampled. The first gate said 76–94% and no sign/scale
+  sweep beat 86.5%: the TRUTH was pasting page rects into axis-aligned bounding boxes. Rasterising
+  the truth from each quad's own vertices fixed it; Steam's rotated tile centres already matched
+  ours to 0.1 px.
+* **storm-down** (sels 668/669/670, `0xC000`/`0x8000` on 64×64, 128×16 parts): **8/8 100.00%**
+  with the tiled-flip-about-the-logical-box rule.
+* **storm-hail / storm-lightning**: the Present-time state dump read `+0x170 == 0` on EVERY node
+  and both fighters parked off-screen with constant sids for all 180 frames, while Steam drew them
+  moving. The start-of-frame dump (openFrame(N+1) ↔ draws of N) was exact on 30 frames INCLUDING
+  Hail Storm, so the shim is back on it; those two steps need re-recording. What clears `+0x170`
+  at end-of-frame during a super is a Ghidra question (write xrefs), not yet asked.
+
 ### 15.2 What REMAINS, each with its evidence and owner
 | gap | evidence | status |
 |---|---|---|
