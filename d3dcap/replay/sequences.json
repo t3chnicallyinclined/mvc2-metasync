@@ -1,42 +1,42 @@
 [
 {
 "file": "tape_v4_59612784_rot.seq",
-"mb": 15.3
-},
-{
-"file": "tape_v4_59612784_storm.seq",
-"mb": 34.0
-},
-{
-"file": "tape_v3_59612530.seq",
-"mb": 25.8
-},
-{
-"file": "seq_8931_9230.seq",
-"mb": 95.5
-},
-{
-"file": "tape_59601369.seq",
 "mb": 34.3
 },
 {
+"file": "tape_v4_59612784_storm.seq",
+"mb": 30.2
+},
+{
+"file": "tape_v3_59612530.seq",
+"mb": 27.1
+},
+{
+"file": "seq_8931_9230.seq",
+"mb": 100.2
+},
+{
+"file": "tape_59601369.seq",
+"mb": 36.0
+},
+{
 "file": "seq_4605_4724.seq",
-"mb": 40.5
+"mb": 42.5
 },
 {
 "file": "seq_5384_5503.seq",
-"mb": 38.8
+"mb": 40.7
 },
 {
 "file": "seq_5331_5630.seq",
-"mb": 101.1
+"mb": 106.0
 },
 {
 "file": "match_4s.seq",
-"mb": 72.5
+"mb": 76.1
 },
 {
 "file": "test.seq",
-"mb": 17.7
+"mb": 18.6
 }
 ]
