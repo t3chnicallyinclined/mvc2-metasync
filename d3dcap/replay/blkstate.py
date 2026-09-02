@@ -48,6 +48,15 @@ N_LAYERS, MAX_PER_LAYER = 16, 0x60
 H0_OFF, SLOT_STRIDE = 0x3DB8, 0x738
 H_CATEGORY, H_OBJ_OWNER, H_SCREEN_X, H_SCREEN_Y = 0x03, 0x28, 0x124, 0x128
 H_DEPTH, H_DRAWN, H_SPRITE_ID, H_GFX1 = 0x12C, 0x170, 0x188, 0x1A0
+# ⚠ THE LAYER IS node+0x38, NOT +0x24. Confirmed in STEAM's own code (FUN_14061e560 @ 0x14061E5AF:
+# `MOVSX RCX, byte ptr [RBX + 0x38]`, signed) and then independently against this capture: +0x38
+# equals the layer we walked the node from on 4,080 of 4,080 nodes, while +0x24 disagrees 3,154
+# times. We only got away with reading +0x24 elsewhere because the layer is derived STRUCTURALLY
+# here -- from which row of the array the handle came out of -- not from the node.
+H_LAYER = 0x38
+# ⚠⚠ VISIBILITY IS CHECKED TWICE. node+0x170 gates REGISTRATION (FUN_14061e560 @ 0x14061E590) and
+# is re-checked at DRAW time in the walker (FUN_140620F10). A node can be registered and then hidden
+# before the walk, so reproducing only the registration check draws PHANTOMS.
 # ⭐ THE INTRA-LAYER SORT KEY, LOCATED ON STEAM. The disassembly gives it as (s8)node+0x31 on the
 # DC (bank04 loc_8c04515e: append at tail, then insertion-sort backwards, ASCENDING and STABLE).
 # DC 0x31 does NOT map straight across -- the DC<->blk map is piecewise, and 0x31 lands at 0x4D here
@@ -132,6 +141,7 @@ def nodes(blk, base):
                 gfx1=struct.unpack_from('<I', blk, off + H_GFX1)[0],
                 sx=struct.unpack_from('<f', blk, off + H_SCREEN_X)[0],
                 sy=struct.unpack_from('<f', blk, off + H_SCREEN_Y)[0],
+                nlayer=struct.unpack_from('<b', blk, off + H_LAYER)[0],
                 depth=struct.unpack_from('<f', blk, off + H_DEPTH)[0]))
     return out
 
