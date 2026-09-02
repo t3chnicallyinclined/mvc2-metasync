@@ -131,6 +131,7 @@ def main():
 
     tex_index = OrderedDict()
     missing = Counter()
+    rt_bound = 0
     for d in scene:
         for t in (d.get("tex") or []):
             if not t or "w" not in t:
@@ -160,6 +161,12 @@ def main():
             # the note above markAllTexDirty in dllmain.cpp.
             if texmap is not None:
                 tag = texmap.get(p)
+                if tag == "RT":
+                    # the shim records a RENDER TARGET bound as a texture as "RT" and does not
+                    # snapshot it (an output, not an asset). Only post-process draws sample one,
+                    # and those are not scene draws; if a scene draw ever does, say so here.
+                    rt_bound += 1
+                    continue
                 if tag:
                     hits = [os.path.join(CAP, "tex_%s.bin" % tag)]
                     if not os.path.exists(hits[0]):
@@ -194,6 +201,8 @@ def main():
     print("textures: %d/%d bound texture CONTENTS have pixel dumps (%d distinct objects, "
           "%d rewritten mid-frame)"
           % (len(tex_index), len(bound), len(objs), len(bound) - len(objs)))
+    if rt_bound:
+        print("  %d scene draw(s) bind a render target as a texture (not snapshotted; drawn without it)" % rt_bound)
     if missing:
         print("  MISSING by DXGI format: %s" % dict(missing))
         if 61 in missing:
