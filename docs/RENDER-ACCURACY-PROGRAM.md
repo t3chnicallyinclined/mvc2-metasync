@@ -1966,3 +1966,37 @@ Two things that run finding, both silent failures:
   back through the burst's own frames.
 
 Usable result from the run: **246 consecutive complete frames, 2574..2819 — 4.1 seconds of game time.**
+
+### The 246-frame playback: frame 0 perfect, every frame after it sprite shards
+
+The fingerprint, from the sequence's own data:
+
+```
+index tiles per frame              : mean 68
+distinct index tiles over 246 frames: 303
+consecutive-frame tile overlap      : mean 0.6%
+```
+
+A 4-second animation of two fighters needs thousands of distinct sprite tiles, not 303 — and 303 is
+the size of the game's texture-object pool. Frame 2574 diffs at 0.117% against its own ground truth;
+frame index 126 rendered on the CPU is scattered shards over a perfect stage.
+
+**Cause: trusting the dirty flag ACROSS frames.** Making the texture version table session-wide (to
+stop re-dumping ~230 textures every captured frame) assumed the dirty flag catches every write. It
+does not: it is set from `Map`/`Unmap` and `UpdateSubresource`, and `CopyResource`,
+`CopySubresourceRegion` and a deferred context all bypass those. So each texture object was
+snapshotted the first time it was ever sampled and never again; the game cycles its pool, and every
+frame after the first was served whichever tile that pointer happened to hold when we first saw it.
+
+⚠ This is the same mistake for the third time, in a third disguise: **a per-frame identity is not a
+cross-frame identity.** First the `tex_*` glob matching every captured frame, then the sequence's
+shared texture map keyed on `pointer#generation`, now the dirty flag across frames.
+
+**Fix, and it removes the whole class rather than this instance.** Every captured frame re-snapshots
+every texture it samples — a GPU-side copy, no reliance on catching writes — and the DUMP IS NAMED BY
+ITS CONTENT HASH, so identical pixels are written exactly once no matter how many frames sample them.
+A per-frame `texmap_<frame>.json` records which content each binding pointed at. A pointer is never an
+identity again, at any layer.
+
+The measurement that catches this class, worth keeping: **consecutive frames sharing ~0% of their
+tile content while the distinct-tile count equals the size of the game's texture pool.**

@@ -89,6 +89,38 @@ def load_pack(path):
     return head, (lambda r: b[base + r["off"]: base + r["off"] + r["len"]])
 
 
+def load_seq_frame(path, index):
+    """One frame of a .seq, rehydrated EXACTLY as player.mjs rehydrates it.
+
+    This is the gate for the sequence path. A frame can be perfect as a standalone .pack and wrong
+    inside a .seq -- that has now happened twice, both times because something keyed on an identity
+    that is only valid within one frame. Rendering straight out of the .seq is the only way to catch
+    it, because it exercises the same tables the player does.
+    """
+    b = open(path, "rb").read()
+    assert b[:4] == b"RRSQ", "not a .seq"
+    n = struct.unpack_from("<I", b, 4)[0]
+    head = json.loads(b[8:8 + n].decode("utf-8"))
+    base = 8 + n
+    h = head["frames"][index]
+    T = head.get("tables")
+    if T:
+        out = []
+        for c in h["draws"]:
+            d = {"i": c["i"], "firstIndex": c["f"], "indexCount": c["n"],
+                 "stride": c["s"], "voff": c["o"]}
+            d.update(T["states"][c["st"]])
+            d.update(T["shaders"][c["sh"]])
+            d["samp"] = T["samplers"][c["sm"]]
+            d["tex"] = [T["texKeys"][x] if x >= 0 else None for x in c["t"]]
+            d["vscbHash"] = [T["hashes"][x] for x in c["v"]]
+            d["pscbHash"] = [T["hashes"][x] for x in c["p"]]
+            out.append(d)
+        h = dict(h, draws=out)
+    h = dict(h, sceneRTFile=head.get("sceneRTFile"))
+    return h, (lambda r: b[base + r["off"]: base + r["off"] + r["len"]])
+
+
 def decode_texture(rec, payload):
     """-> (h, w, 4) float32 in 0..1. Index tiles come back with the RAW index in .r * 255."""
     w, h, fmt = rec["w"], rec["h"], rec["fmt"]
@@ -131,13 +163,19 @@ def sample(tex, u, v, samp):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("frame")
+    ap.add_argument("frame", nargs="?")
+    ap.add_argument("--seq", default=None, help="render one frame straight out of a .seq")
+    ap.add_argument("--index", type=int, default=0, help="which frame of the .seq")
     ap.add_argument("--png", default=None, help="write our composited result here for eyeballing")
     ap.add_argument("--only", default=None, choices=["opaque", "texalpha", "indexed", "character"],
                     help="render one class only -- for LOOKING; the diff it prints is not valid")
     a = ap.parse_args()
 
-    head, slice_ = load_pack(os.path.join(HERE, f"frame_{a.frame}.pack"))
+    if a.seq:
+        head, slice_ = load_seq_frame(os.path.join(HERE, a.seq), a.index)
+        a.frame = str(head.get("frame", a.index))
+    else:
+        head, slice_ = load_pack(os.path.join(HERE, f"frame_{a.frame}.pack"))
     RTW, RTH = head["sceneRT"]["w"], head["sceneRT"]["h"]
     draws = head["draws"]
     print(f"frame {a.frame}: {len(draws)} draws, {len(head['textures'])} textures, "

@@ -45,6 +45,32 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         '.json': 'application/json',
     }
 
+    def send_head(self):
+        # ⚠ SERVE A PRE-COMPRESSED SIBLING IF THERE IS ONE.
+        # A sequence is ~338 KB per captured frame raw and ~37 KB gzipped -- 89% off, because the
+        # manifest is repetitive JSON (13:1) and the geometry is float32 (8:1). The browser
+        # decompresses transparently, so this costs the player nothing and turns an 83 MB download
+        # into 9 MB. Pre-compressed, not compressed per request: gzipping 83 MB on every reload would
+        # just move the wait.
+        path = self.translate_path(self.path)
+        gz = path + '.gz'
+        if (os.path.exists(gz) and not os.path.isdir(path)
+                and 'gzip' in self.headers.get('Accept-Encoding', '')):
+            import mimetypes
+            ctype = self.extensions_map.get(os.path.splitext(path)[1].lower(),
+                                            'application/octet-stream')
+            try:
+                f = open(gz, 'rb')
+            except OSError:
+                return super().send_head()
+            self.send_response(200)
+            self.send_header('Content-Type', ctype)
+            self.send_header('Content-Encoding', 'gzip')
+            self.send_header('Content-Length', str(os.path.getsize(gz)))
+            self.end_headers()
+            return f
+        return super().send_head()
+
     def end_headers(self):
         self.send_header('Cache-Control', 'no-store, no-cache, must-revalidate, max-age=0')
         self.send_header('Pragma', 'no-cache')

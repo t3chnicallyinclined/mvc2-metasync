@@ -36,6 +36,26 @@ export async function loadSequence(url, onProgress) {
     const base = 8 + headLen;
     const slice = (r) => buf.subarray(base + r.off, base + r.off + r.len);
 
+    // Rebuild the full draw records the rest of the renderer expects. pack_sequence.py factors the
+    // parts that repeat -- 167k draws carried only 13 distinct pipeline states, at 482 bytes of JSON
+    // each -- and asserts the compaction round-trips before writing. This is the other half of that
+    // contract, and it must stay in step: a draw that comes back subtly different renders subtly
+    // wrong rather than failing.
+    const T = head.tables;
+    if (T) {
+        for (const h of head.frames) {
+            h.draws = h.draws.map((c) => ({
+                i: c.i, firstIndex: c.f, indexCount: c.n, stride: c.s, voff: c.o,
+                ...T.states[c.st],
+                ...T.shaders[c.sh],
+                samp: T.samplers[c.sm],
+                tex: c.t.map((x) => (x >= 0 ? T.texKeys[x] : null)),
+                vscbHash: c.v.map((x) => T.hashes[x]),
+                pscbHash: c.p.map((x) => T.hashes[x]),
+            }));
+        }
+    }
+
     // Every frame is a pack-shaped {head, slice} over the SHARED pool, so the same createResources()
     // the single-frame viewer uses works unchanged.
     return {

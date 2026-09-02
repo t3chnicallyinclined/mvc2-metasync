@@ -962,6 +962,62 @@ static void releaseCapTex() {
 // grew with the number of files already there, which is why it got worse the longer it ran.
 // Holding a reference to each texture is also what keeps its pointer a stable identity across
 // frames: without it the game could free one and hand the same address to a different texture.
+// ⚠⚠⚠ RE-SNAPSHOT EVERY TEXTURE EVERY CAPTURED FRAME. DO NOT "OPTIMISE" THIS AWAY AGAIN.
+// The dirty flag is set from Map/Unmap and UpdateSubresource, and those are NOT the only ways this
+// game writes a texture -- CopyResource, CopySubresourceRegion and a deferred context all bypass
+// them. Trusting the flag ACROSS frames produced exactly 303 distinct sprite tiles for a 246-frame
+// animation that needs thousands: the game cycles a pool of texture objects, we snapshotted each one
+// the first time we saw it and never again, and every later frame was served a tile from whenever
+// that pointer was first captured. Frame 0 was perfect and every frame after it was sprite shards.
+// The measurement that catches it: consecutive frames sharing ~0% of their tile CONTENT while the
+// distinct-tile count equals the size of the game's texture pool.
+// Cost is bounded because the WRITE is deduplicated by content hash below -- re-snapshotting is a
+// GPU-side copy, and only genuinely new pixels ever reach the disk.
+// Content hashes already written this session. A capture of a real match sees a few thousand
+// distinct sprite tiles; 1<<16 slots keeps the table sparse enough for linear probing to be free.
+static uint64_t g_texHash[1 << 16];
+static int g_nTexHash = 0;
+
+/** true if these pixels have not been written before (and records them). */
+static bool rememberTexHash(uint32_t h1, uint32_t h2) {
+    const uint64_t key = ((uint64_t)h1 << 32) | h2;
+    size_t i = (size_t)(key * 0x9E3779B97F4A7C15ull >> 48) & 0xFFFF;
+    for (size_t probe = 0; probe < (1 << 16); ++probe) {
+        uint64_t& slot = g_texHash[(i + probe) & 0xFFFF];
+        if (slot == key) return false;
+        if (slot == 0) { slot = key; ++g_nTexHash; return true; }
+    }
+    return true;   // table full: write it rather than lose it
+}
+
+// The frame's "which content did each binding point at" map, built as JSON while the frame's
+// snapshots are written and flushed beside the inventory.
+static char* g_texMap = nullptr;
+static size_t g_texMapLen = 0, g_texMapCap = 0;
+
+static void mapAppend(const char* fmt, ...) {
+    char item[256];
+    va_list ap; va_start(ap, fmt);
+    int n = _vsnprintf_s(item, sizeof(item), _TRUNCATE, fmt, ap);
+    va_end(ap);
+    if (n <= 0) return;
+    size_t need = g_texMapLen + (size_t)n + 2;
+    if (need > g_texMapCap) {
+        size_t cap = g_texMapCap ? g_texMapCap * 2 : (1 << 16);
+        while (cap < need) cap *= 2;
+        char* grown = (char*)realloc(g_texMap, cap);
+        if (!grown) return;
+        g_texMap = grown; g_texMapCap = cap;
+    }
+    if (g_texMapLen) g_texMap[g_texMapLen++] = ',';
+    memcpy(g_texMap + g_texMapLen, item, (size_t)n);
+    g_texMapLen += (size_t)n;
+}
+
+static void markAllTexDirty() {
+    for (int i = 0; i < g_nTexVer; ++i) g_texVer[i].dirty = true;
+}
+
 static void endFrameTex() {
     for (int i = 0; i < g_nTexSnap; ++i) if (g_texSnap[i].stg) g_texSnap[i].stg->Release();
     g_nTexSnap = 0;
@@ -970,9 +1026,9 @@ static void endFrameTex() {
 static void dumpCapturedTextures(ID3D11Device* dev, ID3D11DeviceContext* ctx, unsigned frame) {
     // Quiet unless something is actually being written: at one line per frame this is the log during
     // a 1200-frame burst.
-    if (g_nTexSnap)
-        logf("[tex] frame %u: %d sampled, %d new generations to write (%d known this session)",
-             frame, g_frameTex, g_nTexSnap, g_nTexVer);
+    if (g_nTexSnap && !g_burstLeft)
+        logf("[tex] frame %u: %d sampled, %d snapshots, %d distinct bitmaps on disk",
+             frame, g_frameTex, g_nTexSnap, g_nTexHash);
     for (int i = 0; i < g_nTexSnap; ++i) {
         ID3D11Texture2D* stg = g_texSnap[i].stg;
         if (!stg) continue;
@@ -980,23 +1036,48 @@ static void dumpCapturedTextures(ID3D11Device* dev, ID3D11DeviceContext* ctx, un
         stg->GetDesc(&d);
         D3D11_MAPPED_SUBRESOURCE m = {};
         if (SUCCEEDED(ctx->Map(stg, 0, D3D11_MAP_READ, 0, &m))) {
-            char path[MAX_PATH];
-            _snprintf_s(path, sizeof(path), _TRUNCATE, "%s\\tex_%u_%ux%u_f%d_%p_v%u.bin",
-                        g_dir, frame, d.Width, d.Height, (int)d.Format,
-                        (void*)g_texSnap[i].res, g_texSnap[i].ver);
             // Rows are repacked tightly at Width*bpp; RowPitch is the SOURCE stride and is >= that,
             // so this never over-reads. The decoder needs only w/h/format. Repacking happens here
             // because the mapped pointer is only valid until Unmap; the WRITE happens off-thread.
             const size_t rowBytes = (size_t)d.Width * texBytesPerPixel(d.Format);
-            uint8_t* buf = (uint8_t*)malloc(rowBytes * d.Height ? rowBytes * d.Height : 1);
+            const size_t nbytes = rowBytes * d.Height ? rowBytes * d.Height : 1;
+            uint8_t* buf = (uint8_t*)malloc(nbytes);
             if (buf) {
                 for (UINT y = 0; y < d.Height; ++y)
                     memcpy(buf + (size_t)y * rowBytes,
                            (const uint8_t*)m.pData + (size_t)y * m.RowPitch, rowBytes);
-                writeAsync(path, buf, rowBytes * d.Height);
+                // ⚠ THE FILE IS NAMED BY ITS CONTENT, NOT BY WHO OR WHEN.
+                // Re-snapshotting every frame would otherwise mean re-writing every texture every
+                // frame. Naming by hash means identical pixels are written exactly once no matter
+                // how many frames sample them, and the per-frame map below says which content each
+                // draw's binding pointed at. A pointer is not an identity; content is.
+                uint32_t h1 = fnv1a(buf, nbytes);
+                uint32_t h2 = fnv1a(buf, nbytes < 4096 ? nbytes : 4096) ^ (uint32_t)nbytes;
+                char path[MAX_PATH];
+                _snprintf_s(path, sizeof(path), _TRUNCATE, "%s\\tex_%ux%u_f%d_%08X%08X.bin",
+                            g_dir, d.Width, d.Height, (int)d.Format, h1, h2);
+                if (rememberTexHash(h1, h2)) {
+                    writeAsync(path, buf, nbytes);      // first sighting of these pixels
+                } else {
+                    free(buf);                          // already on disk under this name
+                }
+                mapAppend("\"%p#%u\":\"%ux%u_f%d_%08X%08X\"", (void*)g_texSnap[i].res,
+                          g_texSnap[i].ver, d.Width, d.Height, (int)d.Format, h1, h2);
             }
             ctx->Unmap(stg, 0);
         }
+    }
+    if (g_texMapLen) {
+        char path[MAX_PATH];
+        _snprintf_s(path, sizeof(path), _TRUNCATE, "%s\\texmap_%u.json", g_dir, frame);
+        uint8_t* body = (uint8_t*)malloc(g_texMapLen + 3);
+        if (body) {
+            body[0] = '{';
+            memcpy(body + 1, g_texMap, g_texMapLen);
+            body[g_texMapLen + 1] = '}';
+            writeAsync(path, body, g_texMapLen + 2);
+        }
+        g_texMapLen = 0;
     }
     endFrameTex();
 }
@@ -1295,6 +1376,7 @@ static bool openFrame(unsigned frame) {
     g_ncbWritten = 0;
     g_nRtSeen = 0;
     g_frameTex = 0;
+    markAllTexDirty();
     return true;
 }
 

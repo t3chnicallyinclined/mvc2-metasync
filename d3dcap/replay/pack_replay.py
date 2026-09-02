@@ -114,6 +114,10 @@ def main():
          if os.path.getsize(f) and int(os.path.basename(f)[6:-7]) <= int(a.frame)),
         reverse=True)
 
+    # Present only on captures from the content-hash build onward; older ones fall back below.
+    texmap_path = os.path.join(CAP, "texmap_%s.json" % a.frame)
+    texmap = json.load(open(texmap_path)) if os.path.exists(texmap_path) else None
+
     tex_index = OrderedDict()
     missing = Counter()
     for d in scene:
@@ -139,6 +143,21 @@ def main():
             # A texture generation may legitimately have been written on an EARLIER frame of the same
             # burst: the version table lives for the whole session, so a texture is written once per
             # content generation, not once per frame that samples it.
+            # NEWEST CAPTURES: the shim names each dump by its CONTENT hash and writes a per-frame
+            # `texmap_<frame>.json` saying which content every binding pointed at. That is the only
+            # form that survives the game rewriting a texture through a path we do not hook -- see
+            # the note above markAllTexDirty in dllmain.cpp.
+            if texmap is not None:
+                tag = texmap.get(p)
+                if tag:
+                    hits = [os.path.join(CAP, "tex_%s.bin" % tag)]
+                    if not os.path.exists(hits[0]):
+                        hits = []
+                    tex_index[p] = {"w": t["w"], "h": t["h"], "fmt": t["fmt"], "file": hits[0]}                         if hits else tex_index.get(p)
+                    if hits:
+                        continue
+                missing[t["fmt"]] += 1
+                continue
             if "#" in p:
                 ptr, ver = p.split("#", 1)
                 name = "tex_%%s_%dx%d_f%d_%s_v%s.bin" % (t["w"], t["h"], t["fmt"], ptr, ver)
@@ -147,8 +166,14 @@ def main():
             hits = [os.path.join(CAP, name % a.frame)] if os.path.exists(
                 os.path.join(CAP, name % a.frame)) else []
             if not hits:
-                hits = [x for x in (os.path.join(CAP, name % f) for f in earlier_frames)
-                        if os.path.exists(x)][-1:]
+                # ⚠ STOP AT THE FIRST HIT. A ptr+generation is written exactly once, so any match is
+                # THE match -- and building the whole list instead meant ~800 os.path.exists calls
+                # per texture per frame, which is most of a second of pure filesystem per frame.
+                for f in earlier_frames:
+                    cand = os.path.join(CAP, name % f)
+                    if os.path.exists(cand):
+                        hits = [cand]
+                        break
             if not hits:
                 missing[t["fmt"]] += 1
                 continue

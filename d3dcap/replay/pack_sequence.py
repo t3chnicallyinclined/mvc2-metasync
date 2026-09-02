@@ -60,6 +60,59 @@ def longest_run(ids):
     return best
 
 
+# Fields that are identical across almost every draw. Measured on a 246-frame sequence: 167,214
+# draws carry only 13 distinct combinations of these, at 482 bytes of JSON each -- about 80 MB of
+# pure repetition in a 218 MB file. The manifest is parsed in the browser, so this is not just disk.
+STATE_FIELDS = ("blend", "bfactor", "smask", "depth", "raster", "vp", "scissor")
+# The shader triple and the variant flags derived from it: also a handful of combinations.
+SHADER_FIELDS = ("vs", "ps", "il", "vsVariant", "psVariant", "psFog")
+
+
+class Interner:
+    """Assign a small integer to each distinct value, preserving first-seen order."""
+
+    def __init__(self):
+        self.items, self.index = [], {}
+
+    def __call__(self, value):
+        key = json.dumps(value, sort_keys=True)
+        hit = self.index.get(key)
+        if hit is None:
+            hit = len(self.items)
+            self.index[key] = hit
+            self.items.append(value)
+        return hit
+
+
+def compact_draw(d, states, shaders, samplers, hashes, texkeys):
+    """The same draw with its repeated parts replaced by table indices."""
+    return {
+        "i": d["i"], "f": d["firstIndex"], "n": d["indexCount"],
+        "s": d["stride"], "o": d["voff"],
+        "st": states({k: d.get(k) for k in STATE_FIELDS}),
+        "sh": shaders({k: d.get(k) for k in SHADER_FIELDS}),
+        "sm": samplers(d.get("samp")),
+        "t": [texkeys(x) if x else -1 for x in (d.get("tex") or [])],
+        "v": [hashes(x) for x in (d.get("vscbHash") or [])],
+        "p": [hashes(x) for x in (d.get("pscbHash") or [])],
+    }
+
+
+def rehydrate(c, states, shaders, samplers, hashes, texkeys):
+    """Rebuild the original draw record. The packer asserts this round-trips before writing, and
+    player.mjs mirrors it -- a sequence whose draws come back subtly different renders subtly wrong,
+    which is the hardest kind of bug to see."""
+    d = {"i": c["i"], "firstIndex": c["f"], "indexCount": c["n"],
+         "stride": c["s"], "voff": c["o"]}
+    d.update(states[c["st"]])
+    d.update(shaders[c["sh"]])
+    d["samp"] = samplers[c["sm"]]
+    d["tex"] = [texkeys[x] if x >= 0 else None for x in c["t"]]
+    d["vscbHash"] = [hashes[x] for x in c["v"]]
+    d["pscbHash"] = [hashes[x] for x in c["p"]]
+    return d
+
+
 def pool_bytes(pool, rec):
     """The bytes a {off,len} record points at, without concatenating the whole pool."""
     at = 0
@@ -169,6 +222,26 @@ def main():
     if len(heads) < 2:
         sys.exit("fewer than 2 frames packed -- nothing to play back")
 
+    # ── factor the manifest ──────────────────────────────────────────────────────────────────────
+    states, shaders, samplers = Interner(), Interner(), Interner()
+    hashes, texkeys = Interner(), Interner()
+    for h in heads:
+        compacted = [compact_draw(d, states, shaders, samplers, hashes, texkeys)
+                     for d in h["draws"]]
+        # GATE: the compaction must be exactly reversible. It is applied to 167k draw records and a
+        # single dropped field renders wrong rather than failing, so prove it here.
+        for orig, c in zip(h["draws"], compacted):
+            back = rehydrate(c, states.items, shaders.items, samplers.items,
+                             hashes.items, texkeys.items)
+            if json.dumps(back, sort_keys=True) != json.dumps(orig, sort_keys=True):
+                sys.exit("draw %d of frame %s does not survive compaction:\n  was %s\n  got %s"
+                         % (orig["i"], h["frame"], json.dumps(orig, sort_keys=True),
+                            json.dumps(back, sort_keys=True)))
+        h["draws"] = compacted
+    print("manifest: %d states, %d shader sets, %d sampler sets, %d cb hashes, %d texture keys"
+          % (len(states.items), len(shaders.items), len(samplers.items),
+             len(hashes.items), len(texkeys.items)))
+
     # The ground truth exists for the FIRST frame of a burst only (an 8 MB BMP per frame is not
     # worth it), so hoist it to the sequence and clear it on the others rather than leaving every
     # frame claiming a file that is not there.
@@ -176,6 +249,8 @@ def main():
     for h in heads:
         h["sceneRTFile"] = None
     manifest = {
+        "tables": {"states": states.items, "shaders": shaders.items, "samplers": samplers.items,
+                   "hashes": hashes.items, "texKeys": texkeys.items},
         "frames": heads,
         "first": frames[0],
         "count": len(heads),
@@ -193,7 +268,7 @@ def main():
             digest = hashlib.sha256(pool_bytes(pool, rec)).hexdigest()
             if seen.setdefault(key, digest) != digest:
                 clashes += 1
-    refs = {t for h in heads for d in h["draws"] for t in (d.get("tex") or []) if t}
+    refs = {texkeys.items[x] for h in heads for d in h["draws"] for x in d["t"] if x >= 0}
     if clashes:
         sys.exit("%d texture keys mean different pixels in different frames -- the player's shared "
                  "texture map would hand one frame's art to another" % clashes)
@@ -213,13 +288,25 @@ def main():
         for p in pool:
             f.write(p)
 
+    # Write a gzipped sibling for the server to hand over instead. Measured: 89% smaller, and the
+    # browser decompresses it transparently, so the player needs no changes at all.
+    import gzip as _gzip
+    with open(out, "rb") as src, _gzip.open(out + ".gz", "wb", compresslevel=6) as dst:
+        while True:
+            chunk = src.read(1 << 22)
+            if not chunk:
+                break
+            dst.write(chunk)
+
     size = os.path.getsize(out)
     draws = sum(len(h["draws"]) for h in heads)
     print("\n%d frames, %d draws, %d distinct payloads" % (len(heads), draws, len(pool)))
     print("dedupe: %.1f MB of payloads -> %.1f MB stored (%.0f%% shared between frames)"
           % (total_raw / 1048576.0, sum(len(p) for p in pool) / 1048576.0,
              100.0 * (1 - sum(len(p) for p in pool) / max(1, total_raw))))
-    print("wrote %s  (%.1f MB)" % (out, size / 1048576.0))
+    gz = os.path.getsize(out + ".gz")
+    print("wrote %s  (%.1f MB, %.1f MB gzipped -- %.0f KB per frame on the wire)"
+          % (out, size / 1048576.0, gz / 1048576.0, gz / len(heads) / 1024.0))
     # The viewer cannot list the directory: serve.py answers "/" with index.html, not an index of
     # files. So publish what exists, newest first, and let the player default to the top one.
     seqs = sorted(glob.glob(os.path.join(HERE, "*.seq")), key=os.path.getmtime, reverse=True)
