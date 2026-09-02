@@ -2061,3 +2061,88 @@ is correct either way.
 Also added, because its absence is what let this run so long: **the scene RT is now captured at the
 first, middle AND last frame of a burst.** With ground truth only at frame 1 there was no way to tell
 a capture that goes stale after frame 1 from one that does not.
+
+---
+
+## 2026-09-02 — SEQUENCE PLAYBACK WORKS. 300 consecutive frames, 5 s of match.
+
+`seq_5331_5630.seq` — 300 consecutive captured frames, 190,581 draws, replayed on WebGPU and played
+back at real speed. Every frame re-rendered from Steam's own draw calls.
+
+```
+300 frames, 190,581 draws, 14,383 distinct payloads
+dedupe: 516.0 MB of payloads -> 70.9 MB stored (86% shared between frames)
+101.1 MB on disk, 18.1 MB gzipped -- 62 KB per frame on the wire
+gate: 10,632 texture keys, one bitmap each, 10,632 draw references all resolve
+```
+
+And, from the three-point ground truth added the same day:
+
+```
+frame 5481 (middle of the burst)   0.018% differing
+frame 5630 (last frame)            0.011% differing
+```
+
+**The capture provably holds all the way through a burst**, which was unverifiable when only frame 1
+carried a reference image.
+
+### The texture question, settled by measurement
+
+| | old build (246 frames) | content-hash build (300 frames) |
+| --- | ---: | ---: |
+| distinct index tiles | 303 | **10,514** |
+| consecutive-frame overlap | 0.6% | **56.9%** |
+| distinct bitmaps written | — | 11,513 |
+
+**The game rewrites its texture pool in place.** The old build snapshotted a texture only on first
+sight, so it captured 345 bitmaps for a 4-second animation and served stale tiles to every frame after
+the first — the sprite shards. Re-snapshotting every frame and naming each dump by its content hash
+finds 11,513 distinct bitmaps, and the frame-to-frame overlap becomes a sane 57%.
+
+This also resolves the disagreement recorded above: the review's "every texture object has exactly ONE
+content generation, therefore the game never rewrites" was measuring our own blind spot. A generation
+only existed when our dirty flag fired, and the flag never fires for whatever path the game actually
+uses. ⚠ **Keep the general form of this: a statistic derived from an instrument cannot be evidence
+about the instrument's blind spot.**
+
+### The RNG probe
+
+```
+blk 0x162e1000  mode byte 2 (IN BATTLE)
+blk: 52,934 words, 6,466 changed over 600 sim frames
+no LCG-successor relationship anywhere in blk (kmax=38400)
+```
+
+**The DC generator, verbatim, is not in the rollback region.** Stated with its exact limits, as the
+harness itself does: this is not proof the sim has no RNG outside `blk`, and the scan is keyed to DC's
+`A`/`C` so a recompiled generator would be invisible to it.
+
+⟹ **"anchor + inputs is the whole feed" is NOT established.** Next, in order of strength:
+1. `rrtape4.py ab <tape.rr4>` — replay a tape twice from the same anchor with RNG-heavy play in
+   between. This one does not care which generator it is: same end state both times means nothing
+   outside `blk` survives to affect a match.
+2. `verify.py rng 600 --exe` — scan the exe image, where DC kept this word as a static.
+
+### `session.ps1` — one launch, both measurements
+
+The probe and the burst want opposite things from the game: the probe needs 600 sim frames at full
+speed, the burst copies every texture and both buffers every frame. `D3DCAP_MANUAL=1` holds the shim
+until an `ARM` file appears, so the game runs at full speed until the burst is armed and the crawl is
+confined to the burst. Manual arming retries every second until a burst actually lands in a match — a
+single arm can land on a round banner, and with nothing on a timer the run would strand there looking
+like it was still recording.
+
+### Where Path B stands
+
+Done: capture, packer, replayer, sequence container, playback, and a CPU gate for each of them.
+Pixel accuracy 0.011–0.018% differing with zero missing coverage, held across a whole burst.
+
+Open, in the order that matters:
+1. **The capture takes the game to a crawl.** ~14,000 D3D `Get*` calls and ~18,000 `fprintf`s per
+   frame at ~700 draws. The fix is shadowing pipeline state through setter hooks and a binary
+   inventory — but measure the split first with per-frame timers rather than guessing.
+2. **Cable's face**, still the one missing character part (crop `x = 0..64, y = 384..576` on frame
+   4360; nothing in the draw list covers `x = 0..42, y = 442..557`).
+3. **Gate 1** — the geometry diff against `buildEmitterDrawList`, with the corrected `*192 / *112`
+   mapping and M5 restated as the union rule. Needs the state sidecar first: the capture carries no
+   game state, and every offset it needs is already in the agent's `reader.rs`.
