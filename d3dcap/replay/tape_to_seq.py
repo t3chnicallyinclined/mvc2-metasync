@@ -311,6 +311,7 @@ def main():
     textures, heads = OrderedDict(), []
     cb_recs = {h: intern(b) for h, b in tcbs.items()}
     missing, drawn_total = Counter(), 0
+    held, last_nodes = Counter(), None   # rows whose draw list was HELD from the previous row
     rotated_general = Counter()   # angle -> parts drawn through the general (ungated) rotation path
 
     for r in rows:
@@ -323,6 +324,21 @@ def main():
         # in" -- this is it, and it is already in every tape we have recorded.
         items = []
         fr_clock = int(r[C['frame']])
+        # ⚠ DATA GAPS ARE HELD, NOT DRAWN EMPTY. A row whose clock has no nodes entry (the agent
+        # got no draw list for it) or a torn partial list (1 node where the neighbours have many --
+        # the engine clears and rebuilds the list every frame, a read mid-rebuild sees a stub) used
+        # to become a frame with zero draws: the player's per-draw uniform buffer is then size 0 and
+        # WebGPU refuses the bind group ("Binding size (160) is larger than the size (0)"). Playback
+        # now HOLDS the previous frame's draw list for those rows and reports how many; the tape
+        # data itself is untouched. The fix at the source is the agent's read timing (v4c).
+        if v3nodes:
+            cur = v3nodes.get(fr_clock)
+            if cur is None or (len(cur) < 2 and last_nodes is not None and len(last_nodes) >= 3):
+                held['no nodes' if cur is None else 'torn (%d node)' % len(cur)] += 1
+                if last_nodes is not None:
+                    v3nodes[fr_clock] = last_nodes
+            else:
+                last_nodes = cur
         if v3nodes:
             # v3: the order IS the payload. No sort below is applied; `kind` picks the atlas lookup.
             # ⭐ PAINT ORDER IS DEPTH ORDER, NOT WALK ORDER (v3gate.py, 3 frames at 100.00%). Steam
@@ -534,6 +550,7 @@ def main():
 
     out = a.out or os.path.join(HERE, os.path.basename(a.tape).replace('.json', '') + '.seq')
     manifest = {'frames': heads, 'source': os.path.basename(a.tape),
+                'first': heads[0]['frame'] if heads else 0, 'count': len(heads),   # the player's range label
                 'note': 'SYNTHESISED from tape state by tape_to_seq.py -- not a capture'}
     hb = json.dumps(manifest).encode('utf-8')
     with open(out, 'wb') as f:
@@ -544,6 +561,8 @@ def main():
             f.write(p)
     total = 8 + len(hb) + sum(len(p) for p in pool)
 
+    if held:
+        print('  rows HELD from the previous frame (no/torn node data in the tape): %s' % dict(held))
     if rotated_general:
         print('  general-rotation parts (disassembly formula, NOT pixel-gated): %s'
               % {('0x%04X' % k): v for k, v in rotated_general.items()})

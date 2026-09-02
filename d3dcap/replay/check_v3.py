@@ -38,6 +38,7 @@ def main():
     if len(sys.argv) < 2:
         sys.exit(__doc__)
     t = load(sys.argv[1])
+    cols = [c.strip() for c in t.get('schema', '').strip('[]').split(',')]
     ok = True
 
     def fail(msg):
@@ -148,6 +149,18 @@ def main():
     print('nodes whose fsx has a fractional part: %d of %d' % (frac, total))
     if total and frac == 0:
         fail('fsx is integral everywhere -- precision was lost somewhere before the wire')
+
+    # 9. TORN / MISSING draw lists. The engine clears and rebuilds the list every frame; a read
+    #    mid-rebuild sees a stub. Count rows with no nodes entry and rows whose node count is < 2
+    #    while both neighbours have >= 3 -- the agent's read timing is what fixes this.
+    clk = [int(r[cols.index('frame')]) for r in t['frames']] if True else []
+    nomap = sum(1 for c in clk if c not in frames)
+    torn = 0
+    for i in range(1, len(clk) - 1):
+        a, b, c = frames.get(clk[i - 1]), frames.get(clk[i]), frames.get(clk[i + 1])
+        if b is not None and a and c and len(b) < 2 and len(a) >= 3 and len(c) >= 3:
+            torn += 1
+    print('rows without a draw list: %d   torn partial lists: %d   (of %d rows)' % (nomap, torn, len(clk)))
 
     # 8. v4: the rotation fields are live (angle is a u16 with 0x10000 = 360 deg; every rotated node
     #    seen so far is exactly 0x8000 -- any other non-zero value is NEW DATA, print it)
