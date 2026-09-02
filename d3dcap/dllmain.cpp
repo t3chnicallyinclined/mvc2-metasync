@@ -1421,6 +1421,65 @@ static void probeSample() {
 
 // Open the inventory for one frame. Both the ARM path and the burst CONTINUATION path go through
 // here, because when they were two copies they drifted and the burst silently stopped continuing.
+// -- GAME STATE PER CAPTURED FRAME ---------------------------------------------------------------
+// THE GAP THIS CLOSES. Every capture taken before this one carries NO GAME STATE, and that single
+// omission is what blocks every remaining mapping question: which RGBA effect page belongs to which
+// pool object (the tape's `gfx1`), what node+0x31 does to intra-layer draw order, which palette
+// sub-row a body is using. None of them can be answered by staring at a draw stream, and none of
+// them need new reverse-engineering -- they need the STATE and the PIXELS in the SAME frame, which
+// nothing we have ever recorded has had together.
+//
+// Dump the WHOLE rollback block rather than a chosen set of fields:
+//   * blk IS the entire save state for this title -- FUN_140118290 registers exactly ONE descriptor
+//     (blk, 0x33B18) on the >=3 path, versus the multi-block scatter list the other Collection
+//     titles use. Read out of Ghidra, not assumed.
+//   * it is 211 KB, and a per-frame delta is ~600 B, so content-hashing makes a 300-frame burst
+//     cost less than a single texture page;
+//   * picking fields now guarantees a re-capture the first time a question needs a field we did not
+//     pick -- and re-capturing costs a play session, while 211 KB costs nothing.
+//
+// ⚠ TIMING. The draws for frame N happen between Present(N-1) and Present(N), so openFrame(N) is
+// exactly where the sim state that BUILT frame N's draw list is current. Reading at Present instead
+// would sample the state one frame late -- the same off-by-one that made the constant-buffer
+// snapshots stale.
+#define RR_BLK_PTR 0x140AC6EF0ULL
+#define RR_BLK_SZ  0x33B18u
+
+static uint8_t*  g_blkBuf = nullptr;
+static uint32_t  g_blkSeen[512];
+static int       g_nBlkSeen = 0;
+
+static void dumpBlk(unsigned frame) {
+    if (!g_imgBase) return;
+    uintptr_t blk = 0;
+    if (!safeRead((const void*)RR_RVA(RR_BLK_PTR), &blk, sizeof(blk)) || !blk) return;
+    if (!g_blkBuf) g_blkBuf = (uint8_t*)malloc(RR_BLK_SZ);
+    if (!g_blkBuf || !safeRead((const void*)blk, g_blkBuf, RR_BLK_SZ)) return;
+
+    const uint32_t h = fnv1a(g_blkBuf, RR_BLK_SZ);
+    bool fresh = true;
+    for (int i = 0; i < g_nBlkSeen; ++i) if (g_blkSeen[i] == h) { fresh = false; break; }
+    if (fresh && g_nBlkSeen < (int)(sizeof(g_blkSeen) / sizeof(g_blkSeen[0])))
+        g_blkSeen[g_nBlkSeen++] = h;
+
+    char path[MAX_PATH];
+    if (fresh) {
+        _snprintf_s(path, sizeof(path), _TRUNCATE, "%s\\blk_%08X.bin", g_dir, h);
+        writeAsyncCopy(path, g_blkBuf, RR_BLK_SZ);
+    }
+    // one tiny sidecar per frame says WHICH state this frame was drawn from, so the packer never
+    // has to guess and a deduped blob is still unambiguously attributable.
+    _snprintf_s(path, sizeof(path), _TRUNCATE, "%s\\state_%u.json", g_dir, frame);
+    FILE* f = nullptr;
+    if (fopen_s(&f, path, "wb") == 0 && f) {
+        unsigned clk = 0;
+        memcpy(&clk, g_blkBuf + 0x3CC8, 4);          // the frame clock, per the DC<->blk map
+        fprintf(f, "{\"frame\":%u,\"blk\":\"%08X\",\"clock\":%u,\"size\":%u}\n",
+                frame, h, clk, RR_BLK_SZ);
+        fclose(f);
+    }
+}
+
 static bool openFrame(unsigned frame) {
     char path[MAX_PATH];
     _snprintf_s(path, sizeof(path), _TRUNCATE, "%s\\frame_%u.ndjson", g_dir, frame);
@@ -1438,6 +1497,7 @@ static bool openFrame(unsigned frame) {
     g_nRtSeen = 0;
     g_frameTex = 0;
     markAllTexDirty();
+    dumpBlk(frame);          // the state that BUILT this frame's draws -- see dumpBlk's header
     return true;
 }
 
