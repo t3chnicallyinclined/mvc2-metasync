@@ -1,0 +1,157 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Path B — Steam MvC2 frame replay</title>
+<style>
+  :root { color-scheme: dark; }
+  body { margin: 0; background: #0d0f12; color: #d6dae0;
+         font: 13px/1.5 ui-monospace, "Cascadia Code", Consolas, monospace; }
+  header { padding: 10px 14px; border-bottom: 1px solid #232830; display: flex;
+           gap: 10px; align-items: center; flex-wrap: wrap; }
+  h1 { font-size: 14px; margin: 0 12px 0 0; font-weight: 600; letter-spacing: .02em; }
+  button { background: #1b2029; color: #d6dae0; border: 1px solid #2f3742; border-radius: 5px;
+           padding: 5px 11px; font: inherit; cursor: pointer; }
+  button:hover:not(:disabled) { background: #232a35; border-color: #3d4753; }
+  button:disabled { opacity: .4; cursor: default; }
+  button.on { background: #1d3a5c; border-color: #3b6ea5; }
+  main { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 1px; background: #232830; }
+  figure { margin: 0; background: #0d0f12; padding: 8px; min-width: 0; }
+  figcaption { font-size: 11px; color: #8a93a0; margin-bottom: 6px; }
+  canvas { width: 100%; height: auto; display: block; image-rendering: pixelated;
+           border: 1px solid #232830; background: #000; }
+  pre { margin: 0; padding: 12px 14px; white-space: pre-wrap; font-size: 12px;
+        border-top: 1px solid #232830; }
+  .warn { color: #d9a441; }
+  .err  { color: #e06c75; }
+  .ok   { color: #86c67c; }
+</style>
+
+<header>
+  <h1>Path B — frame replay</h1>
+  <label>pack <input id="pack" value="frame_4261.pack" size="22"></label>
+  <button id="run">Render + diff</button>
+  <span style="width:12px"></span>
+  <button id="bChar" class="on">characters</button>
+  <button id="bStage" class="on">stage</button>
+  <button id="bCull" class="on">cullNone</button>
+  <span id="hint" style="color:#8a93a0"></span>
+</header>
+
+<main>
+  <figure><figcaption>OURS — replayed from the pack</figcaption><canvas id="cOurs"></canvas></figure>
+  <figure><figcaption>TRUTH — Steam's scene RT (pre-bloom)</figcaption><canvas id="cTruth"></canvas></figure>
+  <figure><figcaption>TINT — green=truth only · red=ours only · yellow=match</figcaption><canvas id="cTint"></canvas></figure>
+</main>
+
+<pre id="log">Click “Render + diff”.
+
+⚠ ONLY THE FULL RENDER PRODUCES A VALID NUMBER. Alpha blending is not decomposable, so a subset
+  replayed over a zero clear can never equal the composite — under any mask. The subset buttons are
+  for LOOKING at a class of draws, not for judging one.
+
+ELIMINATED BY MEASUREMENT (do not re-litigate):
+  culling / frontFace   cullNone on vs off differs by 10 px in 696,360. 566 draws take cullMode
+                        'front' and survive, so they are back-facing and the mapping is correct.
+  depth occlusion       characters sit at NDC z 0.98118, the stage at 0.9992; under LESS_EQUAL the
+                        characters always pass. Hand-executing a character quad matches truth 20/20.
+  fog                   fFogDensity = 0, fFogColor = (0,0,0), from the properly shadowed buffers.
+  stencil               ffunc = ALWAYS with all ops KEEP. Measured, not inferred.
+
+READ COVERAGE FIRST. If pixels are MISSING, that is geometry and no amount of shading work will fix
+it. Only once coverage matches does the colour number mean anything.
+</pre>
+
+<script type="module">
+import { Replayer } from './replay.mjs';
+import { decodeBMP, crop, compare, tint, verdict } from './diff.mjs';
+
+const $ = (id) => document.getElementById(id);
+const log = (s, cls = '') => { $('log').innerHTML += cls ? `\n<span class="${cls}">${s}</span>` : `\n${s}`; };
+const clear = () => { $('log').textContent = ''; };
+
+for (const id of ['bChar', 'bStage', 'bCull']) {
+  $(id).onclick = () => $(id).classList.toggle('on');
+}
+
+function show(canvas, img) {
+  canvas.width = img.width; canvas.height = img.height;
+  const ctx = canvas.getContext('2d');
+  // BGRA -> RGBA for display only. The COMPARISON stays in BGRA and never touches a canvas.
+  const rgba = new Uint8ClampedArray(img.data.length);
+  for (let i = 0; i < img.data.length; i += 4) {
+    rgba[i] = img.data[i + 2]; rgba[i + 1] = img.data[i + 1];
+    rgba[i + 2] = img.data[i]; rgba[i + 3] = img.data[i + 3];
+  }
+  ctx.putImageData(new ImageData(rgba, img.width, img.height), 0, 0);
+}
+
+$('run').onclick = async () => {
+  clear();
+  $('run').disabled = true;
+  try {
+    if (!navigator.gpu) throw new Error('WebGPU unavailable — use Chrome/Edge 113+ over http://, not file://');
+    const adapter = await navigator.gpu.requestAdapter();
+    if (!adapter) throw new Error('no GPU adapter');
+    const device = await adapter.requestDevice();
+    device.addEventListener('uncapturederror', (e) => log(`GPU ERROR: ${e.error.message}`, 'err'));
+
+    const wantChar = $('bChar').classList.contains('on');
+    const wantStage = $('bStage').classList.contains('on');
+    const cullNone = $('bCull').classList.contains('on');
+    const only = wantChar && wantStage ? null : (wantChar ? 'character' : 'stage');
+
+    log(`loading ${$('pack').value} …`);
+    const r = await new Replayer(device, 'bgra8unorm').load($('pack').value);
+    const head = r.pack.head;
+    log(`frame ${head.frame}: ${head.draws.length} draws, ${Object.keys(head.textures).length} textures, ` +
+        `${Object.keys(head.constantBuffers).length} constant buffers`);
+    if (r.res.missing.world || r.res.missing.viewProj) {
+      log(`⚠ ${r.res.missing.world} draws without a world matrix, ${r.res.missing.viewProj} without a ` +
+          `view-projection — those fall back to identity and WILL be wrong`, 'warn');
+    }
+
+    log(`rendering (only=${only ?? 'all'}, cullNone=${cullNone}) …`);
+    const t0 = performance.now();
+    const { target, stats, pipelines } = r.render({ only, cullNone });
+    const ours = { width: r.width, height: r.height, data: await r.readback(target) };
+    log(`drew ${stats.drawn} (${JSON.stringify(stats.byVariant)}), skipped ${stats.skipped}, ` +
+        `${pipelines} pipelines, ${(performance.now() - t0).toFixed(0)} ms`);
+
+    if (!head.sceneRTFile) throw new Error('pack has no sceneRTFile — recapture so a scene RT dump exists');
+    log(`loading ground truth ${head.sceneRTFile} …`);
+    const bmp = decodeBMP(new Uint8Array(await (await fetch(head.sceneRTFile, { cache: 'no-store' })).arrayBuffer()));
+    log(`truth ${bmp.width}x${bmp.height}`);
+
+    // Crop BOTH to the viewport. Outside it the RT is untouched clear and would trivially match.
+    const vp = head.viewport || [384, 32, 1280, 960];
+    const [vx, vy, vw, vh] = vp;
+    const oursC = crop(ours, vx, vy, vw, vh);
+    const truthC = crop(bmp, vx, vy, vw, vh);
+    log(`cropped to viewport ${vx},${vy} ${vw}x${vh}`);
+
+    show($('cOurs'), oursC);
+    show($('cTruth'), truthC);
+    const t = tint(oursC, truthC);
+    $('cTint').width = t.width; $('cTint').height = t.height;
+    $('cTint').getContext('2d').putImageData(t, 0, 0);
+
+    // ⚠ A SUBSET RENDER CANNOT BE DIFFED. Alpha blending is not decomposable: our
+    // characters-over-nothing is not comparable to truth's characters-over-stage, under any mask.
+    // Subset rendering stays available for LOOKING at a class of draws; the number is suppressed.
+    const m = compare(oursC, truthC);
+    if (only) {
+      log('');
+      log(`⚠ SUBSET RENDER (only=${only}) — the diff below is NOT VALID. Alpha blending is not`, 'warn');
+      log('  decomposable, so a subset over a zero clear can never equal the composite. Use this', 'warn');
+      log('  view to LOOK at the draws; judge only the full render.', 'warn');
+    }
+    log('');
+    log(verdict(m, `— only=${only ?? 'all'} cullNone=${cullNone}`),
+        only ? 'warn' : (m.missingPct > 1 ? 'err' : (m.differing === 0 ? 'ok' : 'warn')));
+  } catch (e) {
+    log(`FAILED: ${e.message}`, 'err');
+    console.error(e);
+  } finally {
+    $('run').disabled = false;
+  }
+};
+</script>

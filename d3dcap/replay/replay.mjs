@@ -14,14 +14,42 @@ import { loadPack, createResources, VERTEX_LAYOUT } from './resources.mjs';
 import { toBlendState, toWriteMask, toDepthStencil, applyDepthBias, toPrimitive, applyViewport,
          pipelineKey } from './state.mjs';
 
-// Which fragment entry a draw uses. Chosen by the SHAPE of what the draw binds rather than by a
-// shader pointer, because pointers are per-launch and rot across captures.
-//   a 256x1 texture in slot 1  -> the palette path (CHARACTERS)
-//   otherwise, four varyings   -> the stage
+// Shader variants come from the pack, where classify_shaders.py put them after reading the actual
+// DISASSEMBLY, keyed by CSO content hash (pointers are per-launch and would rot across captures).
+//
+// ⚠ An earlier version guessed the variant from the SHAPE of what a draw bound — "a texture in slot 1
+// means this is a character". Measured on frame 4261 that captured 214 draws spanning FIVE pixel
+// shaders and THREE vertex shaders, including the HUD bank and stage pages, and ran all of them
+// through the indexed path with a pass-through vertex shader. Draws whose VS actually transforms by
+// world x view-projection were treated as already in NDC, so their geometry landed nowhere near
+// where it belonged. Never infer a shader from its bindings.
+// The fragment entry point depends on BOTH the pixel shader's class and which vertex shader the draw
+// pairs with: WebGPU requires the fragment input signature to match the vertex output signature, and
+// the two vertex shaders emit different varying counts (vs_world 4, vs_flat 3). Pairing across them
+// is a pipeline-creation error, not a subtle wrongness.
+const FS_ENTRY = {
+    'vs_world|opaque':   'fs_stage_opaque',
+    'vs_world|texalpha': 'fs_stage_texalpha',
+    'vs_flat|opaque':    'fs_flat_opaque',
+    'vs_flat|texalpha':  'fs_hud',
+    'vs_flat|indexed':   'fs_character',
+};
+
 function variantFor(d) {
-    const t0 = d.tex?.[0], t1 = d.tex?.[1];
-    if (t1) return 'character';           // indexed: R8 index tile + 256x1 palette
-    return 'stage';
+    const vs = d.vsVariant || 'vs_world';
+    const cls = d.psVariant || 'opaque';        // a null pixel shader = depth-only, writeMask 0
+    const fs = FS_ENTRY[`${vs}|${cls}`];
+    if (!fs) {
+        // The flycast model says the indexed path never pairs with a transforming vertex shader.
+        // If that ever happens, fail loudly rather than silently picking a plausible entry point.
+        throw new Error(`no fragment entry for ${vs} + ${cls}`);
+    }
+    return { vs, fs };
+}
+
+/** Coarse class for the differential-reduction switches. */
+function classOf(d) {
+    return d.psVariant === 'indexed' ? 'character' : 'stage';
 }
 
 export class Replayer {
@@ -36,7 +64,9 @@ export class Replayer {
         this.pack = await loadPack(url);
         this.res = createResources(this.device, this.pack);
         this.module = this.device.createShaderModule({
-            code: await (await fetch(new URL('./sprite.wgsl', import.meta.url))).text(),
+            // no-store: these files change between runs; a cached shader shows up as a bogus
+            // "entry point doesn't exist" error rather than as a cache problem.
+            code: await (await fetch(new URL('./sprite.wgsl', import.meta.url), { cache: 'no-store' })).text(),
         });
 
         // Fixed layouts: group 0 is the per-draw uniform slice (dynamic offset), group 1 the textures
@@ -66,14 +96,14 @@ export class Replayer {
     }
 
     _pipeline(d, variant) {
-        const key = pipelineKey(d, variant, 'triangle-list');
+        const key = pipelineKey(d, `${variant.vs}|${variant.fs}`, 'triangle-list');
         let p = this.pipelines.get(key);
         if (p) return p;
 
-        // The stage transforms through world x view-projection; characters and HUD use the
-        // pass-through vertex shader, whose positions are already in NDC.
-        const vsEntry = variant === 'character' ? 'vs_flat' : 'vs_world';
-        const fsEntry = variant === 'character' ? 'fs_character' : 'fs_stage_opaque';
+        // Both entry points come from the disassembly, per draw. The pairing is NOT interchangeable:
+        // vs_flat emits three varyings with uv at TEXCOORD2 and does no transform at all.
+        const vsEntry = variant.vs;
+        const fsEntry = variant.fs;
 
         const depthStencil = applyDepthBias(toDepthStencil(d.depth), d.raster);
         const blend = toBlendState(d.blend);
@@ -152,7 +182,8 @@ export class Replayer {
         const stats = { drawn: 0, skipped: 0, byVariant: {} };
         head.draws.forEach((d, i) => {
             const variant = variantFor(d);
-            if (opts.only && variant !== opts.only) { stats.skipped++; return; }
+            const cls = classOf(d);
+            if (opts.only && cls !== opts.only) { stats.skipped++; return; }
 
             const dd = opts.cullNone ? { ...d, raster: { ...(d.raster || {}), cull: 1 } } : d;
             pass.setPipeline(this._pipeline(dd, variant));
@@ -162,7 +193,8 @@ export class Replayer {
             pass.drawIndexed(d.indexCount, 1, d.firstIndex, 0, 0);
 
             stats.drawn++;
-            stats.byVariant[variant] = (stats.byVariant[variant] || 0) + 1;
+            const tag = `${variant.vs}+${variant.fs}`;
+            stats.byVariant[tag] = (stats.byVariant[tag] || 0) + 1;
         });
 
         pass.end();

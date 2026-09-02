@@ -1435,3 +1435,53 @@ rcaprame_<n>.ndjson`:
   state with every gate field (px/py/vx/vy/hp/facing ×6) + `ggpo_sim_tie` for alignment + a `blk` snapshot.
   DC resim RAM vs recorded `frames` via the DC↔blk map — no live Steam session needed. (B1/`AB.cmd` still
   needs live Steam; B2 alone may suffice to prove/kill resim.)
+
+---
+
+## 2026-09-01 — Gate 0: the model is exact; the gap is in the replayer
+
+`d3dcap/replay/verify_alpha.py` (new) hand-executes frame 4261's ALPHA channel in pure Python — no
+GPU, no WebGPU, no WGSL. Alpha is the right channel to isolate because every scene draw blends with
+`srcA = ONE, dstA = ZERO`, so the RT's final alpha is just the alpha of the last fragment that was
+not discarded. That makes it a pure coverage question, independent of texture colour, palette RGB,
+fog and blend arithmetic.
+
+```
+frame 4261: 760 draws into the 2048x1024 scene RT
+ALPHA MASK over the 1280x960 crop (1,228,800 px)
+  truth covered : 1,228,764 (99.997%)
+  we covered    : 1,228,800 (100.000%)
+  MISSING       : 0 (0.000%)
+  spurious      : 36 (0.003%)
+```
+
+**Our reading of the capture reproduces Steam's alpha channel exactly.** The 36 spurious pixels are
+the RT's own 36 alpha-0 pixels at the crop edge. So the transform, the strip→list conversion, the
+input layout, the UV mapping, the palette indexing, the alpha test and the draw order are all
+correct, and any coverage loss in the WebGPU replay is **plumbing**, not model. That halves the
+search space, exactly as the capture expert predicted it would.
+
+### Measured while building it — each of these is now settled, do not re-litigate
+
+| Question | Answer | How it was measured |
+| --- | --- | --- |
+| Is the capture complete? | Yes. Every truth pixel in the crop is inside some captured primitive. | Rasterised all 760 draws' triangles: `truth covered, NO draw = 0 px`. |
+| Is the scene RT cleared? | **No.** RT `0000000076B7D8E0` takes all 760 draws and gets no `ClearRTV`. Steam starts each frame from the previous frame's pixels. | 7 `ClearRTV` calls, none targeting it. Harmless here because this frame's draws cover 100% of the crop, but it is a real hazard on a sparser frame. |
+| Is there an alpha test? | Yes, and it matters. `ge fAlphaRef, a` → `discard_nz`, with `fAlphaRef = 0.0` on all 759 draws that bind cb0 — so alpha-0 texels are DISCARDED, never blended. | `fxc /dumpbin` on `ps_00000000642DB9F8` and `ps_00000000643D33F8`. Already implemented correctly in `sprite.wgsl`. |
+| Does culling explain the gap? | No. Enabling the captured cull states changes coverage by **0 px**: every triangle in the 566 `CULL_FRONT` draws is back-facing. | `CULL=1 python verify_alpha.py`. |
+| Does depth clipping explain it? | No. Clipping NDC z to [0,1] as WebGPU does changes coverage by **0 px**. | `DEPTHCLIP=1 python verify_alpha.py`. |
+| Vertex colour byte order | `TANGENT`/`BINORMAL` are `DXGI_FORMAT_R8G8B8A8_UNORM` (format 28), NOT BGRA — so WebGPU's `unorm8x4` needs no swizzle. | The three stride-40 input layouts in the capture are byte-identical. |
+| Per-draw input layout | One layout, three aliases. 758 of 760 scene draws are stride 40 with identical elements; 2 draws are stride 28. | `il_*.json` dumps. |
+| Scissor | Never enabled (`scissor: 0`), never captured (`null` on all 760), never applied. | pack + ndjson. |
+
+### Retired
+
+* The `only=characters` / `only=stage` **diff numbers**. Alpha blending is not decomposable, so a
+  subset replayed over a zero clear cannot equal the composite under any mask. The subset buttons now
+  render for LOOKING only and print a warning instead of a verdict.
+* The single fused "differing %". `diff.mjs` now reports COVERAGE (geometry) and COLOUR (only among
+  pixels both images cover) separately. The old number mixed the two: our target clears to
+  `[0,0,0,0]` while truth ends at alpha 255 almost everywhere, so every uncovered pixel tripped the
+  threshold on alpha alone.
+* The dead degenerate-triangle check in `pack_replay.py`'s `strip_to_list` — `a`, `b`, `c` are always
+  three distinct consecutive indices, so it could never fire.

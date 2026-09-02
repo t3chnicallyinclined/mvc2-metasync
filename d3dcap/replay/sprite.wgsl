@@ -226,3 +226,21 @@ fn fs_hud(in : VSOutFlat) -> @location(0) vec4f {
 
     return vec4f(tex.rgb * in.color0.rgb + in.color1, a);
 }
+
+// ── fragment: OPAQUE on the FLAT varyings (pass-through VS) ──────────────────────────────────────
+// Same maths as fs_stage_opaque, but taking VSOutFlat. WebGPU requires the fragment input signature
+// to match the vertex output signature exactly — a vs_flat (3 varyings, uv at location 2) paired with
+// a VSOutWorld fragment entry is a pipeline-creation error:
+//   "component count (2) of the vertex output at location 2 differs from (3) of the fragment input".
+// The game pairs IgnoreTexA shaders with BOTH vertex shaders, so both varying layouts need one.
+// No fog term: shaders on the pass-through VS have no worldPos to compute distance from, and the
+// ones measured here bind no fog constant buffer at all.
+@fragment
+fn fs_flat_opaque(in : VSOutFlat) -> @location(0) vec4f {
+    let tex = textureSample(tBase, samp0, in.uv).rgb;   // texcol.a forced to 1 by pp_IgnoreTexA
+
+    let a = in.color0.a;
+    if (u.fogParams.z >= a) { discard; }
+
+    return vec4f(tex * in.color0.rgb + in.color1, a);
+}

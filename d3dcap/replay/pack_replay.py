@@ -50,8 +50,10 @@ def strip_to_list(first, count):
         a, b, c = first + i, first + i + 1, first + i + 2
         if i & 1:
             a, b = b, a
-        if a == b or b == c or a == c:
-            continue
+        # NOTE: no degenerate check here. a, b, c are always three DISTINCT consecutive indices, so
+        # the obvious `if a == b or ...: continue` can never fire and is dead code — it was here and
+        # did nothing. Real degenerate stitches would need equal VERTEX DATA, not equal indices, and
+        # they rasterise to zero area anyway.
         out.extend((a, b, c))
     return out
 
@@ -156,6 +158,17 @@ def main():
     print("shaders: %d VS, %d PS, %d input layouts (content-hashed)"
           % (len(vs_hash), len(ps_hash), len(il_hash)))
 
+    # Shader VARIANTS come from classify_shaders.py, which reads them out of the disassembly.
+    # ⚠ Never infer the variant from what a draw binds. That heuristic ("something in slot 1 means
+    # this is a character") selected 214 draws spanning five pixel shaders and three vertex shaders,
+    # including the HUD bank and stage pages, and forced them all through the indexed path with a
+    # pass-through vertex shader -- putting transformed geometry in the wrong place.
+    smap_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "shader-map.json")
+    smap = json.load(open(smap_path)) if os.path.exists(smap_path) else {"vs": {}, "ps": {}}
+    if not smap["ps"]:
+        print("  ⚠ no shader-map.json — run: python classify_shaders.py %s" % a.frame)
+    unmapped = Counter()
+
     # ── constant buffers: already content-hashed at capture time ─────────────────────────────────
     cb_files = {}
     for f in glob.glob(os.path.join(CAP, "cb_%s_*.bin" % a.frame)):
@@ -186,6 +199,12 @@ def main():
             "stride": stride,
             "vs": vs_hash.get(d.get("vs")), "ps": ps_hash.get(d.get("ps")),
             "il": il_hash.get(d.get("il")),
+            "vsVariant": smap["vs"].get(vs_hash.get(d.get("vs")), {}).get("variant"),
+            "psVariant": smap["ps"].get(ps_hash.get(d.get("ps")), {}).get("variant"),
+            # A shader with no fog constant buffer must not have a fog term applied. Rather than
+            # multiply the entry points by a fog flag, the replayer writes fogDensity = 0 for these,
+            # which makes the shared fog tail a BIT-EXACT no-op (sqrt(0)=0 -> weight 1 -> +0*colour).
+            "psFog": smap["ps"].get(ps_hash.get(d.get("ps")), {}).get("fog", True),
             "tex": [(t["p"] if t and "w" in t and t["p"] in tex_index else None)
                     for t in (d.get("tex") or [])][:2],
             "samp": (d.get("samp") or [])[:2],
@@ -196,6 +215,14 @@ def main():
             "pscbHash": (d.get("pscbHash") or [])[:4],
         })
         indices.extend(idx)
+
+    for d in out_draws:
+        if not d.get("vsVariant") or not d.get("psVariant"):
+            unmapped[(d.get("vsVariant"), d.get("psVariant"))] += 1
+    if unmapped:
+        print("  ⚠ %d draws have no shader variant: %s"
+              % (sum(unmapped.values()), dict(unmapped)))
+    print("variants: %s" % dict(Counter((d.get("vsVariant"), d.get("psVariant")) for d in out_draws)))
 
     print("topology in: %s -> all triangle lists out, %d indices, %d draws"
           % ({("STRIP" if k == 5 else "LIST" if k == 4 else k): v for k, v in topo_hist.items()},
@@ -230,7 +257,14 @@ def main():
     # against the backbuffer instead would only prove that the bloom chain exists.
     scene_hits = glob.glob(os.path.join(CAP, "scene_%s_*.bmp" % a.frame))
     if scene_hits:
-        print("ground truth: %s" % os.path.basename(scene_hits[0]))
+        # Copy it beside the pack so the browser can fetch both from one directory. It is 8 MB and
+        # ROM-derived, so *.bmp is gitignored here -- this is a working copy, not an artifact.
+        import shutil
+        dst = os.path.join(os.path.dirname(os.path.abspath(a.out or __file__)),
+                           os.path.basename(scene_hits[0]))
+        if os.path.abspath(scene_hits[0]) != os.path.abspath(dst):
+            shutil.copyfile(scene_hits[0], dst)
+        print("ground truth: %s (copied beside the pack)" % os.path.basename(scene_hits[0]))
     else:
         print("⚠ NO scene RT dump for this frame -- there is nothing to diff against")
 

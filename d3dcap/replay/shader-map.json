@@ -1,0 +1,56 @@
+{
+ "vs": {
+  "4718687148562057": {
+   "variant": "vs_flat",
+   "fog": false,
+   "note": ""
+  },
+  "eecdd8debcfbab72": {
+   "variant": "vs_flat",
+   "fog": false,
+   "note": ""
+  },
+  "2a7797c47f7673ac": {
+   "variant": "vs_world",
+   "fog": false,
+   "note": ""
+  },
+  "a6fb2c16baaccf5e": {
+   "variant": "vs_world",
+   "fog": false,
+   "note": ""
+  }
+ },
+ "ps": {
+  "cd8012caa4038c99": {
+   "variant": "texalpha",
+   "fog": false,
+   "note": "texture alpha kept, NO FOG"
+  },
+  "bf338c9550f2b5fd": {
+   "variant": "texalpha",
+   "fog": false,
+   "note": "texture alpha kept, NO FOG"
+  },
+  "b105dc823362dea2": {
+   "variant": "opaque",
+   "fog": true,
+   "note": "IgnoreTexA (texture alpha forced to 1)"
+  },
+  "1e9eff1d054fa8ad": {
+   "variant": "opaque",
+   "fog": false,
+   "note": "IgnoreTexA (texture alpha forced to 1)"
+  },
+  "11e001bd5273a4ca": {
+   "variant": "texalpha",
+   "fog": true,
+   "note": "texture alpha kept"
+  },
+  "15d74cb5d59806ab": {
+   "variant": "indexed",
+   "fog": false,
+   "note": "t0 index tile + t1 palette"
+  }
+ }
+}

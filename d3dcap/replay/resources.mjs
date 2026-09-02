@@ -12,7 +12,7 @@ const UNIFORM_STRIDE = 256;   // WebGPU minUniformBufferOffsetAlignment; 490 dra
 
 /** Parse the .pack container: "RRPK", u32 header length, JSON header, then concatenated payloads. */
 export async function loadPack(url) {
-    const buf = new Uint8Array(await (await fetch(url)).arrayBuffer());
+    const buf = new Uint8Array(await (await fetch(url, { cache: 'no-store' })).arrayBuffer());
     const dv = new DataView(buf.buffer);
     if (String.fromCharCode(...buf.subarray(0, 4)) !== 'RRPK') throw new Error('not a .pack file');
     const headLen = dv.getUint32(4, true);
@@ -118,6 +118,9 @@ export function createResources(device, pack) {
         // CBFog = PS cb2: fFogColor +0 (12 B), fFogDensity +12, fFogStart +24, fFogInvRange +28
         readF32(d.pscbHash?.[2], 0, 4, uniformData, f + 32, null);
         readF32(d.pscbHash?.[2], 24, 2, uniformData, f + 36, null);
+        // A shader that binds no fog constant buffer must not have fog applied. Forcing density to 0
+        // makes the shared fog tail bit-exact inert rather than needing separate entry points.
+        if (d.psFog === false) uniformData[f + 35] = 0;
         // CBROPTest = PS cb0: fAlphaRef +0
         readF32(d.pscbHash?.[0], 0, 1, uniformData, f + 38, null);
     });
