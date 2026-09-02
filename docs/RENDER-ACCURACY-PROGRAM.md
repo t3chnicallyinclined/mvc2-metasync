@@ -2000,3 +2000,64 @@ identity again, at any layer.
 
 The measurement that catches this class, worth keeping: **consecutive frames sharing ~0% of their
 tile content while the distinct-tile count equals the size of the game's texture pool.**
+
+### Expert review, and one piece of evidence that cannot decide the question
+
+Two expert passes landed. Both are worth reading in full; the load-bearing points:
+
+**The asset set is bounded, and it plateaus fast.** Measured from the shim's own `[tex]` log over
+burst 1 (246 frames): 383 texture generations, **379 of them (99.0%) in the first 9 frames**. Burst 3
+(600 frames): last new generation at frame 2872, then **573 consecutive frames with zero new
+textures**. Asset totals: ~1 MB of raw texels covers 4-10 seconds of match, 931 KB after sha256
+dedupe. That makes a **content-addressed asset library plus a per-match manifest of hashes** the
+right shape, and a save state the wrong one.
+
+**Two corrections to the Gate-1 plan, both now applied:**
+
+* The mapping is `gx = (ndc.x+1)*192, gy = (1-ndc.y)*112`, NOT `*320/*240`. Measured: NDC-per-texel is
+  exactly `2/384` in x and `2/224` in y on every character quad in every frame sampled. The character
+  sprite plane is a **384x224 pixel grid and sprites are never scaled**. Over 22,308 character
+  vertices spanning the whole burst, `(1-y_ndc)*112` minus a single constant bias of 0.0666515 is an
+  exact integer for **every vertex, zero exceptions**. This agrees with the sprite lane rather than
+  contradicting it: 384 x 5/3 = 640, 224 x 15/7 = 480.
+* **M5 as written cannot pass.** Steam's character quads are square in native units (16x16, 8x8,
+  32x32) and abut in grids; our `_asm.json` parts are frequently non-square. One assembly record maps
+  to N engine quads. The rule must be *the emitter's per-part rect equals the UNION of the Steam
+  quads that tile it*.
+* **"Group by t1 palette pointer" is unsafe.** Pointer `…7A2B25E0` is the left body in frame 2574 and
+  the right body in frame 2700. Group by z band + contiguous draw-index run instead.
+
+**The 246-frame capture cannot run Gate 1 at all: it contains no game state.** The fix is cheap — read
+the six slots at `blk+0x3DB8+i*0x738` and the frame clock at Present; every offset is already in the
+agent's `reader.rs`.
+
+**A real packer bug, found and fixed:** the texture fallback walked *every* frame in the capture
+directory. The shim holds a reference on each texture so an address cannot be recycled WITHIN a
+burst, but `releaseCapTex()` drops those references between bursts. Measured: frame 2951 was
+resolving 5 of its 152 textures to dumps from frame 2575. The fallback now stops at the first gap in
+frame numbers. (Fourth appearance of *a runtime pointer is never an identity*.)
+
+### ⚠ The evidence that "the game never rewrites a texture" is circular
+
+The review reports "every texture object has exactly ONE content generation, therefore the game hands
+out a new object rather than rewriting". **That measurement cannot distinguish "the game never
+rewrites" from "we never notice a rewrite"** — a generation is only created when our dirty flag
+fires, and the flag is set from `Map`/`Unmap` and `UpdateSubresource` only. The review names this hole
+itself and then treats the derived statistic as independent evidence against it. It is not.
+
+The arithmetic points the other way. 246 frames x 68 tiles = ~16,700 tile bindings drawn from 345
+distinct pointers, with **0.6% overlap between consecutive frames**. Random selection from a resident
+345-pool would give ~20% overlap; 0.6% is the signature of a **ring being cycled and rewritten**, not
+of a resident pool being re-bound.
+
+And the burst-clamped fallback fix did **not** repair frame 2700 — it still renders as shards. So the
+stale content is not coming from a cross-burst pointer collision.
+
+**What settles it:** the content-hash build re-snapshots every texture every captured frame and names
+each dump by its own bytes. If the game re-binds a resident pool, a fresh burst yields ~345 distinct
+bitmaps again. If it cycles and rewrites, it yields thousands. One capture decides it, and the render
+is correct either way.
+
+Also added, because its absence is what let this run so long: **the scene RT is now captured at the
+first, middle AND last frame of a burst.** With ground truth only at frame 1 there was no way to tell
+a capture that goes stale after frame 1 from one that does not.

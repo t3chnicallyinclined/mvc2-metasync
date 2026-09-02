@@ -1391,8 +1391,16 @@ static HRESULT STDMETHODCALLTYPE hkPresent(IDXGISwapChain* sc, UINT si, UINT fla
         // The heavy ground-truth grabs are worth one frame of a burst, not every frame: the scene RT
         // is an 8 MB BMP and the backbuffer another full copy. One is enough to prove the sequence
         // renders correctly, and the rest of the burst is what makes it a PLAYBACK.
+        // ⚠ GROUND TRUTH AT THREE POINTS OF A BURST, NOT ONE.
+        // With only the first frame's scene RT there is no way to tell a capture that goes stale
+        // after frame 1 from one that does not -- and that is exactly the failure we then spent a
+        // session chasing. Three 8 MB writes, off the frame path already, and any later drift shows
+        // up as a number instead of as "the characters look wrong".
         const bool firstOfBurst = (g_frame == g_burstFirst);
-        if (firstOfBurst) captureBackbuffer(sc, g_frame);
+        const bool midOfBurst   = (g_burst > 2 && g_burstGot == g_burst / 2);
+        const bool lastOfBurst  = (g_burst > 2 && g_burstLeft == 0 && g_burstGot + 1 >= g_burst);
+        const bool wantTruth    = firstOfBurst || midOfBurst || lastOfBurst;
+        if (wantTruth) captureBackbuffer(sc, g_frame);
         g_capturing = false;
         if (g_out) { fclose(g_out); g_out = nullptr; }
         // Only spend a dump slot on a GAMEPLAY frame. Measured: menus/char-select run 13-266 draws
@@ -1409,7 +1417,7 @@ static HRESULT STDMETHODCALLTYPE hkPresent(IDXGISwapChain* sc, UINT si, UINT fla
             // chain, so diffing against it would only prove that bloom exists. The scene RT is bound
             // for the whole sprite pass and never rebound in the frame, so Present is a valid
             // snapshot point -- no pass-boundary hook needed.
-            if (firstOfBurst) {
+            if (wantTruth) {
                 ID3D11Device* sdev = nullptr;
                 ID3D11DeviceContext* sctx = nullptr;
                 if (SUCCEEDED(sc->GetDevice(__uuidof(ID3D11Device), (void**)&sdev)) && sdev) {

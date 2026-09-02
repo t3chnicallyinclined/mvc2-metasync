@@ -109,10 +109,21 @@ def main():
     # ── textures: dedupe by pointer, resolve to a dump, ASSERT COVERAGE ──────────────────────────
     # Frames of this capture that came BEFORE this one, newest first. A texture written once for the
     # whole burst lives under the frame number that first sampled it.
-    earlier_frames = sorted(
-        (int(os.path.basename(f)[6:-7]) for f in glob.glob(os.path.join(CAP, "frame_*.ndjson"))
-         if os.path.getsize(f) and int(os.path.basename(f)[6:-7]) <= int(a.frame)),
-        reverse=True)
+    # ⚠⚠ CLAMP THE FALLBACK TO THIS FRAME'S OWN BURST.
+    # The shim holds a reference on every texture it has seen, so an address cannot be recycled
+    # WITHIN a burst -- but `releaseCapTex()` drops those references between bursts, and the singles
+    # a normal capture takes every second are each their own burst of one. Reaching across that
+    # boundary resolves a pointer to whatever texture happened to live at that address minutes
+    # earlier. Measured: frame 2951 was resolving 5 of its 152 textures to dumps from frame 2575.
+    # This is "a runtime pointer is never an identity" again, at the fourth layer.
+    _all = sorted(int(os.path.basename(f)[6:-7])
+                  for f in glob.glob(os.path.join(CAP, "frame_*.ndjson")) if os.path.getsize(f))
+    _me = int(a.frame)
+    earlier_frames = []
+    for f in reversed([x for x in _all if x <= _me]):
+        if earlier_frames and earlier_frames[-1] - f > 1:
+            break                      # a gap ends the burst; do not step over it
+        earlier_frames.append(f)
 
     # Present only on captures from the content-hash build onward; older ones fall back below.
     texmap_path = os.path.join(CAP, "texmap_%s.json" % a.frame)
