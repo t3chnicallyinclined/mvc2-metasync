@@ -898,3 +898,97 @@ be facing right, since every body measured so far resolved under the same sign.
 The band-order rule in 12.4 (`y += part_h - tile_h - offy`) needs the same caution: each tile's
 PIXELS are upright (a byte-exact unflipped match proves that), so what is reversed is the order the
 32-row **bands** stack, not the rows inside them. Measured on 5 tiles of one part; not explained.
+
+---
+
+## 13. ⭐⭐⭐ `blk` IS THE WHOLE ROLLBACK STATE — read out of Ghidra, not inferred
+
+Tris, 2026-09-02: *"make sure you aren't guessing, we have the rom, steam ghidra, marvelous2
+disassembly … all we really need to do is move the game forward 1 frame."* So this was read out of the
+binary. Every address below is rebased to `0x140000000`.
+
+### 13.1 Where `blk` comes from
+
+`BLK_PTR = EXE + 0xAC6EF0` → **`0x140AC6EF0`**, and it has exactly **two** xrefs in the whole binary:
+one READ in `FUN_140118290`, one WRITE in `FUN_140608690`.
+
+**`FUN_140608690` is MATCH INIT.** It does, in order:
+
+```c
+DAT_142edf560 = *(longlong *)(DAT_142ef0ab0 + 0x10);       // blk
+memset(DAT_142edf560, 0, 0x33b18);                          // <-- exactly BLKSZ
+*(PTR_DAT_140acd3a0 + 0x1b0) = DAT_142edf560;               // register block 1: ptr
+*(PTR_DAT_140acd3a0 + 0x1b8) = 0x33b18;                     //                   size
+DAT_142edf568 = DAT_142edf560 + 0x33b18;                    // a SECOND block, immediately after
+memset(DAT_142edf568, 0, 0x33b20);
+*(PTR_DAT_140acd3a0 + 0x1c0) = DAT_142edf568;               // register block 2
+*(PTR_DAT_140acd3a0 + 0x1c8) = 0x33b20;
+DAT_142edf580 = DAT_142edf560 + 0x3cb8;                     // the GAMEFLOW struct inside blk
+```
+
+So `blk` is zeroed at match start, and the **frame clock at `blk+0x3CC8` is `DAT_142edf580 + 0x10`**.
+Match options are written at `blk+0x3c40` / `+0x3c43`, which matches the region map already in §11.
+
+### 13.2 The save-state builder settles the question
+
+`FUN_140118290` is the state SAVE path — it zeroes a 1 MB staging buffer, then:
+
+```c
+DAT_142d10950 = 0;                                    // descriptor COUNT
+DAT_142d10954 = 0;                                    // total BYTES
+if (*(uint *)(PTR_DAT_140acd3a0 + 0x48) < 3) { FUN_1401183a0(); return; }
+if (*(PTR + 0x1b0) != 0 && (n = *(int *)(PTR + 0x1b8)) != 0) {
+    DAT_142d10950 = 1;                                // ONE descriptor
+    DAT_142d107d0  = *(PTR + 0x1b0);                  // = blk
+    DAT_142d108d0  = n;                               // = 0x33b18
+    DAT_142d10954  = n;
+}
+```
+
+`DAT_142d107d0[]` / `DAT_142d108d0[]` / `DAT_142d10950` / `DAT_142d10954` are a **scatter-gather
+descriptor list** — pointers, sizes, count, total. And `FUN_1401183a0` (the `< 3` branch, i.e. the
+*other* titles in the Collection) shows what a NON-trivial state looks like: ~7 subsystem blocks
+appended one by one, plus, for `< 2`, raw slices of an emulated address space obtained from
+`FUN_1401125d0(n)` — `+0x500000` (0x830), `+0x800100` (0x80), `+0x900000` (0x30000), `+0xff0000`
+(0x10000), `+0x400000`, `+0x660000`, `+0x700000`, `+0x708000`, `+0x804000`. Those are DC/NAOMI
+memory-map offsets.
+
+> **⟹ On the `>= 3` path the ENTIRE save state is ONE descriptor: `blk`, 0x33B18 bytes.**
+> Not a memset size we reasoned from — the save-state builder itself registers exactly one block.
+
+⚠ **The second 0x33B20 block is NOT in the save list.** It is allocated beside `blk` and registered at
+`+0x1c0`, but `FUN_140118290` never adds it. Do not treat it as state until something is shown to
+save or restore it; a shadow/compare buffer is the likelier reading.
+
+⚠ **INFERRED, not confirmed: that MvC2 is the `>= 3` case.** The deduction is that `FUN_1401183a0`
+never touches `+0x1b0`, while `FUN_140608690` is the thing that fills `+0x1b0` — so a title using the
+`< 3` path would never see its `blk` saved. Strong, but the honest close is to read
+`*(PTR_DAT_140acd3a0 + 0x48)` live. One `u32`. Do it before this gets quoted as CONFIRMED.
+
+### 13.3 ⚠⚠ ROLLBACK STATE IS NOT RENDER INPUT — this does NOT close D3
+
+GGPO save/load only has to be sufficient to **re-simulate identically**. It says nothing about what
+the RENDERER reads. Our own Path B capture proves the character path samples a pool of 32×32 index
+pages and 256×1 palettes — **assets, which are not in `blk`**. So the candidate is `blk` + the loaded
+asset set, and **D3 (are two frames with identical `blk` guaranteed to produce identical command
+lists?) is still unrun.** §11's warning stands unchanged.
+
+### 13.4 "Isn't it StartRender?" — no, on either side
+
+* **flycast:** `STARTRENDER` is a PVR register (`core/hw/pvr/pvr_regs.cpp:131`, `case
+  STARTRENDER_addr`). Writing it kicks the TA → framebuffer render of a display list **that the game
+  already built**. It renders a frame; it does not advance the simulation by one frame.
+* **Steam:** there is no PVR and no TA at all. The structural analogue is the command-list executor
+  `FUN_1402B6F30` and the frame submit `FUN_1402BCC60` (§11).
+
+**The Steam per-frame function is `FUN_140055D40`** — and it is the SHELL frame, not the game: it
+ticks ~30 subsystems through `vtable+0x30` / `+0x48` / `+0x50`, polls Steam (`DAT_1408db5a8`,
+`DAT_1408db5c0`, `DAT_1408db5a0`), then calls `FUN_1402b6a50` to submit the renderer. The MvC2 match
+logic is a module in the `0x1406xxxxx` range: `FUN_140607e90` reads `DAT_142edf580` (= `blk+0x3CB8`)
+and mirrors gameflow, round and per-fighter state out into `PTR_DAT_140acd3a0`; `FUN_14060af70`,
+`FUN_14060b440`, `FUN_14060c070`, `FUN_14060a1f0` are its siblings.
+
+**So "move the game forward one frame" is one of `FUN_140055D40`'s subsystem ticks, and it has not
+been isolated yet.** Naming it is a bounded next step: `FUN_140055D40` makes ~30 dispatched calls, and
+the one that advances `blk+0x3CC8` can be found by breaking on writes to that address, or by hooking
+each `+0x30` in turn. Do not guess which; there are 30 candidates and they all look alike.
