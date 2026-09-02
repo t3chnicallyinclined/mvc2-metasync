@@ -79,6 +79,8 @@ static unsigned g_burstLeft = 0;        // frames still to record in the current
 static unsigned g_burstFirst = 0;       // frame number the current burst started on
 static unsigned g_burstGot = 0;         // frames of the current burst actually recorded
 static volatile LONG g_burstDone = 0;   // a full burst is on disk; stop arming
+static bool g_manual = false;           // D3DCAP_MANUAL: only arm when told to
+static volatile LONG g_wantBurst = 0;   // manual mode: told to, and still trying
 static char g_dir[MAX_PATH] = {0};
 
 static uintptr_t g_imgBase = 0, g_imgSize = 0, g_renderer = 0;
@@ -1583,6 +1585,17 @@ static DWORD WINAPI worker(LPVOID) {
     if (!g_installed) logf("[init] ⚠ creation hook never fired -- injected AFTER device creation. "
                            "Shader/layout coverage will be incomplete; relaunch via collect.ps1.");
 
+    {   // D3DCAP_MANUAL=1: never arm on a timer -- wait for the ARM file (or F9).
+        // A capture makes the game crawl, so anything that wants the game at FULL SPEED first (the
+        // RNG probe needs 600 sim frames, which is ten seconds at 60 fps and five minutes at 2)
+        // has to be able to say WHEN. Without this the only way to get a quiet game was not to
+        // inject at all, which meant a second launch.
+        char mv[8] = {0};
+        if (GetEnvironmentVariableA("D3DCAP_MANUAL", mv, sizeof(mv)) && mv[0] == '1') {
+            g_manual = true;
+            logf("[init] MANUAL arm: nothing is captured until the ARM file appears");
+        }
+    }
     {   // D3DCAP_BURST=<n>: record n CONSECUTIVE frames per arm instead of one.
         char env[32] = {0};
         DWORD n = GetEnvironmentVariableA("D3DCAP_BURST", env, sizeof(env));
@@ -1621,8 +1634,14 @@ static DWORD WINAPI worker(LPVOID) {
             while (GetAsyncKeyState(VK_F9) & 0x8000) Sleep(20);
         } else if (GetFileAttributesA(armPath) != INVALID_FILE_ATTRIBUTES) {
             DeleteFileA(armPath); why = "ARM";
-        } else if (GetTickCount64() - last >= AUTO_MS && shots < MAX_SHOTS && !g_burstDone) {
-            why = "auto";
+            InterlockedExchange(&g_wantBurst, 1);
+        } else if ((!g_manual || g_wantBurst) && GetTickCount64() - last >= AUTO_MS
+                   && shots < MAX_SHOTS && !g_burstDone) {
+            // ⚠ ONE ARM IS NOT ENOUGH IN MANUAL MODE. The armed frame can easily land on a round
+            // banner or a menu, which fails the in-match gate and abandons the burst -- and with
+            // nothing on a timer, the run would strand there looking like it was still recording.
+            // Once told to burst, keep retrying every second until one completes.
+            why = "retry";
         }
         if (why) { last = GetTickCount64(); ++shots; InterlockedExchange(&g_armDraws, 1); }
         Sleep(4);
