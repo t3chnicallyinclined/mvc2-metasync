@@ -29,8 +29,15 @@ export async function loadPack(url) {
  * and one uniform buffer holding a 256-byte-aligned slice per draw. After this, rendering a frame is
  * pure state-setting plus drawIndexed.
  */
-export function createResources(device, pack) {
+export function createResources(device, pack, shared = null) {
     const { head, slice } = pack;
+    // A SEQUENCE hands the same `shared` object to every frame. Frames of one burst overwhelmingly
+    // bind the same textures and samplers -- the stage art is uploaded once for the whole match
+    // segment, and only the character tiles that actually changed are uploaded again. Without this,
+    // 90 frames re-upload the same stage pages 90 times and the playback stalls on upload, not draw.
+    // Keyed by the pack's own texture key ("pointer#generation"), which IS a content identity.
+    const texShared = shared?.textures ?? null;
+    const sampShared = shared?.samplers ?? null;
 
     // ── geometry ─────────────────────────────────────────────────────────────────────────────────
     // The captured VB is 2 MiB of which only ~91 KB is referenced, but uploading it whole keeps every
@@ -52,8 +59,10 @@ export function createResources(device, pack) {
     // r8unorm INDEX tile averages palette indices; since the palette is 16 banks of 16, an averaged
     // index lands in a different bank entirely. That looks like "wrong colours", not "wrong mip".
     // Going via copyExternalImageToTexture would also colour-manage data that is not a colour.
-    const textures = new Map();
+    const textures = texShared ?? new Map();
+    let uploaded = 0;
     for (const [ptr, t] of Object.entries(head.textures)) {
+        if (textures.has(ptr)) continue;
         const tex = device.createTexture(textureDescriptor(t));
         const bytesPerPixel = toTextureFormat(t.fmt) === 'r8unorm' ? 1 : 4;
         device.queue.writeTexture(
@@ -63,6 +72,7 @@ export function createResources(device, pack) {
             { width: t.w, height: t.h },
         );
         textures.set(ptr, { tex, view: tex.createView(), ...t });
+        uploaded++;
     }
 
     // A 1x1 opaque white stand-in for slots a draw does not bind. The bind group layout is fixed, so
@@ -78,7 +88,7 @@ export function createResources(device, pack) {
     // ── samplers ─────────────────────────────────────────────────────────────────────────────────
     // Sampler state is PER DRAW (measured: 1008 linear+clamp, 368 point+clamp, 22 point+repeat,
     // 3 linear+repeat). Deduped by the captured descriptor so we create ~4, not ~1000.
-    const samplers = new Map();
+    const samplers = sampShared ?? new Map();
     const getSampler = (desc) => {
         const key = desc ? `${desc.filter}:${desc.u}:${desc.v}:${desc.w}` : 'null';
         let s = samplers.get(key);
@@ -140,7 +150,7 @@ export function createResources(device, pack) {
     device.queue.writeBuffer(uniformBuffer, 0, uniformData);
 
     return {
-        head, vertexBuffer, indexBuffer, textures, dummyView, getSampler,
+        head, vertexBuffer, indexBuffer, textures, dummyView, getSampler, uploaded,
         uniformBuffer, uniformStride: UNIFORM_STRIDE, missing,
         texFor: (ptr) => (ptr && textures.has(ptr) ? textures.get(ptr).view : dummyView),
     };

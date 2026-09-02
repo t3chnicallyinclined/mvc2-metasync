@@ -15,12 +15,18 @@
 #   -Analyze     skip launching; just analyse whatever is already in %TEMP%\rrcap
 #   -Keep        do not wipe previous captures first
 #   -Minutes N   give up after N minutes of play (default 10)
+#   -Burst N     record N CONSECUTIVE frames instead of one, then pack them into a playable
+#                sequence. This is what turns a still into a replay. 90 frames is ~1.5 seconds of
+#                match at 60 fps. The game WILL hitch while the burst records -- it is copying every
+#                dirty texture and both index/vertex buffers every frame -- so start the burst on the
+#                action you want, not before it.
 
 [CmdletBinding()]
 param(
     [switch]$Analyze,
     [switch]$Keep,
-    [int]$Minutes = 10
+    [int]$Minutes = 10,
+    [int]$Burst = 0
 )
 
 $ErrorActionPreference = 'Stop'
@@ -61,6 +67,14 @@ if (-not $Analyze) {
     if (-not $Keep -and (Test-Path $capDir)) {
         Say "[prep] clearing previous captures"
         Remove-Item "$capDir\*" -Force -ErrorAction SilentlyContinue
+    }
+
+    # The shim reads this before it installs any hook; the launched process inherits it.
+    if ($Burst -gt 1) {
+        $env:D3DCAP_BURST = "$Burst"
+        Say "[burst] recording $Burst CONSECUTIVE frames per arm" Cyan
+    } else {
+        Remove-Item Env:\D3DCAP_BURST -ErrorAction SilentlyContinue
     }
 
     Say "[build] compiling d3dcap..."
@@ -114,6 +128,14 @@ if (-not $Analyze) {
 
     Say ""
     Say "==============================================================================" Cyan
+    if ($Burst -gt 1) {
+        Say " NOW: go into MvC2 -> TRAINING and get to the action you want to replay." Cyan
+        Say " The burst arms ~3s after the match starts and records $Burst CONSECUTIVE frames" Cyan
+        Say " (~$([math]::Round($Burst / 60.0, 1))s at 60fps). The game WILL hitch during it - that is" Cyan
+        Say " the capture copying every dirty texture and both buffers, every frame." Cyan
+        Say "==============================================================================" Cyan
+        Say ""
+    } else {
     Say " NOW: go into MvC2 -> TRAINING, and FIGHT. Land a combo, throw a super." Cyan
     Say " Character select does NOT count - it looks like gameplay to the draw" Cyan
     Say " counter but binds only ~22 textures, so it is rejected automatically." Cyan
@@ -121,6 +143,7 @@ if (-not $Analyze) {
     Say " as it has ONE complete gameplay frame, then prints the analysis." Cyan
     Say "==============================================================================" Cyan
     Say ""
+    }
 
     $stop = (Get-Date).AddMinutes($Minutes)
     $script:matchSeen = $false
@@ -161,8 +184,29 @@ if (-not $Analyze) {
                 Say ""
             }
         }
+        if ($Burst -gt 1) {
+            # A burst is CONSECUTIVE frame numbers. Wait until one run of that length exists rather
+            # than for a fixed time, so the recording is never cut in half.
+            $ids = @(Get-ChildItem "$capDir\frame_*.ndjson" -ErrorAction SilentlyContinue |
+                     Where-Object { $_.Length -gt 0 } |
+                     ForEach-Object { [int]($_.BaseName -replace 'frame_', '') } | Sort-Object)
+            $run = 0; $best = 0; $prev = -99
+            foreach ($i in $ids) { if ($i -eq $prev + 1) { $run++ } else { $run = 1 }; $prev = $i
+                                   if ($run -gt $best) { $best = $run } }
+            if ($best -ge $Burst - 2) { Say "[burst] $best consecutive frames on disk" Green; break }
+            continue
+        }
         if ($script:matchSeen -and (Get-Date) -gt $script:extraUntil) { break }
     }
+}
+
+if ($Burst -gt 1) {
+    Say ""
+    Say "==============================================================================" Cyan
+    Say " SEQUENCE" Cyan
+    Say "==============================================================================" Cyan
+    & python (Join-Path $here 'replay\pack_sequence.py')
+    exit $LASTEXITCODE
 }
 
 Say ""

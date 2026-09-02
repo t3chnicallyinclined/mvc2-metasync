@@ -40,6 +40,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         '.js': 'text/javascript',
         '.wgsl': 'text/plain',
         '.pack': 'application/octet-stream',
+        '.seq': 'application/octet-stream',
         '.bmp': 'image/bmp',
         '.json': 'application/json',
     }

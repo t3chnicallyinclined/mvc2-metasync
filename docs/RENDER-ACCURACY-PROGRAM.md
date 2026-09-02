@@ -1727,3 +1727,67 @@ The viewer's standing warning "3 draws without a world matrix ... WILL be wrong"
 those three are `vs_flat` draws, and `vs_flat` is a pass-through that declares no constant buffer at
 all. The warning now only counts draws that actually need matrices — a permanent false warning is
 how a real one gets ignored.
+
+---
+
+## 2026-09-02 — burst capture and sequence playback
+
+A single frame proves the renderer; a run of consecutive frames is a replay. Three pieces:
+
+### 1. `collect.ps1 -Burst N` — N consecutive frames per arm
+
+`D3DCAP_BURST=<n>` makes the shim record n consecutive frames instead of one. The Present hook
+continues the burst **in the same call** rather than leaving it to the arm path, which is an
+`else if` — re-arming there would record every OTHER frame, and a playback of every other frame is
+not a playback of the match.
+
+Three things make a burst affordable, none of them optional:
+
+* **the texture version table is kept alive across the burst.** A texture is re-snapshotted only when
+  the game actually rewrites it, so the stage art is dumped once for the whole segment and only the
+  character tiles — which really do change every frame — are dumped again. This is the machinery
+  built for the (refuted) stale-texture hypothesis finally earning its keep.
+* **buffers are dumped only up to the highest byte any draw touched.** The vertex buffer is 2 MiB and
+  a frame reads ~220 KB of it; dumping it whole costs 240 MB for two seconds of match. A PREFIX is
+  safe where a slice would not be, because the offline tools index by absolute byte offset.
+* **the 8 MB scene-RT BMP and the backbuffer are written for the first frame only.** One ground truth
+  proves the sequence renders correctly; the rest of the burst is what makes it a playback.
+
+A frame that fails the in-match gate ends the burst — half a burst of menu frames is not a playback.
+
+### 2. `pack_sequence.py` — merge, don't reimplement
+
+It runs the real `pack_replay.py` once per frame and merges the results, because that packer carries
+every gate that makes a frame trustworthy (strip→list with the odd-triangle swap, byte-offset vertex
+binding, per-frame texture lookup, shader classification from disassembly, the texture-coverage
+assertion, the BORDER refusal). A second packer would drift, and the drift would surface as a subtly
+wrong replay months later.
+
+Every payload is deduped by content hash across the burst, and each frame's head is the head
+`pack_replay.py` produced with its blob offsets rewritten into the shared pool — so the player hands
+a frame straight to the same `createResources()` the single-frame viewer uses. No second code path.
+
+Container: `"RRSQ" u32:headLen head(JSON) <blob pool>`. Gitignored, like `.pack` — ROM-derived.
+
+### 3. `player.html` — playback
+
+One `Replayer` is built once; `setFrame()` swaps only the vertex/index buffers and the per-draw
+uniform slice. The pipeline cache survives because its key is content-derived (shader hash, layout
+hash, blend/depth/raster state), and the bind-group cache survives because its key is the texture's
+`pointer#generation`, which IS a content identity — with a shared texture map guaranteeing one view
+per content.
+
+Playback **blits** the scene RT to the canvas through a 3-vertex fullscreen pass that crops to the
+game's `(384,32)+1280x960` viewport. It must not use `copyTextureToBuffer`: that is the diff path, it
+stalls on a GPU sync, and at 60 fps it turns a 2 ms render into a 30 ms frame. Render targets are now
+reused across calls rather than reallocated — 16 MB per frame handed to the GC otherwise.
+
+Play/pause, frame step, scrub, loop, and 60/30/15/6 fps. Space and the arrow keys work.
+
+### Verified so far
+
+The container round-trips: on a 6-frame test sequence every blob range lands inside the pool, every
+texture payload is exactly `w*h*bpp`, every draw's index range lies inside its frame's index buffer,
+and every vertex fetch lands inside its frame's vertex buffer. The module graph imports clean. The
+playback itself is unproven until a burst is captured — this is scaffolding plus one validated
+container, not a demonstrated replay.

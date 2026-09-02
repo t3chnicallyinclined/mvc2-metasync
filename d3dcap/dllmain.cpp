@@ -60,6 +60,23 @@ static PFN_DrawInstanced        oDrawI    = nullptr;
 static volatile LONG g_arm = 0, g_shot = 0;
 static volatile LONG cDrawIdx = 0, cDraw = 0, cDrawIdxI = 0, cDrawI = 0;
 static unsigned g_frame = 0;
+
+// -- BURST CAPTURE --------------------------------------------------------------------------------
+// One frame proves the renderer; a SEQUENCE of consecutive frames is what makes a playback. Set
+// D3DCAP_BURST=<n> before launching and each arm records n CONSECUTIVE frames instead of one.
+//
+// Three things make a burst affordable that a naive "just capture every frame" would not:
+//   * the texture version table is kept ALIVE across the burst, so a texture is re-snapshotted only
+//     when the game actually rewrites it. The stage art is dumped once for the whole burst; only the
+//     character tiles, which really do change every frame, are re-dumped.
+//   * vertex and index buffers are dumped only up to the HIGHEST BYTE any draw in the frame touched.
+//     The game's vertex buffer is 2 MiB and a frame uses ~220 KB of it; dumping it whole would cost
+//     240 MB for two seconds of match.
+//   * the 8 MB scene-RT BMP and the backbuffer PNG are written for the FIRST frame of the burst only.
+//     They are the diff's ground truth, and one is enough to prove the sequence renders correctly.
+static unsigned g_burst = 1;            // frames per arm; from D3DCAP_BURST
+static unsigned g_burstLeft = 0;        // frames still to record in the current burst
+static unsigned g_burstFirst = 0;       // frame number the current burst started on
 static char g_dir[MAX_PATH] = {0};
 
 static uintptr_t g_imgBase = 0, g_imgSize = 0, g_renderer = 0;
@@ -80,7 +97,7 @@ static void logf(const char* fmt, ...) {
 }
 
 // forward declarations; all defined further down in this file.
-static void noteBuf(ID3D11Buffer* b, const char* tag);
+static void noteBuf(ID3D11Buffer* b, const char* tag, UINT usedEnd = 0);
 static unsigned noteTexVersioned(ID3D11DeviceContext* c, ID3D11Resource* r);
 static void markTexDirty(ID3D11Resource* r);
 static void noteRT(ID3D11Resource* r);
@@ -302,7 +319,16 @@ static void dumpDraw(ID3D11DeviceContext* ctx, const char* kind, UINT count, UIN
     ID3D11Buffer* vb = nullptr; UINT stride = 0, offset = 0;
     ctx->IAGetVertexBuffers(0, 1, &vb, &stride, &offset);
     UINT vbBytes = 0;
-    if (vb) { D3D11_BUFFER_DESC bd = {}; vb->GetDesc(&bd); vbBytes = bd.ByteWidth; noteBuf(vb, "vb"); }
+    if (vb) {
+        D3D11_BUFFER_DESC bd = {};
+        vb->GetDesc(&bd);
+        vbBytes = bd.ByteWidth;
+        // The draw reads vertices [start, start+count) at `stride` bytes each from `offset`. For a
+        // DrawIndexed the indices could name any vertex, so those fall back to the whole buffer.
+        UINT end = (kind[4] == 'I') ? bd.ByteWidth : offset + (start + count) * stride;
+        if (end > bd.ByteWidth) end = bd.ByteWidth;
+        noteBuf(vb, "vb", end);
+    }
     fprintf(g_out, ",\"vb\":\"%p\",\"stride\":%u,\"voff\":%u,\"vbytes\":%u",
             (void*)vb, stride, offset, vbBytes);
     if (vb) vb->Release();
@@ -845,6 +871,17 @@ static void releaseCapTex() {
     g_texWrites = g_texRewrites = 0;
 }
 
+// End of a captured FRAME. During a burst the version table must SURVIVE: it is what makes a texture
+// re-dump only when the game rewrote it, which is the whole reason a burst fits on disk.
+static void endFrameTex() {
+    if (g_burstLeft) {
+        for (int i = 0; i < g_nTexSnap; ++i) if (g_texSnap[i].stg) g_texSnap[i].stg->Release();
+        g_nTexSnap = 0;
+        return;
+    }
+    releaseCapTex();
+}
+
 static void dumpCapturedTextures(ID3D11Device* dev, ID3D11DeviceContext* ctx, unsigned frame) {
     logf("[tex] %d distinct textures, %u writes seen this frame, %u of them rewrote a texture a draw "
          "had already sampled, %d snapshots to write",
@@ -872,7 +909,7 @@ static void dumpCapturedTextures(ID3D11Device* dev, ID3D11DeviceContext* ctx, un
             ctx->Unmap(stg, 0);
         }
     }
-    releaseCapTex();
+    endFrameTex();
 }
 
 
@@ -883,18 +920,25 @@ static void dumpCapturedTextures(ID3D11Device* dev, ID3D11DeviceContext* ctx, un
 // Dynamic buffers cannot be Mapped for READ, so each is copied into a STAGING buffer first.
 // We also grab the index buffer and VS constant buffer 0 -- the latter is where a projection matrix
 // would live, which is what tells us whether vertex positions are already in clip space.
-struct CapBuf { ID3D11Buffer* buf; const char* tag; };
+struct CapBuf { ID3D11Buffer* buf; const char* tag; UINT used; };
 static CapBuf g_capBufs[12];
 static int    g_nCapBufs = 0;
 static volatile LONG g_bufDumps = 0;
-static const LONG MAX_BUF_DUMPS = 6;   // 2 MiB a piece -- do not fill the disk
+static LONG MAX_BUF_DUMPS = 6;   // raised to cover a burst; see D3DCAP_BURST
 
-static void noteBuf(ID3D11Buffer* b, const char* tag) {
+// `used` is the highest byte any draw this frame reads from the buffer. Dumping only that prefix is
+// what keeps a burst on disk: the vertex buffer is 2 MiB and a frame touches ~220 KB of it.
+static void noteBuf(ID3D11Buffer* b, const char* tag, UINT usedEnd) {
     if (!b || g_nCapBufs >= 12) return;
-    for (int i = 0; i < g_nCapBufs; ++i) if (g_capBufs[i].buf == b) return;
+    for (int i = 0; i < g_nCapBufs; ++i)
+        if (g_capBufs[i].buf == b) {
+            if (usedEnd > g_capBufs[i].used) g_capBufs[i].used = usedEnd;
+            return;
+        }
     b->AddRef();
     g_capBufs[g_nCapBufs].buf = b;
     g_capBufs[g_nCapBufs].tag = tag;
+    g_capBufs[g_nCapBufs].used = usedEnd;
     ++g_nCapBufs;
 }
 
@@ -907,8 +951,8 @@ static void dumpCapturedBuffers(IDXGISwapChain* sc, unsigned frame) {
     // ⚠ Every early return MUST release the textures noted this frame. They each hold a D3D
     // reference; leaking them once per frame exhausts the device and crashes the game (observed on
     // character select, which notes far more textures than a match does).
-    if (!g_nCapBufs) { releaseCapTex(); return; }
-    if (InterlockedIncrement(&g_bufDumps) > MAX_BUF_DUMPS) { releaseCapBufs(); releaseCapTex(); return; }
+    if (!g_nCapBufs) { endFrameTex(); return; }
+    if (InterlockedIncrement(&g_bufDumps) > MAX_BUF_DUMPS) { releaseCapBufs(); endFrameTex(); return; }
 
     ID3D11Device* dev = nullptr;
     ID3D11DeviceContext* ctx = nullptr;
@@ -942,11 +986,15 @@ static void dumpCapturedBuffers(IDXGISwapChain* sc, unsigned frame) {
                 char path[MAX_PATH];
                 _snprintf_s(path, sizeof(path), _TRUNCATE, "%s\\buf_%u_%s_%p.bin",
                             g_dir, frame, g_capBufs[i].tag, (void*)b);
+                UINT n = g_capBufs[i].used ? g_capBufs[i].used : bd.ByteWidth;
+                if (n > bd.ByteWidth) n = bd.ByteWidth;
                 FILE* f = nullptr;
                 if (fopen_s(&f, path, "wb") == 0 && f) {
-                    fwrite(m.pData, 1, bd.ByteWidth, f);
+                    // Only the prefix any draw actually reads. The offline tools index this buffer by
+                    // absolute byte offset, so a PREFIX is safe where a slice would not be.
+                    fwrite(m.pData, 1, n, f);
                     fclose(f);
-                    logf("[buf] %s %p -> %u bytes", g_capBufs[i].tag, (void*)b, bd.ByteWidth);
+                    logf("[buf] %s %p -> %u of %u bytes", g_capBufs[i].tag, (void*)b, n, bd.ByteWidth);
                 }
                 ctx->Unmap(stg, 0);
             } else {
@@ -1147,7 +1195,11 @@ static HRESULT STDMETHODCALLTYPE hkPresent(IDXGISwapChain* sc, UINT si, UINT fla
     // Present(N) holds frame N -- so closing the inventory and grabbing the shot here makes the
     // .ndjson and the .bmp describe the SAME frame.
     if (g_capturing) {
-        captureBackbuffer(sc, g_frame);
+        // The heavy ground-truth grabs are worth one frame of a burst, not every frame: the scene RT
+        // is an 8 MB BMP and the backbuffer another full copy. One is enough to prove the sequence
+        // renders correctly, and the rest of the burst is what makes it a PLAYBACK.
+        const bool firstOfBurst = (g_frame == g_burstFirst);
+        if (firstOfBurst) captureBackbuffer(sc, g_frame);
         g_capturing = false;
         if (g_out) { fclose(g_out); g_out = nullptr; }
         // Only spend a dump slot on a GAMEPLAY frame. Measured: menus/char-select run 13-266 draws
@@ -1164,20 +1216,42 @@ static HRESULT STDMETHODCALLTYPE hkPresent(IDXGISwapChain* sc, UINT si, UINT fla
             // chain, so diffing against it would only prove that bloom exists. The scene RT is bound
             // for the whole sprite pass and never rebound in the frame, so Present is a valid
             // snapshot point -- no pass-boundary hook needed.
-            ID3D11Device* sdev = nullptr;
-            ID3D11DeviceContext* sctx = nullptr;
-            if (SUCCEEDED(sc->GetDevice(__uuidof(ID3D11Device), (void**)&sdev)) && sdev) {
-                sdev->GetImmediateContext(&sctx);
-                if (sctx) { captureSceneRT(sdev, sctx, g_frame); sctx->Release(); }
-                sdev->Release();
+            if (firstOfBurst) {
+                ID3D11Device* sdev = nullptr;
+                ID3D11DeviceContext* sctx = nullptr;
+                if (SUCCEEDED(sc->GetDevice(__uuidof(ID3D11Device), (void**)&sdev)) && sdev) {
+                    sdev->GetImmediateContext(&sctx);
+                    if (sctx) { captureSceneRT(sdev, sctx, g_frame); sctx->Release(); }
+                    sdev->Release();
+                }
             }
             dumpCapturedBuffers(sc, g_frame);
         } else {
             releaseCapBufs();
+            // A frame that fails the in-match gate ends the burst: whatever we were recording is not
+            // a match any more, and half a burst of menu frames is not a playback.
+            g_burstLeft = 0;
             releaseCapTex();
             g_nRtSeen = 0;
         }
-        logf("[cap] frame %u inventory: %u draws", g_frame, g_drawIdx);
+        logf("[cap] frame %u inventory: %u draws%s", g_frame, g_drawIdx,
+             g_burstLeft ? "  (burst)" : "");
+
+        // Continue the burst IN THIS Present. The arm path below is an `else if`, so leaving it to
+        // re-arm would record every OTHER frame -- and a playback of every other frame is not a
+        // playback of the match.
+        if (g_burstLeft) {
+            --g_burstLeft;
+            char path[MAX_PATH];
+            _snprintf_s(path, sizeof(path), _TRUNCATE, "%s\\frame_%u.ndjson", g_dir, g_frame + 1);
+            if (fopen_s(&g_out, path, "wb") == 0 && g_out) {
+                g_drawIdx = 0; g_capturing = true; g_ncbWritten = 0; g_nRtSeen = 0;
+            g_burstFirst = g_frame + 1;
+            g_burstLeft = g_burst > 1 ? g_burst - 1 : 0;
+            } else {
+                g_burstLeft = 0;
+            }
+        }
     } else if (InterlockedExchange(&g_armDraws, 0)) {
         char path[MAX_PATH];
         _snprintf_s(path, sizeof(path), _TRUNCATE, "%s\\frame_%u.ndjson", g_dir, g_frame + 1);
@@ -1285,13 +1359,29 @@ static DWORD WINAPI worker(LPVOID) {
     if (!g_installed) logf("[init] ⚠ creation hook never fired -- injected AFTER device creation. "
                            "Shader/layout coverage will be incomplete; relaunch via collect.ps1.");
 
-    const ULONGLONG AUTO_MS = 8000;
-    const unsigned  MAX_SHOTS = 60;
+    {   // D3DCAP_BURST=<n>: record n CONSECUTIVE frames per arm instead of one.
+        char env[32] = {0};
+        DWORD n = GetEnvironmentVariableA("D3DCAP_BURST", env, sizeof(env));
+        if (n && n < sizeof(env)) {
+            int v = atoi(env);
+            if (v > 1) g_burst = (unsigned)v;
+        }
+        // Every frame of a burst needs its buffers dumped, so the budget has to cover one whole
+        // burst plus the usual singles. Without this the burst silently records draw lists whose
+        // vertex data was never written.
+        MAX_BUF_DUMPS = (LONG)g_burst + 6;
+    }
+    const ULONGLONG AUTO_MS = g_burst > 1 ? 3000 : 8000;
+    const unsigned  MAX_SHOTS = g_burst > 1 ? 1 : 60;
     char armPath[MAX_PATH];
     _snprintf_s(armPath, sizeof(armPath), _TRUNCATE, "%s\\ARM", g_dir);
     ULONGLONG last = GetTickCount64();
     unsigned shots = 0;
-    logf("[init] ready -- capture every %llus (max %u)", AUTO_MS / 1000, MAX_SHOTS);
+    if (g_burst > 1)
+        logf("[init] ready -- BURST mode: %u consecutive frames per arm, buffer budget %ld frames",
+             g_burst, MAX_BUF_DUMPS);
+    else
+        logf("[init] ready -- capture every %llus (max %u)", AUTO_MS / 1000, MAX_SHOTS);
 
     for (;;) {
         probeSample();

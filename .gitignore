@@ -101,3 +101,6 @@ docs/BTCPAY-ECONOMY-STUDY.md
 # d3dcap replay working images: every one is ROM-derived (rendered from captured MvC2 pixels).
 # BYOR -- these are for looking at locally and must never be committed.
 /d3dcap/replay/*.png
+
+# d3dcap sequences: a burst of captured frames, ROM-derived like the .pack files.
+/d3dcap/replay/*.seq

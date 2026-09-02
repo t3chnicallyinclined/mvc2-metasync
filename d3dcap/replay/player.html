@@ -1,0 +1,174 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Path B — MvC2 sequence playback</title>
+<style>
+  :root { color-scheme: dark; }
+  body { margin: 0; background: #16181c; color: #d6dae0;
+         font: 13px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+  header { display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
+           padding: 10px 16px; background: #1d2026; border-bottom: 1px solid #2b2f36; }
+  h1 { font-size: 13px; margin: 0; letter-spacing: .08em; color: #8fd6ff; font-weight: 600; }
+  button, input[type=text] { font: inherit; background: #262b33; color: #d6dae0;
+           border: 1px solid #39404a; border-radius: 4px; padding: 5px 12px; }
+  button:hover:not(:disabled) { background: #2f3640; border-color: #4a5563; }
+  button:disabled { opacity: .4; }
+  button.on { background: #1f3b52; border-color: #3d7fae; color: #cfe9ff; }
+  main { padding: 16px; display: flex; flex-direction: column; gap: 12px; align-items: flex-start; }
+  canvas { width: 1280px; max-width: calc(100vw - 32px); height: auto; aspect-ratio: 4 / 3;
+           background: #000; border: 1px solid #2b2f36; image-rendering: pixelated; }
+  .scrub { display: flex; align-items: center; gap: 10px; width: 1280px; max-width: calc(100vw - 32px); }
+  input[type=range] { flex: 1; accent-color: #3d7fae; }
+  .readout { color: #7e8894; }
+  .readout b { color: #d6dae0; font-weight: 600; }
+  pre { margin: 0; white-space: pre-wrap; color: #7e8894; max-width: 1280px; }
+  .warn { color: #e0b657; } .err { color: #e06c75; } .ok { color: #86c98a; }
+</style>
+
+<header>
+  <h1>PATH B — SEQUENCE PLAYBACK</h1>
+  <label>seq <input id="seq" type="text" value="" size="20"></label>
+  <button id="load">Load</button>
+  <button id="play" disabled>▶ Play</button>
+  <button id="prev" disabled>◀ step</button>
+  <button id="next" disabled>step ▶</button>
+  <button id="loop" class="on">loop</button>
+  <label>speed
+    <select id="speed">
+      <option value="1">60 fps (real time)</option>
+      <option value="2">30 fps</option>
+      <option value="4">15 fps</option>
+      <option value="10">6 fps</option>
+    </select>
+  </label>
+</header>
+
+<main>
+  <canvas id="cv" width="1280" height="960"></canvas>
+  <div class="scrub">
+    <input id="pos" type="range" min="0" max="0" value="0" disabled>
+    <span class="readout" id="readout">—</span>
+  </div>
+  <pre id="log"></pre>
+</main>
+
+<script type="module">
+import { SequencePlayer } from './player.mjs';
+
+const $ = (id) => document.getElementById(id);
+const log = (m, cls = '') => {
+  const s = document.createElement('span');
+  if (cls) s.className = cls;
+  s.textContent = m + '\n';
+  $('log').appendChild(s);
+};
+
+let player = null, playing = false, raf = 0, tick = 0;
+
+// pack_sequence.py writes sequences.json, newest first, because serve.py answers "/" with
+// index.html rather than a directory listing — there is nothing to scrape.
+(async () => {
+  try {
+    const list = await (await fetch('./sequences.json', { cache: 'no-store' })).json();
+    if (list.length) {
+      $('seq').value = list[0].file;
+      if (list.length > 1) {
+        log(`${list.length} sequences available: ` +
+            list.map((s) => `${s.file} (${s.mb} MB)`).join(', '));
+      }
+    }
+  } catch { /* a convenience, not a requirement — type the filename */ }
+  if (!$('seq').value) $('seq').value = 'sequence.seq';
+})();
+
+async function boot() {
+  if (!navigator.gpu) throw new Error('WebGPU unavailable — needs Chrome/Edge 113+ with hardware GPU');
+  const adapter = await navigator.gpu.requestAdapter();
+  if (!adapter) throw new Error('no WebGPU adapter');
+  const device = await adapter.requestDevice();
+  device.addEventListener('uncapturederror', (e) => log(`GPU error: ${e.error.message}`, 'err'));
+  const cv = $('cv');
+  const ctx = cv.getContext('webgpu');
+  const format = navigator.gpu.getPreferredCanvasFormat();
+  ctx.configure({ device, format, alphaMode: 'opaque' });
+  return { device, ctx, format };
+}
+
+let gpu = null;
+
+$('load').onclick = async () => {
+  try {
+    stop();
+    $('log').textContent = '';
+    gpu ??= await boot();
+    const url = $('seq').value.trim();
+    log(`loading ${url} …`);
+    player = await new SequencePlayer(gpu.device, gpu.format).load(url, (got, total) => {
+      $('readout').textContent = total
+        ? `${(100 * got / total).toFixed(0)}%  (${(got / 1048576).toFixed(1)} MB)`
+        : `${(got / 1048576).toFixed(1)} MB`;
+    });
+    const m = player.seq.meta;
+    log(`${player.count} frames (${m.first}..${m.first + m.count - 1}), ` +
+        `${(player.seq.bytes / 1048576).toFixed(1)} MB, ` +
+        `${(player.count / 60).toFixed(2)}s of match at 60 fps`, 'ok');
+
+    $('pos').max = player.count - 1;
+    $('pos').value = 0;
+    for (const id of ['play', 'prev', 'next', 'pos']) $(id).disabled = false;
+    show(0);
+    log('every frame is RE-RENDERED from Steam\'s own draw calls — this is not a video.');
+  } catch (e) {
+    log(String(e.message || e), 'err');
+  }
+};
+
+function show(i) {
+  const r = player.draw(i, gpu.ctx.getCurrentTexture().createView());
+  $('pos').value = player.index;
+  $('readout').innerHTML =
+    `frame <b>${player.frameNumber}</b> &nbsp; ${player.index + 1}/${player.count} &nbsp;·&nbsp; ` +
+    `<b>${r.drawn}</b> draws &nbsp;·&nbsp; <b>${r.ms.toFixed(1)}</b> ms` +
+    (r.uploaded ? ` &nbsp;·&nbsp; +${r.uploaded} new textures` : '');
+}
+
+function stop() {
+  playing = false;
+  cancelAnimationFrame(raf);
+  $('play').textContent = '▶ Play';
+  $('play').classList.remove('on');
+}
+
+$('play').onclick = () => {
+  if (playing) return stop();
+  playing = true;
+  tick = 0;
+  $('play').textContent = '⏸ Pause';
+  $('play').classList.add('on');
+  const step = () => {
+    if (!playing) return;
+    // The capture is 60 consecutive GAME frames. Advancing one per Nth display refresh plays it at
+    // real speed on a 60 Hz display, and slower on demand -- no interpolation, no dropped frames.
+    if (tick++ % Number($('speed').value) === 0) {
+      let next = player.index + 1;
+      if (next >= player.count) {
+        if (!$('loop').classList.contains('on')) return stop();
+        next = 0;
+      }
+      show(next);
+    }
+    raf = requestAnimationFrame(step);
+  };
+  raf = requestAnimationFrame(step);
+};
+
+$('prev').onclick = () => { stop(); show(player.index - 1); };
+$('next').onclick = () => { stop(); show(player.index + 1); };
+$('pos').oninput = () => { stop(); show(Number($('pos').value)); };
+$('loop').onclick = () => $('loop').classList.toggle('on');
+document.addEventListener('keydown', (e) => {
+  if (!player) return;
+  if (e.key === ' ') { e.preventDefault(); $('play').click(); }
+  if (e.key === 'ArrowLeft') $('prev').click();
+  if (e.key === 'ArrowRight') $('next').click();
+});
+</script>

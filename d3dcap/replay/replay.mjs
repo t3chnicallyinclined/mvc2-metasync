@@ -61,8 +61,18 @@ export class Replayer {
     }
 
     async load(url) {
-        this.pack = await loadPack(url);
-        this.res = createResources(this.device, this.pack);
+        return this.attach(await loadPack(url));
+    }
+
+    /**
+     * Attach an already-parsed pack. A SEQUENCE uses this: one Replayer is built once and then
+     * `setFrame` swaps only what differs per frame, so the shader module, the bind group layouts and
+     * the pipeline cache are all built once for the whole playback.
+     */
+    async attach(pack, shared = null) {
+        this.shared = shared;
+        this.pack = pack;
+        this.res = createResources(this.device, this.pack, shared);
         this.module = this.device.createShaderModule({
             // no-store: these files change between runs; a cached shader shows up as a bogus
             // "entry point doesn't exist" error rather than as a cache problem.
@@ -93,6 +103,25 @@ export class Replayer {
         this.width = rt.w;
         this.height = rt.h;
         return this;
+    }
+
+    /**
+     * Point the replayer at another frame of the same capture.
+     *
+     * Only the per-frame resources change: the vertex/index buffers and the per-draw uniform slice.
+     * The pipeline cache survives because its key is (shader hash, layout hash, blend/depth/raster
+     * state) -- all content-derived, none of it per frame. The bind-group cache survives because its
+     * key is the texture's "pointer#generation", which IS a content identity, and the shared texture
+     * map guarantees one view per content.
+     */
+    setFrame(pack) {
+        this.pack = pack;
+        this.res = createResources(this.device, pack, this.shared);
+        this.bg0 = this.device.createBindGroup({
+            layout: this.bgl0,
+            entries: [{ binding: 0, resource: { buffer: this.res.uniformBuffer, size: 160 } }],
+        });
+        return this.res.uploaded;
     }
 
     /** The draw's vertex layout, or null when its input layout cannot feed the shader. */
@@ -167,11 +196,16 @@ export class Replayer {
      */
     render(opts = {}) {
         const { head } = this.pack;
-        const target = this.device.createTexture({
+        // Reused across calls. Playback renders 60 of these a second; allocating a 2048x1024 colour
+        // target and a depth buffer per frame hands the GC 16 MB every 16 ms.
+        // TEXTURE_BINDING is here so a player can BLIT this to a canvas instead of reading it back --
+        // readback is right for a diff and far too slow for playback.
+        const target = this._target ??= this.device.createTexture({
             size: { width: this.width, height: this.height }, format: this.format,
-            usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC,
+            usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC
+                 | GPUTextureUsage.TEXTURE_BINDING,
         });
-        const depth = this.device.createTexture({
+        const depth = this._depth ??= this.device.createTexture({
             size: { width: this.width, height: this.height }, format: 'depth24plus-stencil8',
             usage: GPUTextureUsage.RENDER_ATTACHMENT,
         });
