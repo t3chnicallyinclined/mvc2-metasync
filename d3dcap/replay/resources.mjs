@@ -111,9 +111,18 @@ export function createResources(device, pack) {
     draws.forEach((d, i) => {
         const f = (i * UNIFORM_STRIDE) / 4;
         // CBWorld = VS cb0 (48 B). Identity is CORRECT for the fullscreen-quad draws.
-        if (!readF32(d.vscbHash?.[0], 0, 12, uniformData, f + 0, IDENT3x4)) missing.world++;
+        // ⚠ Only a vs_world draw NEEDS these. vs_flat is a pass-through that declares no constant
+        // buffer at all, so an absent matrix there is normal -- counting it produced a standing
+        // "3 draws without a world matrix ... WILL be wrong" warning about three draws that were
+        // perfectly fine, which is exactly the kind of noise that gets a real warning ignored.
+        const needsMatrices = d.vsVariant === 'vs_world';
+        if (!readF32(d.vscbHash?.[0], 0, 12, uniformData, f + 0, IDENT3x4) && needsMatrices) {
+            missing.world++;
+        }
         // CBViewProjection = VS cb1: fViewProj at +0 (64 B), fCameraPos at +64 (12 B)
-        if (!readF32(d.vscbHash?.[1], 0, 16, uniformData, f + 12, null)) missing.viewProj++;
+        if (!readF32(d.vscbHash?.[1], 0, 16, uniformData, f + 12, null) && needsMatrices) {
+            missing.viewProj++;
+        }
         readF32(d.vscbHash?.[1], 64, 3, uniformData, f + 28, null);
         // CBFog = PS cb2: fFogColor +0 (12 B), fFogDensity +12, fFogStart +24, fFogInvRange +28
         readF32(d.pscbHash?.[2], 0, 4, uniformData, f + 32, null);

@@ -1656,3 +1656,74 @@ involved: `fFogDensity = 0` on every stage draw in this frame too.
 
 That left edge is the next thread. `FOCUS=<draw> python verify_frame.py <frame>` prints the delta
 percentiles, bbox and mean colour for the pixels one draw owns.
+
+---
+
+## 2026-09-02 — PATH B IS PROVEN. The browser reproduces a Steam MvC2 frame.
+
+Frame 4360, replayed on WebGPU from the capture, diffed against Steam's own pre-bloom scene RT over
+the full 1280x960 viewport:
+
+```
+COVERAGE  we cover 1,228,761 px (99.997%)   truth covers 1,228,761 px (99.997%)
+          MISSING 0 px   spurious 0 px   missing bbox: none
+COLOUR    max |delta| B=238 G=238 R=255 A=0
+          mean |delta| B=0.631 G=0.428 R=0.669 A=0.000
+          differing 4,702 px (0.383%) at >1 LSB
+870 draws, 9 pipelines, 129 ms
+```
+
+**Geometry is exact — zero missing, zero spurious — and 99.617% of pixels are within 1 LSB.** The
+render is a complete MvC2 frame: both fighters, the assist, the 3D stage, the HUD, the hit counter,
+the lightning, the super meters.
+
+### The four bugs, in the order they were peeled off
+
+| # | Bug | Symptom | How it was found |
+| --- | --- | --- | --- |
+| 1 | `first = (voff + start*stride) // stride` folded a vertex buffer BYTE offset into a vertex INDEX | 382 of 760 draws (50.3%) fetched POSITION from the middle of the previous vertex; 25% of coverage gone | `verify_alpha.py` reproduced Steam's coverage exactly ⟹ the fault had to be in the pack |
+| 2 | `arrayStride` hardcoded to 40, layout not in the pipeline key | the 28-byte POSITION+NORMAL layout read at the wrong pitch | fell out of fixing #1 |
+| 3 | `glob("tex_*_…")[0]` matched the dump from EVERY captured frame | 21 of 223 textures loaded from other frames; character tiles change every frame ⟹ characters drawn as shards of a different animation frame | counted the candidate files per texture |
+| 4 | single-threaded `serve.py` | the page would not load at all; a wedged instance also blocked the next run from binding | Chrome's speculative pre-connects block `readline()` forever |
+
+A hypothesis that was **refuted** along the way, by the counter written to test it: "textures are
+rewritten mid-frame so the Present-time snapshot is stale". Zero rewrites across six frames. The
+versioning stays because it is correct rather than correct-by-luck, and the counter now settles that
+question on any frame without a debugging round.
+
+### What made the difference: separate the model from the plumbing, and coverage from colour
+
+Two changes turned a stalled investigation into four found bugs in one sitting.
+
+1. **CPU gates.** `verify_alpha.py` and `verify_frame.py` re-execute a captured frame in NumPy with
+   no GPU. *Python matches truth but the browser does not* ⟹ the bug is in the replayer. *Neither
+   matches* ⟹ the bug is in the model or the capture. That halves the search space on every question.
+2. **Report COVERAGE and COLOUR separately.** The single fused percentage let a geometry bug wear a
+   shading bug's clothes for two rounds: our target clears to `[0,0,0,0]` while truth ends at alpha
+   255 nearly everywhere, so every pixel we simply never covered tripped the threshold on alpha alone.
+
+`verify_frame.py` also scores each draw on the pixels where IT is the last writer, which converts
+"13.9% differing" into "these six draws are 100% wrong" — and `FOCUS=<draw>` prints one draw's delta
+percentiles, bbox and mean colour.
+
+### The one open defect: a missing character part
+
+4,627 of the 4,796 remaining differing pixels sit in three 64x64 blocks at crop `x = 0..64`,
+`y = 384..576` — **Cable's face**. Truth draws his head there; we draw the stage behind it. It is a
+colour disagreement, not a coverage one: those pixels ARE covered by us, just by the wrong draw.
+
+Measured, for whoever picks this up: the indexed draws near that region are `i = 573..578` (six
+26.7 px-wide quads forming a thin band at `y = 407..442`, each sampling only `uv [0, 0.25]` of a
+32x32 tile) and `i = 586/587/588` (the body, full `uv [0, 1]`). **Nothing in the captured draw list
+covers `x = 0..42, y = 442..557`**, which is where the face belongs. Either a part is missing from
+the capture or one of those thin quads should be sampling a larger sub-rect.
+
+Note the region touches the LEFT VIEWPORT EDGE and draw 573's quad starts at `x = -44`, off-screen.
+That is worth checking first.
+
+### Also fixed
+
+The viewer's standing warning "3 draws without a world matrix ... WILL be wrong" was a false alarm:
+those three are `vs_flat` draws, and `vs_flat` is a pass-through that declares no constant buffer at
+all. The warning now only counts draws that actually need matrices — a permanent false warning is
+how a real one gets ignored.
