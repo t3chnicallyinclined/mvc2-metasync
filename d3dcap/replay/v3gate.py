@@ -57,7 +57,21 @@ def emit_frame(blk, base, shape, x0, y0):
             slots[base + nd['off']] = nd['slot']
     skipped = Counter()
     drawn = 0
-    for nd in nodes:                                   # ⭐ walk order IS paint order
+    # ⭐⭐ PAINT ORDER IS DEPTH ORDER, NOT WALK ORDER. Steam's walker (FUN_1406129f0) submits each
+    # quad with z = base + 0.001*(k+1), the sink qsorts the whole pass by z DESCENDING with FIFO ties
+    # (comparator @0x1408434d0), and the D3D stream is that sorted list. Measured on the captures:
+    #   * within a body z FALLS along draw order (-2e-7/quad): record 0 is nearest -> drawn last;
+    #   * within a layer the LATER-registered node has the larger base (layerAcc += 0.001*parts per
+    #     node) -> it is BEHIND -> drawn before the earlier one;
+    #   * across layers the base is linear in the LAYER INDEX (0.979379 + 0.000359*L, residuals
+    #     ~5e-6 over layers 3..6; layer 0 sits below layer 3): lower layer = NEARER.
+    # So the painter order is: layers far->near, then REVERSE registration order within a layer,
+    # then reverse record order within a node. The DC table LayerZ (bank13 loc_8c1355dc) agrees
+    # with the measured index order on 0..7; it is the only evidence for 8..15 (8..11 nearest) --
+    # used here for those and FLAGGED, not measured.
+    LAYERZ = [15, 17, 19, 21, 23, 25, 27, 29, 10, 11, 12, 13, 30, 31, 32, 33]
+    order = sorted(range(len(nodes)), key=lambda i: (-LAYERZ[nodes[i]['layer']], -nodes[i]['idx']))
+    for nd in (nodes[i] for i in order):
         if nd['slot'] is not None:
             cid = blk[nd['off'] + H_CID]
             mir = bool(blk[nd['off'] + H_FACING])
@@ -77,7 +91,14 @@ def emit_frame(blk, base, shape, x0, y0):
         if not recs:
             skipped['%s sel %d' % (nm, nd['sid'] & 0x7fff)] += 1
             continue
-        ox, oy = nd['sx'] * TX, nd['sy'] * TY
+        # ⭐ THE ENGINE TRUNCATES THE 640x480 SCREEN COORD TO AN INTEGER BEFORE PLACING THE SPRITE.
+        # Measured: tile-solved origins are exactly 398, 511, 444, 433, 422, 446, 424 in 640-space
+        # while blk holds 398.2, 444.1, 433.6, 422.5, 446.25 -- 433.6->433 and 422.5->422, so it is
+        # truncation, not rounding. Using the float put every part up to 0.6 native px off, which
+        # showed up as 1-3k wrong-index pixels per frame with nothing missed or invented.
+        # floor() here; floor vs trunc differ only for NEGATIVE coords, which this data has not
+        # exercised -- flag, do not assume.
+        ox, oy = np.floor(nd['sx']) * TX, np.floor(nd['sy']) * TY
         for r in reversed(recs):
             p = parts.get(str(r['part']))
             if not p:

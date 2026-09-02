@@ -266,7 +266,15 @@ def main():
         fr_clock = int(r[C['frame']])
         if v3nodes:
             # v3: the order IS the payload. No sort below is applied; `kind` picks the atlas lookup.
-            for nd in v3nodes.get(fr_clock, ()):
+            # ⭐ PAINT ORDER IS DEPTH ORDER, NOT WALK ORDER (v3gate.py, 3 frames at 100.00%). Steam
+            # z-sorts every submitted quad, far to near: layers by LayerZ (lower index nearer for
+            # 0..7; 8..11 nearest per the DC table, flagged), then REVERSE registration order within
+            # a layer, then reverse record order within a node. The stream index is the registration
+            # order within its layer, so the key is (-LayerZ[layer], -index).
+            LAYERZ = [15, 17, 19, 21, 23, 25, 27, 29, 10, 11, 12, 13, 30, 31, 32, 33]
+            ordered = sorted(enumerate(v3nodes.get(fr_clock, ())),
+                             key=lambda t: (-LAYERZ[t[1]['layer'] & 15], -t[0]))
+            for _si, nd in ordered:
                 if nd['kind'] == 0:
                     cid = (p1 if nd['slot'] % 2 == 0 else p2)[nd['slot'] // 2]
                     mir = bool(nd['face'])
@@ -342,7 +350,9 @@ def main():
             if not recs:
                 missing['%s %s sel %d' % (at.name, kind, sid)] += 1
                 continue
-            ox, oy = tsx * TAPE_X, tsy * TAPE_Y
+            # engine truncates the 640x480 coord to an integer before placement (see v3gate.py);
+            # floor vs trunc for negatives is unmeasured -- flag
+            ox, oy = np.floor(tsx) * TAPE_X, np.floor(tsy) * TAPE_Y
             if a.flip_facing:
                 mir = not mir
 
