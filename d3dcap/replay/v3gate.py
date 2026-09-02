@@ -90,9 +90,19 @@ def paint_rotated(img, bmp, left, top, pw, ph, nd, ang, hot, mir, x0, y0):
     quad's bounding box back into the unrotated rect and sample nearest."""
     import math
     H, W = img.shape
-    sgn = -1.0 if mir else 1.0
-    Px, Py = math.floor(nd['sx']) + sgn * hot[0] / TX, math.floor(nd['sy']) + hot[1] / TY
-    th = (((-ang) if mir else ang) & 0xFFFF) * (2.0 * math.pi / 65536.0)
+    # sign-convention knobs for the gate to SETTLE (the disassembly gives the form; y-up vs y-down
+    # and the facing negation are exactly what pixels must decide): ROT_HX = 'face'|'pos'|'neg'
+    # (hotX sign), ROT_NEG = '1' (negate the angle when facing) | '0', ROT_DIR = '1' | '-1'
+    # (rotation sense), ROT_HSCALE = '640' (hot * 5/3, 15/7) | 'nat' (hot as-is in 640 space)
+    hx_mode = os.environ.get('ROT_HX', 'face')
+    sgn = (-1.0 if mir else 1.0) if hx_mode == 'face' else (1.0 if hx_mode == 'pos' else -1.0)
+    hs = (1.0 / TX, 1.0 / TY) if os.environ.get('ROT_HSCALE', '640') == '640' else (1.0, 1.0)
+    if os.environ.get('ROT_HK'):                      # explicit hotspot->640px factors "kx,ky"
+        hs = tuple(float(v) for v in os.environ['ROT_HK'].split(','))
+    Px, Py = math.floor(nd['sx']) + sgn * hot[0] * hs[0], math.floor(nd['sy']) + hot[1] * hs[1]
+    neg = os.environ.get('ROT_NEG', '1') == '1'
+    th = (((-ang) if (mir and neg) else ang) & 0xFFFF) * (2.0 * math.pi / 65536.0)
+    th *= float(os.environ.get('ROT_DIR', '1'))
     c, sn = math.cos(th), math.sin(th)
     # unrotated rect in 640-space
     L, T = left / TX, top / TY

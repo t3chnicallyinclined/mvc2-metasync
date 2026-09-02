@@ -1577,6 +1577,12 @@ static bool openFrame(unsigned frame) {
     g_nRtSeen = 0;
     g_frameTex = 0;
     markAllTexDirty();
+    // State snapshot at the START of this frame (= right after the previous Present). The offline
+    // reader pairs the draws of frame N with the block dumped by openFrame(N+1): the walker wrote
+    // frame N's screen coords during N's render and they are still intact here, while the draw
+    // list itself is only cleared at the start of the next registration. Proven on 30 frames
+    // including supers; the Present-time alternative is not (see hkPresent).
+    dumpBlk(frame);
     return true;
 }
 
@@ -1594,7 +1600,13 @@ static HRESULT STDMETHODCALLTYPE hkPresent(IDXGISwapChain* sc, UINT si, UINT fla
         // by exactly one frame of motion, and passed once paired with the NEXT snapshot. Reading at
         // Present pairs state and draws 1:1. (The draw-list array is still intact here: the counts
         // are cleared at the START of the next registration.)
-        dumpBlk(g_frame);
+        // ⚠⚠ THE STATE IS NOT DUMPED HERE ANY MORE -- see openFrame(). The Present-time dump was
+        // introduced to remove the one-frame staleness of the screen coords, and it worked for
+        // normal play (guided steps 1/2/4: 100.00%). During a SUPER it does not: every node in the
+        // list reads +0x170 == 0 and the fighters sit parked off-screen (-213,537)/(796,315) with
+        // constant sids for all 180 frames while Steam draws them moving (steps storm-hail and
+        // storm-lightning, 2026-09-02). The start-of-frame dump (openFrame(N+1), paired with the
+        // draws of frame N) was pixel-exact on 30 frames INCLUDING Hail Storm, so that is the point.
         // The heavy ground-truth grabs are worth one frame of a burst, not every frame: the scene RT
         // is an 8 MB BMP and the backbuffer another full copy. One is enough to prove the sequence
         // renders correctly, and the rest of the burst is what makes it a PLAYBACK.
