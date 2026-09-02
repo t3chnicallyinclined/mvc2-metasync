@@ -203,6 +203,66 @@ with "node = fighter-struct prefix", and unlike the retracted version it rests o
 measured independently of the histogram. ⚠ 12 vs 7.3 on n=17 is **suggestive, not conclusive** — it is
 the confirmed phase that makes the mapping trustworthy, not the hit count.
 
+### ⚠ The pointer-array reading was REFUTED by reading the values — and it exposed a sampling error
+
+`nodefields.py` classified every hot column across all 44 live nodes. **Everything from `+0x120`
+onward is ZERO, unanimous** — including `screenX`, `screenY`, `depth`, `zx`, `zy`, `facing`, `sid`,
+`gfx1`, `anim_state`, and the entire 8-byte-spaced run. So it is not a pointer array in these nodes.
+
+The contradiction with the histogram is the finding: **the node is a VARIANT.** Category `0x0B` uses
+only `+0x000..+0x120`. The hot columns past `+0x120` come from the OTHER ~243 slots — other
+categories. **The 44 nodes I sampled are not representative of the pool**, and reading a per-category
+layout off a pool-wide histogram was a mistake in the same family as the phase error.
+
+### ⭐ What the read DID find, and it is better
+
+```
++0x000  0x0B000000            the category byte at +0x03. Confirms the walk.
++0x008  ptr:blk, 44 distinct  the next link. Confirms the chain.
++0x018  0x140653CE0, 9 DISTINCT VALUES across 44 nodes
+        -> inside the EXE IMAGE. A PER-NODE HANDLER FUNCTION POINTER, and 9 handlers in this list.
++0x034  small int             the slot/player index
++0x050  61.3f  +0x054 -45.5f  real coordinates at the fighter-struct px/py offsets
++0x0A0  ptr, 28 distinct      a per-node resource, in neither blk nor the exe
++0x0F0  0x00010C11            a constant
+```
+
+Ghidra resolves `0x140653CE0` in one step. It is written by **`FUN_140653FD0` — a node CONSTRUCTOR**:
+
+```c
+if ((*(uint *)(i*0x738 + 0x4324 + DAT_142edf560) & 0x7000000) == 0) {   // gate on fighter i
+  node = FUN_14061DBE0(0, 0x0B, 1);                                     // <- THE POOL ALLOCATOR,
+  if (node) {                                                           //    category passed in
+    *(u8  *)(node + 0x170) = 1;                                         // drawn
+    *(u64 *)(node + 0x018) = &LAB_140653CE0;                            // <- the handler
+    *(u64 *)(node + 0x0A0) = *(PTR_DAT_142edf598 + 0x300);
+    *(u32 *)(node + 0x0F0) = 0x10C11;
+    *(u32 *)(node + 0x094) = *(node+0x098) = *(node+0x09C) = 0x3F800000; // 1.0f x3
+    *(char*)(node + 0x034) = (char)i;
+```
+
+**Every one of those matches the live read exactly** — `0x10C11` at `+0x0F0`, three `1.0f` at
+`+0x094/98/9C`, the slot index at `+0x034`, the handler at `+0x018`. Static code and live memory agree
+field for field, which is a far stronger cross-check than either alone.
+
+Two things are now named:
+* **`FUN_14061DBE0` is the pool allocator**, taking the CATEGORY as an argument. It has **40+ call
+  sites** — one per object type the game can spawn.
+* **`+0x18` is a per-node handler function pointer**, not a vtable. The object system is
+  "allocate a node, install its handler".
+
+### What this means for D2 (scoping the emitter)
+
+The emitter is **bounded and enumerable, but it is not small**: an allocator with ~40+ spawners, plus
+a handler per node class. ⚠ And a caution that matters for the whole architecture: **those handlers
+are game LOGIC — they update objects.** Porting them is porting a chunk of the game, which is exactly
+what a replay should not have to do.
+
+**So the question sharpens again:** for a REPLAY we do not need the spawners or the update logic. We
+need only the path that turns node STATE into draw commands. Is that a separate walk over the pool, or
+is drawing done inside the same handlers that update? **That is the next thing to establish, and it
+decides whether this ports or not.**
+
 There is also a **regular 8-byte-strided run of hot words from `+0x1A8` to `+0x228`** (17 entries) —
 the shape of a pointer table or an array inside the node. Unidentified; worth a look.
 
