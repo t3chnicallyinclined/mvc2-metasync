@@ -1062,9 +1062,8 @@ at all. Everything else now has both its pixels and its per-frame state identifi
 
 Everything below was established with state and pixels from the SAME frame (the shim now dumps `blk`
 at Present), verified against Steam's own draw stream, and where it mattered, read out of the Steam
-binary in Ghidra or the DC disassembly. `v3gate.py` is the falsifier: 30 state-carrying frames,
-**20 exact** (14 at 100.00%, six within 1–2 px); every remaining miss is in the super frames and has
-a named cause below.
+binary in Ghidra or the DC disassembly. `v3gate.py` is the falsifier: **30 state-carrying frames, 30 at
+100.000%** (`--rot180`), supers included — see 15.4 for what closed the last ten.
 
 ### 15.1 What is PROVEN (v3gate 100.00% on quiet frames)
 * **Placement law**: `origin = (floor(sx640)·3/5, floor(sy480)·7/15)` — the engine TRUNCATES the
@@ -1086,20 +1085,42 @@ a named cause below.
   1..15 under every palette (0 texels > 15 in 130k). This closes the "PL32 sub-row 2" gap.
 * **One pixel blob per character**: effect nodes inherit the owner's GFX1 pointer by struct copy
   (bank09) and share its GFX2 (+0x1B0 identical). The effect texels ARE in our atlases.
-* **`+0x148` bit 15 (DC `node+0x104`, the walker's rotation path)** ⇔ node absent from the
-  axis-aligned indexed stream: 370/0/0/24 over 30 frames, zero exceptions. Rotated sprites are
-  not tiles on Steam.
+* **`+0x148` (DC `node+0x104`) is a plain u16 ANGLE**, `0x10000 = 360°`, gated by `!= 0` (SH4
+  bank03 `loc_8c03481c`; NOT a bit-15 flag — the earlier "absent from the stream" reading was a
+  mis-attribution, see 15.4). Pivot = hotspot `+0x178/+0x17A`; facing negates the angle; every quad
+  corner rotates rigidly about the pivot AFTER placement (bank12 `loc_8C1244B0`). Every rotated
+  node captured holds exactly `0x8000` with hotspot (0,0) ⟹ a point reflection of the A=0 layout
+  through `(floor(sx), floor(sy))`, texels flipped both ways, both UV windings reversed.
+  `rotgate.py`: 24/24 rotated nodes explained byte-exact, the unrotated alternative 0.
+* **Scale-walker parts draw at their GFX1 LOGICAL size** `lw·8 × lh·8` (header `[lw][lh][sw][sh]`,
+  bank03 `loc_8c0348c8`), sampling the top-left of the storage block; mirrored placement uses the
+  logical width. sid-bit15 records ONLY — tiled bodies keep storage dims (clipping them lost tiles).
+  The deployed atlas json carries STORAGE dims; `v3gate.gfx1dims` reads the ROM header.
+* **`flash` is the per-slot PALETTE-BANK BASE**, not a flash: DC `+0x12E` = Steam `+0x172` =
+  `{0x10,0x18,0x20,0x28,0x30,0x38}` by slot (bank13 `loc_8c1355d4`); per-part bank = base +
+  `((flags&0x3FF)>>4)`. A fighter with `sid 0x8000` is the scale walker on its own cell 0 — a real
+  pose (P4/Sentinel: 22 records, all matched).
 
 ### 15.2 What REMAINS, each with its evidence and owner
 | gap | evidence | status |
 |---|---|---|
-| **rotated sprites** (`+0x148` bit15) | 24 nodes, zero rotated quads in the indexed stream | SH4 expert on `loc_8c03481c` inputs/math |
-| **runtime reveal / blank** | same sid: one bolt's part 156 page all-zero, sibling shows only the tip; Cable's beam 32×40 of 64 with texels only in rows 0..7/40..47 | SH4 expert: tile arena `node+0xDC/+0x120`, animation script |
-| **P4 body absent** | `+0x170=1`, `sid 0x8000`, `flash 0x0030` (others 0x10/0x18/0x20), one PL34 tile in the frame, not in the world pass either | SH4 expert: flash 0x30 path |
 | **world-space RGBA class** | 118 on-screen `vs_world/texalpha` draws in a super frame from **12 shared pages** (two present in all 30 frames = 1P/2P markers + shadow disc; one = the additive effects sheet); not keyed by any System-B node's `gfx1` | System A nodes — not in `blkstate`, not in the tape; needs its own state source |
 | **tape staleness** | agent samples at a random phase relative to the walk | design: sample after the walk (agent change) |
+| **angles other than 0x8000** | none captured; the general formula is specified (15.1) but unexercised | apply when data shows one; log the full u32 |
 
 ### 15.3 Tape v3 → v4 deltas implied
-`rot` (`+0x148` bit 15 + angle field once specified), the reveal state for effect nodes (field TBD),
-and a System-A node stream for shadows/markers/effect glows. None of these change the body path,
-which is exact.
+Per node: `angle u16 (+0x148)` and `hotspot s16×2 (+0x178)`. The logical clip needs no tape data
+(ROM header). A System-A node stream for shadows/markers/effect glows is a separate stream. None of
+these change the body path, which is exact.
+
+### 15.4 How the super frames closed (2026-09-02) — and what the earlier gap table got wrong
+The residual on the ten super frames was **mostly the reference, not the render**:
+`emitter_gate.indexed_quads` scaled every quad's UVs by 32 whatever the page size and
+`raster_truth` ignored the V winding. Bodies are all 32×32 pages, so the truth was right wherever
+we had already scored 100%; the scale-walker records (bolts, drones, sid-0x8000 poses) sit on
+64×32 / 128×16 / 32×256 / 8×8 pages and the TRUTH was sliced wrong there. "Runtime reveal", "blank
+pages", "Cable's beam 40 of 64 rows" and "P4 body absent with flash 0x30" were all artefacts of
+that one bug — the SH4 expert's read-set of the walker (no clip/reveal/timer field exists) said so
+before the fix confirmed it. Falsification on f8940/8980/8990 with the fixed truth:
+`--rot180` (full model) 100.000%; without the logical clip 98.5%; without rotation 88.8%; rotated
+nodes painted unrotated 83.8%; wrong state pairing (`--paired`) 38.9%.
