@@ -864,3 +864,37 @@ what was missing was the facing sign and the part row order in the consumer. Tha
 risk that could have invalidated everything downstream, and it means `buildEmitterDrawList` can be
 validated against the Path B capture **tile by tile** rather than against a whole-frame percentage —
 a diff that says *which* tile is misplaced, instead of "0.685".
+
+### 12.8 ⚠ CORRECTION, same session — "facing LEFT (mirrored)" was an over-claim
+
+12.3 and 12.4 above first labelled the `- dx` sign as **"facing LEFT (mirrored)"**. That label was
+inferred from the sign alone, and a direct test kills it:
+
+```
+frame 2574 vs PL17:  matched UNFLIPPED 7   matched ONLY-FLIPPED 0
+frame 5630 vs PL32:  matched UNFLIPPED 7   matched ONLY-FLIPPED 0
+```
+
+**14 of 14 tiles match the atlas unflipped; not one matches only when mirrored.** The drawn content
+is never mirrored, so nothing is being flipped and the sign cannot be a facing flip. `screen_x =
+origin_x - dx` stands — it is measured, exact and replicated — but it is a **dx sign convention in
+the rip**, and the tool now reports it as `dx NEGATED` / `dx AS-IS` rather than naming a facing.
+
+The arithmetic in 12.3 is unaffected: two characters, two frames, zero residual, shared ground line.
+
+**⚠ AND IT SURFACES A CONCRETE DISCREPANCY IN THE CONSUMER.** `sprite-client.mjs:1069` mirrors as
+
+```js
+const cdx = cfl ? -(sp.dx + sp.wG) : sp.dx;   // mirror the (asymmetric) anchor when flipped
+```
+
+The capture says `-dx`, with **no width term**. The two differ by the part's own width — which is
+precisely the displacement that scrambles a body while leaving it roughly in the right place, and it
+scales with part size, so big parts land further out than small ones. Whether the renderer or the rip
+carries the wrong convention is NOT settled here; the capture only says what Steam draws. **Settle it
+before trusting either**, and settle it with `asm_ident.py` against a frame where a body is known to
+be facing right, since every body measured so far resolved under the same sign.
+
+The band-order rule in 12.4 (`y += part_h - tile_h - offy`) needs the same caution: each tile's
+PIXELS are upright (a byte-exact unflipped match proves that), so what is reversed is the order the
+32-row **bands** stack, not the rows inside them. Measured on 5 tiles of one part; not explained.

@@ -45,7 +45,7 @@ THE TESTS, in increasing strength
 
 THE PLACEMENT MODEL (confirmed, no fitted constants)
 ----------------------------------------------------
-    screen_x = origin_x - dx        # facing LEFT (mirrored). +dx when facing right.
+    screen_x = origin_x - dx        # MEASURED. This is a sign convention, NOT a facing flip.
     screen_y = origin_y + dy
     within a part, for a tile at atlas offset (offx, offy):
         x += offx
@@ -53,11 +53,16 @@ THE PLACEMENT MODEL (confirmed, no fitted constants)
 
 TWO THINGS TO CARRY FORWARD
 ---------------------------
-  * THE X SIGN IS THE FACING FLIP, and forgetting it is what made sound data look broken. The
-    observed part-to-part delta was dx=+32, dy=-48; the table says dx=-32, dy=-48. One axis exactly
-    negated and the other exactly equal is the signature of a MIRROR, not of bad geometry. This is
-    the DC walker's neg-X control (`0x10`, bank03) surfacing in Steam pixels. A near-miss in one axis
-    only is a transform you have not modelled -- it is almost never corrupt data.
+  * THE X SIGN, and forgetting it is what made sound data look broken. The observed part-to-part
+    delta was dx=+32, dy=-48; the table says dx=-32, dy=-48. One axis exactly negated and the other
+    exactly equal is a SIGN CONVENTION, not bad geometry -- corruption is not axis-aligned. A
+    near-miss in ONE axis only is a transform you have not modelled.
+    ⚠ Do NOT read it as a facing flip. Every captured tile matches the atlas UNFLIPPED -- 14 of 14
+    across both frames, ZERO matching only-flipped -- so the drawn content is never mirrored and the
+    sign can only be a dx convention in the rip.
+    ⚠ `sprite-client.mjs:1069` mirrors as `-(dx + w)`; the capture says `-dx`, with NO width term.
+    Those differ by the part's own width, which is exactly the displacement that scrambles a body
+    while leaving it roughly in place. Settle which is right before trusting either.
   * THE WITHIN-PART VERTICAL INVERSION IS MEASURED BUT NOT EXPLAINED. Five tiles of part 1158 are
     consistent ONLY with bottom-up part rows, while the record says flipy=0. The likely cause is the
     row order the rip writes into `_parts.png`, NOT the engine. It is exactly the shape of defect
@@ -219,7 +224,7 @@ def main():
     print('\nsearching %d %s assemblies for one origin that places all %d parts...'
           % (len(asm['assemblies']), ch, len(place)))
     best = []
-    for facing, sgn in (('LEFT (mirrored)', -1), ('RIGHT', +1)):
+    for facing, sgn in (('dx NEGATED', -1), ('dx AS-IS', +1)):
         for sel, recs in asm['assemblies'].items():
             have = {r['part']: r for r in recs}
             if not set(place) <= set(have):
@@ -229,11 +234,11 @@ def main():
             if len(os_) == 1:
                 best.append((facing, sel, len(recs), os_.pop()))
     if not best:
-        print('   FAILED: no assembly places these parts consistently under either facing.')
+        print('   FAILED: no assembly places these parts consistently under either dx sign.')
         print('   THAT would be a real defect in the table -- but first rule out that the parts')
         print('   belong to two DIFFERENT pool nodes that happen to be drawn side by side.')
         return 1
-    print('   EXACT -- zero residual, facing %s' % best[0][0])
+    print('   EXACT -- zero residual, %s' % best[0][0])
     print('   origin = %s' % (best[0][3],))
     print('   sel narrowed to %d of %d: %s'
           % (len(best), len(asm['assemblies']), ', '.join(b[1] for b in best[:16])))
