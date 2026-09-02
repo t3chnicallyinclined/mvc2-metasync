@@ -21,7 +21,7 @@ THE PLACEMENT LAW (measured; see docs/WORKSTREAM-MINIMAL-TAPE.md §12, and asm_i
     unmirrored:     part_left = origin_x - dx
     mirrored:       part_left = origin_x + dx - part_w      (the same rect, reflected about origin_x)
     both:           part_top  = origin_y + dy
-    the part bitmap: the atlas rect with its 32-row TILE BANDS reversed
+    the part bitmap: the atlas rect FLIPPED VERTICALLY -- every part is packed upside down
 
 ⭐ THE CROSS-CHECK THAT SAYS THE UNITS ARE RIGHT. A grounded character in this tape sits at
 sy = 433.4, and 433.4 * 7/15 = 202.25. The ground line measured independently from three Path B
@@ -36,9 +36,10 @@ was given the other's answer.
   this is the line to flip -- `--flip-facing` does it without editing anything.
 * SLOT -> TEAM is `p1_team` on EVEN slots and `p2_team` on ODD (per mvc-live-skins-side-calibration).
   If the wrong characters appear, `--swap-teams`.
-* THE TILE-BAND REVERSAL is measured on exactly TWO parts (PL32 #81 and PL2A #353, both at 1.0000).
-  Applying it to every part is a generalisation, not a measurement. `--no-rowfix` turns it off; if
-  some limbs look right only with it off, the rip is inconsistent and THAT is the finding.
+* THE PALETTE BANK. `costume` is in the tape but the costume -> bank mapping is NOT known, so this
+  uses the atlas `bodyBank` and colours may be wrong even when the pose is exact. It cannot be
+  derived from the captures either: those are a DIFFERENT match, so their costumes do not apply.
+  `--bank N` overrides. Wrong colours here are an open question, not a placement error.
 * Effects, the HUD and the stage are NOT drawn. This is the body walker's output only, on a black
   field, because that is the only part the law has been measured against. A missing HUD here is not
   a bug -- it is scope.
@@ -92,15 +93,18 @@ class Atlas:
                 cls._cache[cid] = None
         return cls._cache[cid]
 
-    def part_bitmap(self, pid, rowfix=True):
+    def part_bitmap(self, pid, vflip=True):
         p = self.parts[str(pid)]
-        a = self.idx[p['y']:p['y'] + p['h'], p['x']:p['x'] + p['w']].copy()
-        if rowfix and p['h'] >= 64:
-            # The packed atlas writes a part's 32-row TILE BANDS bottom-up while writing each tile's
-            # pixels top-down. Confirmed EXACT (1.0000) on PL32 part 81 and PL2A part 353.
-            R = p['h'] // 32
-            a = np.vstack([a[(R - 1 - i) * 32:(R - i) * 32] for i in range(R)])
-        return a, p['w'], p['h']
+        a = self.idx[p['y']:p['y'] + p['h'], p['x']:p['x'] + p['w']]
+        # ⭐ EVERY PART IS STORED UPSIDE DOWN. Verified against Steam's OWN rendered frame
+        # (scene_5630): PL32 sel 13 assembled with a full vertical flip is Colossus in exactly the
+        # captured pose; without it, or with a 32-row band reversal, it is scrambled.
+        # ⚠ An earlier reading of "the tile BANDS are reversed" scored 1.0000 and was still WRONG as
+        # a drawing rule. That test compared atlas blocks against captured 32x32 pages -- and BOTH
+        # are stored flipped the same way, so the within-tile half of the flip cancelled and only the
+        # band-order half showed up. It is a true statement about atlas-vs-capture LAYOUT and a false
+        # one about how to draw. Comparing two representations that share a defect cannot reveal it.
+        return (a[::-1].copy() if vflip else a.copy()), p['w'], p['h']
 
     def palette(self, bank=None):
         b = self.banks[self.bodyBank if bank is None else bank]
@@ -137,7 +141,14 @@ def main():
     ap.add_argument('-o', '--out')
     ap.add_argument('--start', type=int, default=0, help='first tape row')
     ap.add_argument('--count', type=int, default=300, help='rows to convert')
-    ap.add_argument('--no-rowfix', action='store_true')
+    ap.add_argument('--no-vflip', action='store_true',
+                    help='draw parts as packed. They come out upside down -- diagnostic only.')
+    ap.add_argument('--bank', type=int, default=None,
+                    help='palette bank override. Default is the atlas bodyBank; the costume->bank '
+                         'rule is NOT yet known (see the note in the header).')
+    ap.add_argument('--forward-records', action='store_true',
+                    help='draw assembly records in list order. Measured WRONG -- capes and limbs '
+                         'punch through bodies. Diagnostic only.')
     ap.add_argument('--flip-facing', action='store_true')
     ap.add_argument('--swap-teams', action='store_true')
     a = ap.parse_args()
@@ -195,16 +206,27 @@ def main():
             oy = r[C['sy[6]']][slot] * TAPE_Y
             mir = bool(r[C['facing[6]']][slot]) != a.flip_facing
 
-            pal = at.palette()
+            pal = at.palette(a.bank)
             palkey = '%s_pal_%s' % (at.name, sha8(pal.tobytes()))
             if palkey not in textures:
                 textures[palkey] = {'w': 256, 'h': 1, 'fmt': 28, **intern(pal.tobytes())}
 
-            for rec in recs:
+            # ⭐ DRAW ORDER IS THE REVERSE OF THE RECORD LIST. Recovered from the captures, where
+            # the submission order is known exactly: match each body's tiles back to their part, then
+            # compare Steam's first draw index per part against the part's index in the assembly.
+            #     f5630 PL32 sel 13   record indices [17, 7]   descending
+            #     f2574 PL17 sel 189  [7, 6]   sel 197 [10, 7]   sel 201 [10, 7]
+            #     f5630 PL2A sel 83   [4, 1]
+            # Three characters, four sels, no exceptions. Steam gives each draw a DECREASING z, so
+            # submission order IS back-to-front: get it wrong and a cape draws through the body.
+            # ⚠ The ROM walker itself counts UP (bank03 loc_8c03489e: index+1, record ptr +8), so the
+            # reversal is in OUR rip, not in the game. Worth chasing in rip_gfx2_assembly.py -- but
+            # what the renderer must do is measured either way.
+            for rec in (recs if a.forward_records else reversed(recs)):
                 pid = rec['part']
                 if str(pid) not in at.parts:
                     continue
-                bmp, pw, ph = at.part_bitmap(pid, not a.no_rowfix)
+                bmp, pw, ph = at.part_bitmap(pid, not a.no_vflip)
                 key = '%s_p%d_%s' % (at.name, pid, sha8(bmp.tobytes()))
                 if key not in textures:
                     textures[key] = {'w': pw, 'h': ph, 'fmt': 61, **intern(bmp.tobytes())}
