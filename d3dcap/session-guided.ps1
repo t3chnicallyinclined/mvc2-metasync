@@ -2,7 +2,8 @@
 # move you are told to perform, each packed into its own playable .seq.
 #
 #   powershell -NoProfile -ExecutionPolicy Bypass -File session-guided.ps1
-#   powershell -NoProfile -ExecutionPolicy Bypass -File session-guided.ps1 -Seconds 3 -Steps "sent-rocket=Sentinel: rocket punch","storm-hail=Storm: Hail Storm"
+#   powershell -NoProfile -ExecutionPolicy Bypass -File session-guided.ps1 -Seconds 3 -Steps "sent-rocket=Sentinel: rocket punch; storm-hail=Storm: Hail Storm"
+#   (separate steps with ";" -- in -File mode PowerShell passes the whole -Steps value as ONE string)
 #
 # Flow: build the shim -> launch the game with it (capturing nothing) -> you get into training mode
 # -> for each step: the script tells you what to do, you press ENTER, it records N seconds of GAME
@@ -84,6 +85,9 @@ function LogSince([ref]$pos) {
     return $txt
 }
 
+# `powershell -File x.ps1 -Steps "a=..","b=.."` hands the script ONE string with the comma inside it
+# (no array parsing in -File mode), so accept ';' as the separator and split a lone element on it.
+if ($Steps.Count -eq 1 -and $Steps[0] -match ';') { $Steps = $Steps[0] -split ';' | ForEach-Object { $_.Trim() } | Where-Object { $_ } }
 $results = @()
 $logPos = if (Test-Path $log) { (Get-Item $log).Length } else { 0 }
 $n = 0
