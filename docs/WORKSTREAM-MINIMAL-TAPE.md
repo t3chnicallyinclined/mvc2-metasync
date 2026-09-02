@@ -32,6 +32,79 @@ entry governs. Two independent expert reviews caught this; it should not have ne
 **What this does NOT change:** the input feed is tiny and that number is real and measured.
 **What it DOES change:** what a small feed currently buys you.
 
+## 0b. ⭐ DIRECTION CHANGE — Path A is dropped, and so is resim-as-primary
+
+Tris, 2026-09-02: *"why are we even thinking about path a? we proved path b end result can be pixel
+perfect, now we just optimise the hell out of the data/bandwidth and see how we can derive that
+pixel-perfect end with the least amount of data … lets find the Steam version of the SH4 process that
+emulates the frame."*
+
+He is right, and it dissolves the problem the rest of this document was built around.
+
+**Both alternatives fail for the SAME reason and Path B does not:**
+* **Path A** (reconstruct the draw list from a state tape) hits the effect-cell / HUD / 3D-class
+  ceiling. Those assets do not exist offline.
+* **flycast resim** hits the **1-ULP cross-core wall** — DC SH4 vs Steam x86-64 rounding.
+* **Steam's own code has NEITHER problem.** It is the arithmetic that produced the pixels we
+  captured. There is no cross-core divergence because there is no cross-core.
+
+⟹ **The question is no longer "which engine reproduces the match" but "what is the smallest input to
+STEAM'S OWN render path that reproduces the frame".** Everything below in Lane C about determinism
+certificates is about the flycast path, and is now a SECONDARY lane.
+
+### What was found in Ghidra, immediately, from the capture's own call-site data
+
+The capture records that **885 of 890 draws in a frame come from ONE return address, `0x1402B72F4`**.
+That address is 964 bytes inside **`FUN_1402B6F30`**, and decompiling it settles what that layer is:
+
+**`FUN_1402B6F30` is Steam's COMMAND-LIST EXECUTOR — the structural analogue of the DC's TA FIFO.**
+It walks a stack of 16-byte command records, switches on a **4-bit opcode** (`*(u16*)(cmd+2) & 0xF`,
+cases 0-7 and 0xE), and for each one sets pipeline state from four object pointers at `cmd+8`,
+`+0x10`, `+0x18`, `+0x20` (via `FUN_1402BC2A0` / `FUN_1402BA6F0` / `FUN_1402BA920` / `FUN_1402BAF60`)
+and then calls a virtual on the device wrapper — `+0x60` and `+0x68` are the draws, `+0xA0`/`+0xA8`
+the instanced variants, `+0x170`/`+0x1C8` blits, `+0x1A8` a clear, `+0x148` another draw class.
+Opcode 6 **pushes a nested command buffer** — a call-list, exactly like a TA object list.
+
+**The command buffer itself is located:**
+```
+renderer + 0x8678F0 + parity*8   base pointer   (double-buffered)
+renderer + 0x867900 + parity*4   count, in 16-byte records
+renderer + 0x678C0               the parity index (XOR'd by a flag at renderer+0x42)
+renderer + 0xC0                  the D3D11 context   ← already probed by d3dcap
+```
+`FUN_1402BCC60` is the frame SUBMIT: GPU timestamp begin → execute the list → end → reset. So the
+command list is **built earlier in the frame and consumed here**.
+
+### What that changes
+
+This is a **higher-level, far more compact representation than the D3D11 draw stream, and it is the
+game's own output.** A record is 16 bytes plus four references into a pipeline-state pool that the
+capture already measured at only **11-16 distinct combinations per frame**.
+
+**The open question, and it is now THE question:**
+> **What builds that command list, and what does it read?**
+> If the command list is a pure function of `blk`, then the minimal feed is a **`blk` delta per
+> frame** — no simulation, no inputs, no determinism certificate, no float divergence — and Steam's
+> own emitter (or a faithful port of it) turns that back into pixel-perfect frames.
+
+That is directly measurable with tooling we already have, and it is the next thing to do:
+
+* **D1 — measure the `blk` delta rate.** `verify.py rng` already reported **6,466 of 52,934 words
+  changed over 600 frames**. Get the PER-FRAME figure and its compressed size. If a frame's `blk`
+  delta is ~1 KB raw / ~200 B gzipped, **that is the floor, and it beats every other candidate while
+  being immune to every determinism hazard in this document.**
+* **D2 — find the emitter.** Walk backwards from the command buffer at `renderer+0x8678F0`: who
+  writes it? `FUN_1402B3B80` is only the GPU timestamp query, so the builder runs earlier in the
+  frame. Ghidra has the binary loaded (29,678 functions, `0x140001000`-`0x143D52749`).
+* **D3 — is it a pure function of `blk`?** The falsifiable form: capture `blk` + the command list on
+  two frames with identical `blk` content and check the command lists are identical. If they differ,
+  something outside `blk` feeds the renderer and D1's floor is wrong.
+* **D4 — capture the command list directly** instead of the D3D11 stream. A shim hook at
+  `FUN_1402B6F30`'s entry has the base pointer and count in registers.
+
+⚠ **Nothing here weakens the epistemics.** A command list is still an observation of OUR instrument;
+"pure function of `blk`" is a hypothesis with a named falsifier (D3), not a finding.
+
 ## 1. The two honest product framings — pick one deliberately
 
 | | **(A) "A faithful replay of this match"** | **(B) "The receipt — THIS match, byte for byte"** |
