@@ -167,7 +167,46 @@ live   241 of 280 nodes changed at least once over 600 frames; 191 have >20 hot 
 hot    69 of 160 words per node are volatile in >50% of nodes
 ```
 
-⚠⚠ **RETRACTED BEFORE IT WAS RECORDED: the node PHASE is undetermined, and the field mapping I first
+### ⭐ THE PHASE IS SETTLED — from a live pointer walk, reproduced 4x identically
+
+`replay-kit/poolphase.py` dereferences the list head at `*(blk + 0x2EEB0)` (per
+`mvc-hud-list0b-live-re`) and walks it via `+0x08`. That yields real node ADDRESSES, so the phase is
+measured rather than fitted:
+
+```
+list head *(blk+0x2EEB0) = 0x18df1dd8
+walked 44 nodes, 44 inside blk
+residue of (node - blk) mod 0x280:   0x258  x44      <- unanimous, 4 runs identical
+category byte at +0x03:              {11: 44}        <- all cat 0x0B
+lowest node blk+0x9D58; first node at/after the fighter slots: blk+0x6B58
+```
+
+**The ledger was right and my guess was wrong.** `blk+0x6DD8` has residue `0x258`; my `0x6908` has
+residue `0x008`. The pool is `blk + 0x258 + k*0x280`, and the first node at or after the six fighter
+structs is **`blk+0x6B58`**.
+
+Two structural facts fall out:
+* **the array holds MULTIPLE categories.** All 44 walked nodes are `cat 0x0B` — the HUD/UI list from
+  `mvc-hud-list0b-live-re` — out of ~287 node slots. So the `0x280` array is a shared object pool and
+  the list-0x0B nodes are one tenant of it.
+* re-running the field scan at the CONFIRMED phase, **12 of 17 in-range known fighter-struct fields
+  land on hot columns, against a chance level of ~7.3**:
+
+```
+HOT      +0x050 px      +0x054 py       +0x124 screenX  +0x128 screenY  +0x12C depth
+         +0x130 zx      +0x134 zy       +0x154 facing   +0x170 drawn    +0x188 sid
+         +0x1A0 gfx1    +0x1D0 anim_state
+NOT HOT  +0x058 vx      +0x05C vy       +0x144 sprite_id  +0x168 anim_ptr  +0x1A4 gfx2
+```
+Every RENDER-relevant field is hot; velocity and the animation pointers are not. That is consistent
+with "node = fighter-struct prefix", and unlike the retracted version it rests on a phase that was
+measured independently of the histogram. ⚠ 12 vs 7.3 on n=17 is **suggestive, not conclusive** — it is
+the confirmed phase that makes the mapping trustworthy, not the hit count.
+
+There is also a **regular 8-byte-strided run of hot words from `+0x1A8` to `+0x228`** (17 entries) —
+the shape of a pointer table or an array inside the node. Unidentified; worth a look.
+
+⚠ **What was retracted, and why it matters as a lesson: the node PHASE was undetermined, and the field mapping I first
 wrote down was chance.** Reshaping from `0x6908` gave "8 of 18 known fighter-struct fields land on hot
 columns", which looked like confirmation. It is not: **a random 69-of-160 hot set hits ~7.8 of 18 by
 chance.** 8 is exactly noise.
