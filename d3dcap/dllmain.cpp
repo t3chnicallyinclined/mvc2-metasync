@@ -78,7 +78,8 @@ static unsigned g_burst = 1;            // frames per arm; from D3DCAP_BURST
 static unsigned g_burstLeft = 0;        // frames still to record in the current burst
 static unsigned g_burstFirst = 0;       // frame number the current burst started on
 static unsigned g_burstGot = 0;         // frames of the current burst actually recorded
-static volatile LONG g_burstDone = 0;   // a full burst is on disk; stop arming
+static volatile LONG g_burstDone = 0;   // a full burst is on disk; stop arming (cleared by the next ARM)
+static double g_dumpMsSum = 0.0, g_dumpMsMax = 0.0; static int g_dumpN = 0;   // capture cost per frame
 static bool g_manual = false;           // D3DCAP_MANUAL: only arm when told to
 static volatile LONG g_wantBurst = 0;   // manual mode: told to, and still trying
 static char g_dir[MAX_PATH] = {0};
@@ -908,9 +909,36 @@ static int g_nTexSnap = 0;
 static unsigned g_texWrites = 0, g_texRewrites = 0;
 static int g_frameTex = 0;     // distinct textures sampled by the frame being captured RIGHT NOW
 static ID3D11Device* g_texDev = nullptr;
+static int g_rtAsTex = 0;      // render targets seen bound as textures (never snapshotted)
+
+// Staging-texture pool. A snapshot needs a staging texture of the same (w,h,fmt); the frame returns
+// them at endFrameTex. Reusing them removes ~230 device allocations per captured frame.
+struct StgPool { ID3D11Texture2D* t; UINT w, h; DXGI_FORMAT f; };
+static StgPool g_stgPool[1024];
+static int g_nStgPool = 0;
+static ID3D11Texture2D* acquireStaging(ID3D11Device* dev, const D3D11_TEXTURE2D_DESC& sd) {
+    for (int i = g_nStgPool - 1; i >= 0; --i) {
+        if (g_stgPool[i].w == sd.Width && g_stgPool[i].h == sd.Height && g_stgPool[i].f == sd.Format) {
+            ID3D11Texture2D* t = g_stgPool[i].t;
+            g_stgPool[i] = g_stgPool[--g_nStgPool];
+            return t;
+        }
+    }
+    ID3D11Texture2D* t = nullptr;
+    if (!dev || FAILED(dev->CreateTexture2D(&sd, nullptr, &t))) return nullptr;
+    return t;
+}
+static void releaseStaging(ID3D11Texture2D* t) {
+    if (!t) return;
+    D3D11_TEXTURE2D_DESC d = {};
+    t->GetDesc(&d);
+    if (g_nStgPool < 1024) { g_stgPool[g_nStgPool++] = { t, d.Width, d.Height, d.Format }; return; }
+    t->Release();
+}
 
 static bool isDumpableTex(DXGI_FORMAT f);
 static UINT texBytesPerPixel(DXGI_FORMAT f);
+static void mapAppend(const char* fmt, ...);   // defined below with the texmap builder
 
 static void markTexDirty(ID3D11Resource* r) {
     if (!r) return;
@@ -959,6 +987,24 @@ static unsigned noteTexVersioned(ID3D11DeviceContext* c, ID3D11Resource* r) {
     ID3D11Texture2D* t = g_texVer[slot].tex;
     D3D11_TEXTURE2D_DESC d = {};
     t->GetDesc(&d);
+    // ⭐ THE CRAWL, MEASURED IN THE CODE (2026-09-02): the 2048x1024 RGBA SCENE RT is bound as a
+    // texture by the post-process passes, so with every texture re-snapshotted every frame it was
+    // an 8 MB CopyResource + Map + memcpy + FNV + DISK WRITE per frame (its content changes every
+    // frame, so the content-hash dedupe never hit) -- more than every sprite page of the frame put
+    // together, and it is what pushed the writer queue to its cap and stalled the render thread.
+    // A render target is an OUTPUT of the frame, never a source asset: the player re-renders it
+    // from the draws. Record the binding as "RT" so the decoder knows, and skip the copy.
+    if (d.BindFlags & D3D11_BIND_RENDER_TARGET) {
+        if (!g_texVer[slot].snapped) {
+            logf("[tex] %p is a RENDER TARGET (%ux%u fmt %d) -- bound as a texture, not snapshotted",
+                 (void*)r, d.Width, d.Height, (int)d.Format);
+            g_rtAsTex++;
+        }
+        mapAppend("\"%p#%u\":\"RT\"", (void*)r, g_texVer[slot].ver);
+        g_texVer[slot].snapped = true;
+        g_texVer[slot].dirty = false;
+        return g_texVer[slot].ver;
+    }
     if (isDumpableTex(d.Format) && d.Width <= 4096 && d.Height <= 4096 && d.SampleDesc.Count == 1
         && g_nTexSnap < 768) {
         if (!g_texDev) c->GetDevice(&g_texDev);
@@ -967,8 +1013,10 @@ static unsigned noteTexVersioned(ID3D11DeviceContext* c, ID3D11Resource* r) {
         sd.BindFlags = 0;
         sd.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
         sd.MiscFlags = 0;
-        ID3D11Texture2D* stg = nullptr;
-        if (g_texDev && SUCCEEDED(g_texDev->CreateTexture2D(&sd, nullptr, &stg)) && stg) {
+        // staging textures come from a POOL keyed by (w,h,fmt): ~230 CreateTexture2D + Release per
+        // frame was pure allocator churn on the render thread (the pages are 1 KB each).
+        ID3D11Texture2D* stg = acquireStaging(g_texDev, sd);
+        if (stg) {
             // GPU-side copy only. Mapping here would sync the CPU to the GPU 700 times a frame.
             c->CopyResource(stg, t);
             g_texSnap[g_nTexSnap].stg = stg;
@@ -1007,7 +1055,7 @@ static bool isRGBA32(DXGI_FORMAT f) {
 static UINT texBytesPerPixel(DXGI_FORMAT f) { return f == DXGI_FORMAT_R8_UNORM ? 1u : 4u; }
 
 static void releaseCapTex() {
-    for (int i = 0; i < g_nTexSnap; ++i) if (g_texSnap[i].stg) g_texSnap[i].stg->Release();
+    for (int i = 0; i < g_nTexSnap; ++i) if (g_texSnap[i].stg) releaseStaging(g_texSnap[i].stg);
     g_nTexSnap = 0;
     for (int i = 0; i < g_nTexVer; ++i) if (g_texVer[i].tex) g_texVer[i].tex->Release();
     g_nTexVer = 0;
@@ -1080,7 +1128,7 @@ static void markAllTexDirty() {
 }
 
 static void endFrameTex() {
-    for (int i = 0; i < g_nTexSnap; ++i) if (g_texSnap[i].stg) g_texSnap[i].stg->Release();
+    for (int i = 0; i < g_nTexSnap; ++i) if (g_texSnap[i].stg) releaseStaging(g_texSnap[i].stg);
     g_nTexSnap = 0;
 }
 
@@ -1585,12 +1633,21 @@ static HRESULT STDMETHODCALLTYPE hkPresent(IDXGISwapChain* sc, UINT si, UINT fla
                     sdev->Release();
                 }
             }
-            dumpCapturedBuffers(sc, g_frame);
+            {   // how much of the frame the capture itself costs -- the number that says whether
+                // the game crawls, and the one an optimisation has to move
+                LARGE_INTEGER q0, q1, qf; QueryPerformanceFrequency(&qf); QueryPerformanceCounter(&q0);
+                dumpCapturedBuffers(sc, g_frame);
+                QueryPerformanceCounter(&q1);
+                const double ms = 1000.0 * (double)(q1.QuadPart - q0.QuadPart) / (double)qf.QuadPart;
+                g_dumpMsSum += ms; if (ms > g_dumpMsMax) g_dumpMsMax = ms; ++g_dumpN;
+            }
             ++g_burstGot;
             if (g_burst > 1 && g_burstGot >= g_burst) {
                 g_burstLeft = 0;
                 InterlockedExchange(&g_burstDone, 1);
-                logf("[burst] COMPLETE: %u consecutive frames from %u", g_burstGot, g_burstFirst);
+                logf("[burst] COMPLETE: %u consecutive frames from %u (capture cost avg %.1f ms/frame, max %.1f; %d RT bindings skipped)",
+                     g_burstGot, g_burstFirst, g_dumpN ? g_dumpMsSum / g_dumpN : 0.0, g_dumpMsMax, g_rtAsTex);
+                g_dumpMsSum = g_dumpMsMax = 0.0; g_dumpN = 0;
             }
         } else {
             releaseCapBufs();
@@ -1621,8 +1678,9 @@ static HRESULT STDMETHODCALLTYPE hkPresent(IDXGISwapChain* sc, UINT si, UINT fla
                      (unsigned long long)g_wsite[i].ret[2], (unsigned long long)g_wsite[i].ret[3]);
         }
         } else if ((g_burstGot % 60) == 0) {
-            logf("[burst] %u/%u frames (%u draws, %d textures, %lld MB queued to disk)",
-                 g_burstGot, g_burst, g_drawIdx, g_frameTex, (long long)(g_wqueued >> 20));
+            logf("[burst] %u/%u frames (%u draws, %d textures, %lld MB queued to disk, capture %.1f ms/frame avg, %.1f max)",
+                 g_burstGot, g_burst, g_drawIdx, g_frameTex, (long long)(g_wqueued >> 20),
+                 g_dumpN ? g_dumpMsSum / g_dumpN : 0.0, g_dumpMsMax);
         }
 
         // Continue the burst IN THIS Present. The arm path below is an `else if`, so leaving it to
@@ -1799,6 +1857,9 @@ static DWORD WINAPI worker(LPVOID) {
             while (GetAsyncKeyState(VK_F9) & 0x8000) Sleep(20);
         } else if (GetFileAttributesA(armPath) != INVALID_FILE_ATTRIBUTES) {
             DeleteFileA(armPath); why = "ARM";
+            // a guided session arms several bursts in one launch: a completed burst must not block
+            // the next one (g_burstDone gates the arm path and the retry path)
+            InterlockedExchange(&g_burstDone, 0);
             InterlockedExchange(&g_wantBurst, 1);
         } else if ((!g_manual || g_wantBurst) && GetTickCount64() - last >= AUTO_MS
                    && shots < MAX_SHOTS && !g_burstDone) {
