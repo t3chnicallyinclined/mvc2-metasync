@@ -74,6 +74,15 @@ def load_draws(frame):
     return draws, clears, foreign
 
 
+_cap_names = None
+def cap_names():
+    """The capture directory listing, read once per process."""
+    global _cap_names
+    if _cap_names is None:
+        _cap_names = os.listdir(CAP)
+    return _cap_names
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("frame")
@@ -99,7 +108,13 @@ def main():
 
     # ── vertex buffer ────────────────────────────────────────────────────────────────────────────
     vb_ptr = Counter(d["vb"] for d in scene if d.get("vb")).most_common(1)[0][0]
-    vb_files = glob.glob(os.path.join(CAP, "buf_%s_vb_*%s*.bin" % (a.frame, vb_ptr)))
+    # ⚠ NO GLOBS IN HERE. The capture directory holds 30-60k files after a couple of bursts and a
+    # glob is a full listing + fnmatch over every name: profiled at 0.63 s of a 0.74 s frame pack
+    # (three globs), i.e. ~2 minutes of a 180-frame pack was directory scans, and it grew with every
+    # step. List the directory ONCE and filter names in Python.
+    names = cap_names()
+    vb_files = [os.path.join(CAP, n) for n in names
+                if n.startswith("buf_%s_vb_" % a.frame) and vb_ptr in n and n.endswith(".bin")]
     if not vb_files:
         sys.exit("no vertex-buffer snapshot for %s (run collect.ps1 so a dump budget lands on this frame)"
                  % vb_ptr)
@@ -116,8 +131,9 @@ def main():
     # boundary resolves a pointer to whatever texture happened to live at that address minutes
     # earlier. Measured: frame 2951 was resolving 5 of its 152 textures to dumps from frame 2575.
     # This is "a runtime pointer is never an identity" again, at the fourth layer.
-    _all = sorted(int(os.path.basename(f)[6:-7])
-                  for f in glob.glob(os.path.join(CAP, "frame_*.ndjson")) if os.path.getsize(f))
+    _all = sorted(int(n[6:-7]) for n in names
+                  if n.startswith("frame_") and n.endswith(".ndjson") and n[6:-7].isdigit()
+                  and os.path.getsize(os.path.join(CAP, n)))
     _me = int(a.frame)
     earlier_frames = []
     for f in reversed([x for x in _all if x <= _me]):
@@ -254,7 +270,8 @@ def main():
 
     # ── constant buffers: already content-hashed at capture time ─────────────────────────────────
     cb_files = {}
-    for f in glob.glob(os.path.join(CAP, "cb_%s_*.bin" % a.frame)):
+    for f in (os.path.join(CAP, n) for n in cap_names()
+              if n.startswith("cb_%s_" % a.frame) and n.endswith(".bin")):
         cb_files[os.path.basename(f).rsplit("_", 1)[1][:-4].upper()] = f
     print("constant buffers: %d distinct payloads" % len(cb_files))
 
@@ -359,7 +376,8 @@ def main():
     # The ground-truth image is REFERENCED, not embedded: it is 8 MB and would double the pack, and
     # the diff tool wants it as a separate input anyway. This is the PRE-BLOOM scene RT -- diffing
     # against the backbuffer instead would only prove that the bloom chain exists.
-    scene_hits = glob.glob(os.path.join(CAP, "scene_%s_*.bmp" % a.frame))
+    scene_hits = [os.path.join(CAP, n) for n in cap_names()
+                  if n.startswith("scene_%s_" % a.frame) and n.endswith(".bmp")]
     if scene_hits:
         # Copy it beside the pack so the browser can fetch both from one directory. It is 8 MB and
         # ROM-derived, so *.bmp is gitignored here -- this is a working copy, not an artifact.

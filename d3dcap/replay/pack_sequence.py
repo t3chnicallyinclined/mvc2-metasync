@@ -159,29 +159,47 @@ def main():
     total_raw = 0
     dropped = []
 
+    pool_end = 0                       # running total: `sum(len(p) for p in pool)` per new payload was O(n^2)
+
     def intern(payload):
         """-> {off,len} in the shared pool, storing the bytes only once."""
-        nonlocal total_raw
+        nonlocal total_raw, pool_end
         total_raw += len(payload)
         h = hashlib.sha256(payload).digest()
         hit = pool_index.get(h)
         if hit is None:
-            off = sum(len(p) for p in pool)
-            hit = {"off": off, "len": len(payload)}
+            hit = {"off": pool_end, "len": len(payload)}
             pool_index[h] = hit
             pool.append(payload)
+            pool_end += len(payload)
         return dict(hit)
 
-    for n, fr in enumerate(frames):
+    # ⚠ PER-FRAME PACKS RUN IN PARALLEL. Each frame is independent (pack_replay reads only its own
+    # files); the merge below stays sequential so the pool layout is deterministic. Measured before:
+    # 180 frames one at a time, each a python start-up plus directory scans, minutes per step.
+    def pack_one(fr):
         out = os.path.join(tmp, "f%d.pack" % fr)
         r = subprocess.run([sys.executable, os.path.join(HERE, "pack_replay.py"), str(fr), "-o", out],
                            capture_output=True, text=True,
                            env={**os.environ, "PYTHONIOENCODING": "utf-8"})
-        if r.returncode != 0 or not os.path.exists(out):
-            # One bad frame must not sink the sequence, but it must be VISIBLE -- a silently dropped
-            # frame is a playback that stutters for a reason nobody can find later.
-            why = (r.stdout + r.stderr).strip().splitlines()
-            dropped.append((fr, why[-1] if why else "pack_replay failed"))
+        ok = r.returncode == 0 and os.path.exists(out)
+        why = (r.stdout + r.stderr).strip().splitlines()
+        return fr, out, ok, (why[-1] if why else "pack_replay failed")
+
+    from concurrent.futures import ThreadPoolExecutor
+    workers = max(2, min(12, (os.cpu_count() or 4) - 1))
+    results = {}
+    with ThreadPoolExecutor(max_workers=workers) as ex:
+        for fr, out, ok, why in ex.map(pack_one, frames):
+            results[fr] = (out, ok, why)
+            sys.stdout.write("\r  packing %d/%d (%d workers)" % (len(results), len(frames), workers))
+            sys.stdout.flush()
+    print()
+
+    for n, fr in enumerate(frames):
+        out, ok, why = results[fr]
+        if not ok:
+            dropped.append((fr, why))
             continue
         head, payload = load_pack(out)
 
@@ -263,9 +281,14 @@ def main():
     # 175 of 317 keys and handed frame N's pixels to frame N+1. Assert it here rather than discover
     # it as "some frames look garbled".
     seen, clashes = {}, 0
+    # offset -> chunk, built once; pool_bytes() walked the whole pool per lookup (5k keys x 6k chunks)
+    pool_at, _off = {}, 0
+    for chunk in pool:
+        pool_at[_off] = chunk
+        _off += len(chunk)
     for h in heads:
         for key, rec in h["textures"].items():
-            digest = hashlib.sha256(pool_bytes(pool, rec)).hexdigest()
+            digest = hashlib.sha256(pool_at[rec["off"]][:rec["len"]]).hexdigest()
             if seen.setdefault(key, digest) != digest:
                 clashes += 1
     refs = {texkeys.items[x] for h in heads for d in h["draws"] for x in d["t"] if x >= 0}
