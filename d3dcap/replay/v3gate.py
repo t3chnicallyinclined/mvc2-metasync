@@ -43,6 +43,30 @@ def rawcells(cid):
     return _rawc[cid]
 
 _atlas = {}
+_dims = {}
+def gfx1dims(cid):
+    """per part: (sw, sh, lw, lh) in 8 px units from the GFX1 header [lw][lh][sw][sh] (GFX_DATA_00).
+    ⭐ THE PART'S DRAWN SIZE IS lw*8 x lh*8 (LOGICAL), NOT sw*8 x sh*8 (STORAGE). SH4 scale walker
+    bank03 loc_8c0348c8 (10971-11008): Uspan = lw/sw, Vspan = lh/sh, quad = lw*8 x lh*8 * scale,
+    sampling the top-left logical sub-rect of the storage texture. Seen in the captures before it
+    was understood: bolt part 156 [4,11,4,16] drawn 32x88 of 32x128; P4 cell-0 rec 1 [14,4,16,4]
+    drawn 112x32 of 128x32. The deployed atlas json carries STORAGE dims (the --realparts branch
+    of the rip), so the clip is applied here from the ROM header."""
+    if cid not in _dims:
+        g = glob.glob('C:/Users/trist/projects/maplecast-flycast/dasm_PLDAT/Output/PL%02X_DAT/*GFX_DATA_00.BIN' % cid)
+        d = {}
+        if g:
+            b = open(g[0], 'rb').read()
+            n = struct.unpack_from('<I', b, 0)[0] >> 2
+            for sel in range(n):
+                o = struct.unpack_from('<I', b, sel * 4)[0]
+                if o + 4 <= len(b):
+                    lw, lh, sw, sh = b[o:o + 4]
+                    d[sel] = (sw, sh, lw, lh)
+        _dims[cid] = d
+    return _dims[cid]
+
+
 def atlas(cid):
     if cid not in _atlas:
         nm = 'PL%02X' % cid
@@ -147,18 +171,31 @@ def emit_frame(blk, base, shape, x0, y0):
             else:
                 hf, vf = bool(fl & 0x8000), bool(fl & 0x4000)
             bmp = idx[p['y']:p['y'] + p['h'], p['x']:p['x'] + p['w']][::-1]
+            pw, ph = p['w'], p['h']
+            # logical clip (see gfx1dims): top-left lw*8 x lh*8 of the DC-oriented image, applied
+            # BEFORE any flip; the placement then uses the logical size. SCALE-WALKER RECORDS ONLY
+            # (sid bit 15): the tiled builder (bit 15 clear) uses STORAGE dims -- clipping tiled
+            # bodies LOST 11 matched tiles on f8940. --no-logical / --logical-all for A/B.
+            dm = gfx1dims(cid).get(r['part'])
+            if dm and '--no-logical' not in sys.argv and                     (nd['sid'] & 0x8000 or '--logical-all' in sys.argv):
+                sw, sh, lw, lh = dm
+                cw = lw * 8 if 0 < lw <= sw else pw
+                ch = lh * 8 if 0 < lh <= sh else ph
+                if (cw, ch) != (pw, ph):
+                    bmp = bmp[:ch, :cw]
+                    pw, ph = cw, ch
             if vf:
                 bmp = bmp[::-1]
             if mir != hf:
                 bmp = bmp[:, ::-1]
-            left = (ox + r['dx'] - p['w']) if mir else (ox - r['dx'])
+            left = (ox + r['dx'] - pw) if mir else (ox - r['dx'])
             top = oy + r['dy']
             if rot180:
-                left, top = 2 * ox - left - p['w'], 2 * oy - top - p['h']
+                left, top = 2 * ox - left - pw, 2 * oy - top - ph
                 bmp = bmp[::-1, ::-1]
             r0 = int(round(top - y0)); c0 = int(round(left - x0))
-            rs, re = max(0, r0), min(H, r0 + p['h'])
-            cs, ce = max(0, c0), min(W, c0 + p['w'])
+            rs, re = max(0, r0), min(H, r0 + ph)
+            cs, ce = max(0, c0), min(W, c0 + pw)
             if re <= rs or ce <= cs:
                 continue
             sub = bmp[rs - r0:re - r0, cs - c0:ce - c0]

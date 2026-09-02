@@ -75,24 +75,33 @@ def indexed_quads(man, B):
             continue
         st, vo = d['stride'], d['voff']
         ii = sorted(set(IDX[d['firstIndex']:d['firstIndex'] + d['indexCount']]))
+        # ⚠ TEXEL COORDS SCALE BY THE PAGE'S OWN SIZE. Character bodies are all 32x32 pages, so
+        # `* 32` was right on every frame that scored 100%; the scale-walker records (bolts, drones,
+        # the sid-0x8000 poses) sit on 64x32 / 128x16 / 32x256 / 8x8 pages and the reference
+        # itself was sliced wrong there -- HALF the super-frame residual was the TRUTH, not us.
+        tw, th = man['textures'][d['tex'][0]]['w'], man['textures'][d['tex'][0]]['h']
         P, U = [], []
         for i in ii:
             x, y = struct.unpack_from('<2f', vb, vo + i * st)
             u, v = struct.unpack_from('<2f', vb, vo + i * st + 32)
             P.append(((x + 1) * SX, (1 - y) * SY))
-            U.append((u * 32.0, v * 32.0))
+            U.append((u * tw, v * th))
         z = struct.unpack_from('<f', vb, vo + ii[0] * st + 8)[0]
         gx = [p[0] for p in P]
-        # mirror: does u DECREASE as screen x increases?
+        # mirror: does u DECREASE as screen x increases?  vflip: does v INCREASE with screen y?
+        # (normal winding has the screen TOP at the HIGHER v; a 180-degree rotated quad -- SH4
+        # rotation path, +0x148 == 0x8000 -- reverses BOTH windings)
         lo = min(range(len(P)), key=lambda j: P[j][0])
         hi = max(range(len(P)), key=lambda j: P[j][0])
+        ylo = min(range(len(P)), key=lambda j: P[j][1])
+        yhi = max(range(len(P)), key=lambda j: P[j][1])
         out.append(dict(
             i=d['i'], z=z, page=d['tex'][0], pal=d['tex'][1],
             sx=min(gx), sy=min(p[1] for p in P),
             w=max(gx) - min(gx), h=max(p[1] for p in P) - min(p[1] for p in P),
             u0=min(u for u, v in U), u1=max(u for u, v in U),
             v0=min(v for u, v in U), v1=max(v for u, v in U),
-            mir=U[hi][0] < U[lo][0]))
+            mir=U[hi][0] < U[lo][0], vflip=U[yhi][1] > U[ylo][1]))
     out.sort(key=lambda q: -q['z'])          # decreasing z == later == on top; paint back first
     return out
 
@@ -110,7 +119,9 @@ def raster_truth(man, B, quads):
         page = np.frombuffer(B(t), np.uint8).reshape(t['h'], t['w'])
         # ⚠ V IS INVERTED: the screen TOP of this quad is the HIGHER v. Slice low..high then flip.
         sub = page[int(round(q['v0'])):int(round(q['v1'])),
-                   int(round(q['u0'])):int(round(q['u1']))][::-1]
+                   int(round(q['u0'])):int(round(q['u1']))]
+        if not q.get('vflip'):
+            sub = sub[::-1]
         if q['mir']:
             sub = sub[:, ::-1]
         r0 = int(round(q['sy'] - y0))

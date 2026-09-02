@@ -55,13 +55,22 @@ def node_parts(blk, base, slots, nd):
         fl = rawr[ri]['flags'] if rawr and ri < len(rawr) else 0
         hf, vf = bool(fl & 0x8000), bool(fl & 0x4000)
         bmp = idx[p['y']:p['y'] + p['h'], p['x']:p['x'] + p['w']][::-1]
+        pw, ph = p['w'], p['h']
+        dm = V3.gfx1dims(cid).get(r['part'])
+        if dm and '--no-logical' not in sys.argv and (nd['sid'] & 0x8000 or '--logical-all' in sys.argv):
+            sw, sh, lw, lh = dm
+            cw = lw * 8 if 0 < lw <= sw else pw
+            ch = lh * 8 if 0 < lh <= sh else ph
+            if (cw, ch) != (pw, ph):
+                bmp = bmp[:ch, :cw]
+                pw, ph = cw, ch
         if vf:
             bmp = bmp[::-1]
         if mir != hf:
             bmp = bmp[:, ::-1]
-        left = (ox + r['dx'] - p['w']) if mir else (ox - r['dx'])
+        left = (ox + r['dx'] - pw) if mir else (ox - r['dx'])
         top = oy + r['dy']
-        out.append((ri, left, top, p['w'], p['h'], bmp))
+        out.append((ri, left, top, pw, ph, bmp))
     return dict(nm=nm, cid=cid, ox=ox, oy=oy, mir=mir, parts=out)
 
 
@@ -81,7 +90,7 @@ def match(page, d, tk, left, top, w, h, bmp):
         return None
     for lab, got in (('V', raw[::-1]), ('HV', raw[::-1, ::-1]), ('-', raw), ('H', raw[:, ::-1])):
         if (got == want).all():
-            return lab
+            return (lab, ox_, oy_, tw, th, u0, v0) if os.environ.get('ROTDBG') else lab
     return None
 
 
@@ -130,20 +139,30 @@ def main():
                 else:
                     models = [('unrot', np_['parts'])]
             hits = Counter()
+            pred = sum(int((bmp > 0).sum()) for (_, _, _, _, _, bmp) in np_['parts'])
+            cov = 0
             for mname, plist in models:
                 for (page, d, tk) in allq:
                     for (ri, left, top, w, h, bmp) in plist:
                         lab = match(page, d, tk, left, top, w, h, bmp)
                         if lab:
+                            ox_, oy_ = int(round(d['sx'] - left)), int(round(d['sy'] - top))
+                            tw, th = int(round(d['tw'])), int(round(d['th']))
+                            cov += int((bmp[oy_:oy_ + th, ox_:ox_ + tw] > 0).sum())
+                        if lab and isinstance(lab, tuple):
+                            print('      %-26s %-6s rec %2d part %3dx%-3d tile %-2s at (%3d,%3d) %2dx%-2d page %dx%d u0 %2d v0 %2d' % (
+                                label, mname, ri, w, h, lab[0], lab[1], lab[2], lab[3], lab[4], tk['w'], tk['h'], lab[5], lab[6]))
+                            lab = lab[0]
+                        if lab:
                             hits[(mname, lab)] += 1
                             explained.setdefault(d['i'], (mname, label, lab))
                             break
-            per_node.append((label, '%s %s' % (np_['nm'], 'MIR' if np_['mir'] else '   '), hits))
+            per_node.append((label, '%s %s  px %5d covered %5d (%3d%%)' % (np_['nm'], 'MIR' if np_['mir'] else '   ', pred, cov, 100 * cov // max(1, pred)), hits))
         print('\n=== frame %d (state %d)  indexed quads %d  explained %d  UNEXPLAINED %d'
               % (frame, use, len(allq), len(explained), len(allq) - len(explained)))
         for label, nm, hits in per_node:
-            if hits or 'ROT' in label:
-                print('  %-28s %-10s %s' % (label, nm, dict(hits) if hits else 'NO QUAD MATCHED'))
+            if hits or 'ROT' in label or os.environ.get('ROTDBG') or '--all' in sys.argv:
+                print('  %-28s %-38s %s' % (label, nm, dict(hits) if hits else 'NO QUAD MATCHED'))
         tally = Counter((m, lab) for (m, _, lab) in explained.values())
         print('  by model/flip:', dict(tally))
         un = [d for (page, d, tk) in allq if d['i'] not in explained]
