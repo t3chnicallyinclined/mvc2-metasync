@@ -102,6 +102,60 @@ That is directly measurable with tooling we already have, and it is the next thi
 * **D4 — capture the command list directly** instead of the D3D11 stream. A shim hook at
   `FUN_1402B6F30`'s entry has the base pointer and count in registers.
 
+### D1 RESULT — measured live, 600 consecutive in-battle frames, 60.1 samples/s
+
+```
+changed BYTES     median   507   p90 1,044   p99 2,278   mean   568   max 2,903
+changed WORDS     median   216   p90   432   p99   989   mean   243   max 1,256
+contiguous RUNS   median   215   p90   414   p99   933   mean   236   max 1,193
+GZIPPED payload   median   426   p90   897   p99 1,576   mean   484   max 1,983   B/frame
+
+of 52,934 words in blk, 11,433 (21.6%) changed at least once
+                            69 (0.13%) changed in over half the frames
+```
+
+⚠ **The 484 B figure EXCLUDES the run headers, and that is a flaw in how the script reports.** With
+236 runs per frame at 8 B each, the naive encoded size is **2,453 B/frame raw**. So the honest range
+for a straightforward encoder is **~0.8-1.2 KB/frame**, i.e. **8-13 MB for a 3-minute match**, not
+5 MB.
+
+**But run-length is the wrong encoding for this shape.** 568 changed bytes spread over 236 runs is
+**2.4 bytes per run** — the changes are scattered, not clustered, so per-run headers cost more than
+the payload. The distribution says what to do instead:
+* only **11,433 of 52,934 words ever change** ⟹ ship a **static volatile-word index once**, then a
+  per-frame sparse bitmap over just those 11,433 bits (1,430 B raw, very sparse, compresses hard)
+* only **69 words change in over half the frames** ⟹ a hot/cold split shrinks it further
+* (`replay-kit/volatile_set.py` already computes an adjacent set — the words that differ between two
+  cold boots — for a portable anchor. Different set, same idea.)
+Realistic target with a proper encoder: **~0.6-0.9 KB/frame, 6-10 MB per 3-minute match.**
+
+### Where that lands it
+
+| feed | per frame | 3-min match | needs |
+| --- | ---: | ---: | --- |
+| confirmed GGPO inputs | ~0.9 B | ~0.01 MB | a determinism certificate we do not have |
+| the agent state tape | ~136 B | ~1.5 MB | a reconstructing renderer — the effect/HUD ceiling |
+| **blk delta** | **~0.6-1.2 KB** | **~6-13 MB** | **Steam's own emitter, client-side** |
+| D3D11 draw stream | ~37-62 KB | ~400 MB | nothing — but undeliverable |
+
+**~40-80x smaller than the draw stream, ~5x larger than the state tape — and unlike either, it needs
+no simulation, no inputs, no determinism certificate and no float-equivalence proof.**
+
+### ⚠ THE STRUCTURAL CONSEQUENCE, and it reframes D2
+
+Capturing the command list is **NOT** the compression win. The executor reads
+`*(longlong*)(record+8)` — the 16-byte records hold **pointers** to command objects elsewhere, and
+following ~890 of them at ~0x40 bytes each is ~57 KB/frame, the same order as the D3D11 stream.
+
+**The win is `blk`. Which means the client must RUN STEAM'S EMITTER** — the code that turns `blk`
+into the command list. So D2's real purpose is not "find the function" but **SCOPE IT**:
+
+> How many functions sit between `blk` and the command list, and what else do they read?
+> If it is a bounded subsystem, it ports to WASM and this architecture is real.
+> If it reaches into the whole game, it does not.
+
+That is the question to answer next, and it is a static-analysis question — no live session needed.
+
 ⚠ **Nothing here weakens the epistemics.** A command list is still an observation of OUR instrument;
 "pure function of `blk`" is a hypothesis with a named falsifier (D3), not a finding.
 
