@@ -85,9 +85,21 @@ def emit_frame(blk, base, shape, x0, y0):
         # nodes, bit set <=> absent from the axis-aligned indexed stream, 370/0/0/24, zero exceptions.
         # These nodes are not drawn as tiles; painting them here invents pixels. --draw-rotated keeps
         # them for A/B.
-        if (struct.unpack_from('<I', blk, nd['off'] + 0x148)[0] & 0x8000) and '--draw-rotated' not in sys.argv:
-            skipped['rotation-path node'] += 1
-            continue
+        # SH4 verdict (bank03:10665, loc_8c03481c): +0x148 is a plain u16 ANGLE (0x10000 = 360 deg),
+        # gate is `!= 0`, pivot = hotspot (+0x178/+0x17A), facing negates the angle, and every quad
+        # corner is rotated rigidly about the pivot AFTER placement. Surveyed: all 31 rotated nodes in
+        # these captures hold exactly 0x8000 with hotspot (0,0) -> a point reflection of the A=0
+        # layout through (floor(sx), floor(sy)), texels flipped both ways. --rot180 paints that;
+        # any other angle is still skipped (not exercised by this data).
+        ang = struct.unpack_from('<I', blk, nd['off'] + 0x148)[0] & 0xFFFF
+        rot180 = False
+        if ang:
+            hot = struct.unpack_from('<hh', blk, nd['off'] + 0x178)
+            if '--rot180' in sys.argv and ang == 0x8000 and hot == (0, 0):
+                rot180 = True
+            elif '--draw-rotated' not in sys.argv:
+                skipped['rotation-path node (angle 0x%04X hot %s)' % (ang, hot)] += 1
+                continue
         if nd['slot'] is not None:
             cid = blk[nd['off'] + H_CID]
             mir = bool(blk[nd['off'] + H_FACING])
@@ -141,6 +153,9 @@ def emit_frame(blk, base, shape, x0, y0):
                 bmp = bmp[:, ::-1]
             left = (ox + r['dx'] - p['w']) if mir else (ox - r['dx'])
             top = oy + r['dy']
+            if rot180:
+                left, top = 2 * ox - left - p['w'], 2 * oy - top - p['h']
+                bmp = bmp[::-1, ::-1]
             r0 = int(round(top - y0)); c0 = int(round(left - x0))
             rs, re = max(0, r0), min(H, r0 + p['h'])
             cs, ce = max(0, c0), min(W, c0 + p['w'])
