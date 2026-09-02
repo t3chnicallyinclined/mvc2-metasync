@@ -115,13 +115,32 @@ export class Replayer {
      * map guarantees one view per content.
      */
     setFrame(pack) {
-        this.pack = pack;
-        this.res = createResources(this.device, pack, this.shared);
-        this.bg0 = this.device.createBindGroup({
+        const entry = this.prepare(pack);
+        this.use(entry);
+        return entry.res.uploaded;
+    }
+
+    /**
+     * Build one frame's per-frame resources WITHOUT switching to them.
+     *
+     * Playback builds every frame up front and then only switches. Building during playback means
+     * three GPUBuffer allocations and a bind group every 16 ms, which is exactly the kind of steady
+     * allocation that shows up as intermittent hitching rather than a lower frame rate.
+     */
+    prepare(pack) {
+        const res = createResources(this.device, pack, this.shared);
+        const bg0 = this.device.createBindGroup({
             layout: this.bgl0,
-            entries: [{ binding: 0, resource: { buffer: this.res.uniformBuffer, size: 160 } }],
+            entries: [{ binding: 0, resource: { buffer: res.uniformBuffer, size: 160 } }],
         });
-        return this.res.uploaded;
+        return { pack, res, bg0 };
+    }
+
+    /** Switch to a prepared frame. Nothing is allocated here. */
+    use(entry) {
+        this.pack = entry.pack;
+        this.res = entry.res;
+        this.bg0 = entry.bg0;
     }
 
     /** The draw's vertex layout, or null when its input layout cannot feed the shader. */

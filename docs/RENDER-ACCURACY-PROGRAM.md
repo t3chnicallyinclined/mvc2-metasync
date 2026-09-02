@@ -1821,3 +1821,25 @@ gate: 597 texture keys, one bitmap each, 597 draw references all resolve
 
 ⚠ The general rule, now paid for three times: **a runtime pointer is never an identity, and a
 per-frame identity is never a cross-frame one.** Key by content, and assert the keying.
+
+### Pacing
+
+Two changes, one of them a real bug rather than an optimisation.
+
+**The play loop was paced off `requestAnimationFrame`'s COUNT.** It advanced one captured frame per
+Nth display refresh, which is real time only on a 60 Hz display: on a 144 Hz panel it played the
+match at 144 fps — 2.4x too fast — and on a laptop throttled to 30 Hz it played at half speed. The
+capture is a fixed 60 fps of GAME time, so the only correct pacing is elapsed milliseconds. The loop
+now accumulates wall-clock time against a target interval, and a long stall (tab switch, GC pause)
+advances at most 4 frames and drops the rest of the debt rather than fast-forwarding the match. The
+speed control is now a target rate (60/30/15/6 fps), not a refresh divisor.
+
+**Every frame's GPU resources are built up front.** Playback used to allocate three GPUBuffers and a
+bind group per frame — steady allocation at 60 Hz, which shows up as intermittent hitching rather
+than a lower frame rate. `Replayer.prepare()` builds a frame's resources without switching to them
+and `use()` switches with no allocation at all. The cost is bounded: the vertex buffer is dumped as a
+used-range prefix (~230 KB), the index buffer ~25 KB, uniforms 256 B per draw — about 0.5 MB per
+frame, with textures shared across the whole sequence rather than per frame.
+
+The player now reports its measured rate and any skipped frames, so pacing is a number rather than an
+impression.

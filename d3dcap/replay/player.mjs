@@ -108,6 +108,32 @@ export class SequencePlayer {
         return this;
     }
 
+    /**
+     * Build every frame's GPU resources up front.
+     *
+     * A sequence is a fixed, fully known set of frames, so there is nothing to discover during
+     * playback: uploading here turns each played frame into state-setting plus draw calls. The cost
+     * is bounded and small -- the vertex buffer is dumped as a used-range prefix (~230 KB), the index
+     * buffer is ~25 KB, and the uniform slice is 256 B per draw -- so ~0.5 MB per frame, and the
+     * textures are shared across the whole sequence rather than per frame.
+     */
+    async prepareAll(onProgress) {
+        this.prepared = [];
+        let bytes = 0;
+        for (let i = 0; i < this.seq.frames.length; i++) {
+            const e = this.replayer.prepare(this.seq.frames[i]);
+            this.prepared.push(e);
+            const h = this.seq.frames[i].head;
+            bytes += h.vb.len + h.ib.len + h.draws.length * 256;
+            if ((i & 7) === 0) {
+                onProgress?.(i + 1, this.seq.frames.length);
+                await new Promise((r) => setTimeout(r, 0));   // keep the page responsive
+            }
+        }
+        onProgress?.(this.seq.frames.length, this.seq.frames.length);
+        return { bytes, textures: this.shared.textures.size };
+    }
+
     get count() { return this.seq.frames.length; }
     get frameNumber() { return this.seq.frames[this.index].head.frame; }
 
@@ -115,7 +141,9 @@ export class SequencePlayer {
     draw(i, canvasView) {
         this.index = Math.max(0, Math.min(this.count - 1, i));
         const t0 = performance.now();
-        const uploaded = this.replayer.setFrame(this.seq.frames[this.index]);
+        const entry = this.prepared?.[this.index];
+        const uploaded = entry ? (this.replayer.use(entry), 0)
+                               : this.replayer.setFrame(this.seq.frames[this.index]);
         const { target, stats } = this.replayer.render({});
 
         if (!this.blitBind || this.blitSrc !== target) {

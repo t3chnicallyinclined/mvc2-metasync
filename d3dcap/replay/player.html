@@ -34,10 +34,10 @@
   <button id="loop" class="on">loop</button>
   <label>speed
     <select id="speed">
-      <option value="1">60 fps (real time)</option>
-      <option value="2">30 fps</option>
-      <option value="4">15 fps</option>
-      <option value="10">6 fps</option>
+      <option value="60">60 fps (real time)</option>
+      <option value="30">30 fps (half)</option>
+      <option value="15">15 fps</option>
+      <option value="6">6 fps</option>
     </select>
   </label>
 </header>
@@ -47,6 +47,7 @@
   <div class="scrub">
     <input id="pos" type="range" min="0" max="0" value="0" disabled>
     <span class="readout" id="readout">—</span>
+    <span class="readout" id="fps"></span>
   </div>
   <pre id="log"></pre>
 </main>
@@ -62,7 +63,7 @@ const log = (m, cls = '') => {
   $('log').appendChild(s);
 };
 
-let player = null, playing = false, raf = 0, tick = 0;
+let player = null, playing = false, raf = 0;
 
 // pack_sequence.py writes sequences.json, newest first, because serve.py answers "/" with
 // index.html rather than a directory listing — there is nothing to scrape.
@@ -112,6 +113,13 @@ $('load').onclick = async () => {
         `${(player.seq.bytes / 1048576).toFixed(1)} MB, ` +
         `${(player.count / 60).toFixed(2)}s of match at 60 fps`, 'ok');
 
+    log('building GPU resources for every frame …');
+    const built = await player.prepareAll((i, n) => {
+      $('readout').textContent = `preparing ${i}/${n}`;
+    });
+    log(`${(built.bytes / 1048576).toFixed(1)} MB of per-frame buffers, ` +
+        `${built.textures} textures shared across the sequence`, 'ok');
+
     $('pos').max = player.count - 1;
     $('pos').value = 0;
     for (const id of ['play', 'prev', 'next', 'pos']) $(id).disabled = false;
@@ -141,20 +149,39 @@ function stop() {
 $('play').onclick = () => {
   if (playing) return stop();
   playing = true;
-  tick = 0;
   $('play').textContent = '⏸ Pause';
   $('play').classList.add('on');
-  const step = () => {
+
+  // ⚠ PACE OFF THE WALL CLOCK, NOT OFF requestAnimationFrame's COUNT.
+  // The first version advanced one captured frame per Nth display refresh. That is only real time on
+  // a 60 Hz display: on a 144 Hz panel it played the match at 144 fps -- 2.4x too fast -- and on a
+  // laptop dropping to 30 Hz it played at half speed. The capture is a fixed 60 fps of GAME time, so
+  // the only correct pacing is elapsed milliseconds.
+  let last = performance.now();
+  let acc = 0;
+  let shown = 0, skipped = 0, fpsAt = last;
+  const step = (now) => {
     if (!playing) return;
-    // The capture is 60 consecutive GAME frames. Advancing one per Nth display refresh plays it at
-    // real speed on a 60 Hz display, and slower on demand -- no interpolation, no dropped frames.
-    if (tick++ % Number($('speed').value) === 0) {
-      let next = player.index + 1;
+    const interval = 1000 / Number($('speed').value);
+    acc += now - last;
+    last = now;
+    // A long stall (a tab switch, a GC pause) must not fast-forward the match. Advance at most a few
+    // frames per refresh and drop the rest of the debt on the floor.
+    let advance = Math.floor(acc / interval);
+    if (advance > 0) {
+      acc -= advance * interval;
+      if (advance > 4) { skipped += advance - 4; advance = 4; acc = 0; }
+      let next = player.index + advance;
       if (next >= player.count) {
-        if (!$('loop').classList.contains('on')) return stop();
-        next = 0;
+        if (!$('loop').classList.contains('on')) { stop(); return; }
+        next %= player.count;
       }
       show(next);
+      shown++;
+    }
+    if (now - fpsAt >= 1000) {
+      $('fps').textContent = `${shown} fps` + (skipped ? ` · ${skipped} skipped` : '');
+      shown = 0; skipped = 0; fpsAt = now;
     }
     raf = requestAnimationFrame(step);
   };
