@@ -108,3 +108,4 @@ docs/BTCPAY-ECONOMY-STUDY.md
 # BYOR: live game-state dumps and derived volatility maps are ROM-derived
 replay-kit/blk_snapshot.bin
 replay-kit/blk_hot.npy
+d3dcap/replay/tcw_pages/

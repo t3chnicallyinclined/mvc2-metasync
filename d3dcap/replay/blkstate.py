@@ -269,6 +269,52 @@ def nodes(blk, base):
     return out
 
 
+# ── SYSTEM A: the world-space class (Ghidra FUN_140620740 / FUN_140620cd0, 2026-09-02) ──────────
+# Singly-linked lists at blk+0x2EDE8 + L*8 (next = node+0x10). A node is drawn when +0x170 != 0
+# (the textured-quad path also needs an object at +0xA0). Its 4x4 at +0xA8 (column-major, 16 f32)
+# IS Steam's per-draw CBWorld transposed (254/307 vs_world draws byte-exact on f4445). +0xA0 points
+# at a DC-style TA polygon-list object (header 0x18, records: PCW/ISP/TSP/TCW + 32-B vertices) that
+# lives OUTSIDE the block -- the capture has its vertices in the VB, the agent must read it by
+# pointer. Lists seen: 6 stage backdrop, 7 hail chunks / fighter shadow+marker set, 8 3D models
+# (+0xE8), 11 HUD, 12 stage root.
+ALIST_HEADS = 0x2EDE8
+A_NEXT, A_CALLBACK, A_POS, A_SCALE, A_COLOUR, A_OBJ, A_MATRIX, A_MODEL, A_FLAGS, A_DRAWN =     0x10, 0x40, 0x50, 0x6C, 0x94, 0xA0, 0xA8, 0xE8, 0xF0, 0x170
+
+
+def anodes(blk, base, lists=range(16), drawn_only=True, limit=256):
+    """Every System-A node in list order: list, off, drawn, flags, pos, scale, colour, matrix16,
+    obj (absolute pointer, outside the block), model (absolute pointer or 0)."""
+    out = []
+    for L in lists:
+        p = struct.unpack_from('<Q', blk, ALIST_HEADS + L * 8)[0]
+        n = 0
+        while p and n < limit:
+            off = p - base
+            if not (0 <= off and off + 0x180 <= BLK_SZ):
+                break
+            drawn = blk[off + A_DRAWN]
+            if drawn or not drawn_only:
+                out.append(dict(
+                    list=L, idx=n, off=off, drawn=drawn,
+                    flags=struct.unpack_from('<I', blk, off + A_FLAGS)[0],
+                    pos=struct.unpack_from('<fff', blk, off + A_POS),
+                    scale=struct.unpack_from('<fff', blk, off + A_SCALE),
+                    colour=struct.unpack_from('<fff', blk, off + A_COLOUR),
+                    matrix=struct.unpack_from('<16f', blk, off + A_MATRIX),
+                    obj=struct.unpack_from('<Q', blk, off + A_OBJ)[0],
+                    model=struct.unpack_from('<Q', blk, off + A_MODEL)[0],
+                    callback=struct.unpack_from('<Q', blk, off + A_CALLBACK)[0]))
+            n += 1
+            p = struct.unpack_from('<Q', blk, off + A_NEXT)[0]
+    return out
+
+
+def cbworld(matrix16):
+    """The 48-byte row-major 3x4 Steam binds as CBWorld, from the node's column-major 4x4."""
+    m = matrix16
+    return struct.pack('<12f', m[0], m[4], m[8], m[12], m[1], m[5], m[9], m[13], m[2], m[6], m[10], m[14])
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('frame', nargs='?', type=int)
@@ -276,7 +322,18 @@ def main():
     ap.add_argument('--json', action='store_true')
     ap.add_argument('--range', nargs=2, type=int, metavar=('LO', 'HI'))
     ap.add_argument('--field', help='histogram one node field over --range, e.g. sort / cat / layer')
+    ap.add_argument('--alist', action='store_true', help='print the System-A (world-space) lists instead')
     a = ap.parse_args()
+    if a.alist and a.frame is not None:
+        meta, blk = load_frame(a.frame, a.cap)
+        base, score, handles = find_base(blk)
+        if meta.get('base'):
+            base = int(meta['base'])
+        for nd in anodes(blk, base):
+            print('list %2d i%-3d off 0x%05X flags %08X obj %s model %s pos (%.1f,%.1f,%.1f) scale (%.2f,%.2f,%.2f) col (%.2f,%.2f,%.2f) T (%.2f,%.2f,%.2f)' % (
+                nd['list'], nd['idx'], nd['off'], nd['flags'], 'Y' if nd['obj'] else '-', 'Y' if nd['model'] else '-',
+                *nd['pos'], *nd['scale'], *nd['colour'], nd['matrix'][12], nd['matrix'][13], nd['matrix'][14]))
+        return 0
 
     if a.range:
         hist, seen, frames = Counter(), 0, 0
