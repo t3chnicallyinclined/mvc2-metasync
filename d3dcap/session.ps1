@@ -140,7 +140,7 @@ while ((Get-Date) -lt $stop) {
             $null = $fs.Seek($logLen, 'Begin')
             $sr = New-Object IO.StreamReader($fs)
             $sr.ReadToEnd() -split "`r?`n" |
-                Where-Object { $_ -match '\[burst\]|\[write\]|\[buf\]|\[tex\]' } |
+                Where-Object { $_ -match '\[burst\]|\[write\]|\[buf\]|\[tex\]|\[emit\]' } |
                 ForEach-Object { Say "  $_" DarkGray }
             $sr.Close(); $fs.Close(); $logLen = $len
         }

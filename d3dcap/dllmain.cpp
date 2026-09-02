@@ -185,7 +185,11 @@ static void writeAsyncCopy(const char* path, const void* src, size_t n) {
 // VERTEX or INDEX buffer is logged once, with its rebased address, so it can be pasted straight into
 // Ghidra. This is the same trick that found the draw executor: the capture already knew
 // 885 of 890 draws came from 0x1402B72F4 and nobody had looked.
-struct WriteSite { uintptr_t ret; unsigned kind; unsigned hits; };
+// ⚠ ONE RETURN ADDRESS IS NOT ENOUGH. The first version logged _ReturnAddress(), which for every
+// geometry write landed on 0x140371740 — 11,004 hits at a single site inside FUN_140371620, a
+// GENERIC BUFFER-UPLOAD HELPER with 24 callers. The helper is not the emitter; its caller is. So
+// capture a short backtrace and report every frame that lies inside the game module.
+struct WriteSite { uintptr_t ret[4]; unsigned kind; unsigned hits; };
 static WriteSite g_wsite[64];
 static int g_nwsite = 0;
 
@@ -203,21 +207,30 @@ static void noteWriter(void* ret, ID3D11Resource* r, const char* how) {
     // are the renderer, not the game.
     if (!(bd.BindFlags & (D3D11_BIND_VERTEX_BUFFER | D3D11_BIND_INDEX_BUFFER))) return;
 
-    uintptr_t a = (uintptr_t)ret;
+    // frame 0 is this hook; 1 is the D3D call site; 2+ is who asked for it.
+    void* bt[8] = {};
+    USHORT n = RtlCaptureStackBackTrace(1, 8, bt, nullptr);
+    uintptr_t key[4] = {0, 0, 0, 0};
+    int k = 0;
+    for (USHORT i = 0; i < n && k < 4; ++i) {
+        uintptr_t a = (uintptr_t)bt[i];
+        if (g_imgBase && a >= g_imgBase && a < g_imgBase + g_imgSize)
+            key[k++] = a - g_imgBase + 0x140000000ULL;      // rebased, paste-ready
+    }
+    if (!k) key[0] = (uintptr_t)ret;
+
     for (int i = 0; i < g_nwsite; ++i)
-        if (g_wsite[i].ret == a) { ++g_wsite[i].hits; return; }
+        if (memcmp(g_wsite[i].ret, key, sizeof(key)) == 0) { ++g_wsite[i].hits; return; }
     if (g_nwsite >= 64) return;
-    g_wsite[g_nwsite].ret = a;
+    memcpy(g_wsite[g_nwsite].ret, key, sizeof(key));
     g_wsite[g_nwsite].kind = bd.BindFlags;
     g_wsite[g_nwsite].hits = 1;
     ++g_nwsite;
 
-    uintptr_t rebased = 0;
-    const char* mod = "game";
-    if (g_imgBase && a >= g_imgBase && a < g_imgBase + g_imgSize) rebased = a - g_imgBase + 0x140000000ULL;
-    else mod = moduleOf((void*)a);
-    logf("[emit] NEW %s writer: ret=0x%llX (%s) buffer=%u bytes flags=0x%X  <- paste into Ghidra",
-         how, (unsigned long long)(rebased ? rebased : a), mod, bd.ByteWidth, bd.BindFlags);
+    logf("[emit] NEW %s writer  %u bytes flags=0x%X  call chain: 0x%llX <- 0x%llX <- 0x%llX <- 0x%llX",
+         how, bd.ByteWidth, bd.BindFlags,
+         (unsigned long long)key[0], (unsigned long long)key[1],
+         (unsigned long long)key[2], (unsigned long long)key[3]);
 }
 
 static bool safeRead(const void* src, void* dst, size_t n) {
@@ -1503,13 +1516,11 @@ static HRESULT STDMETHODCALLTYPE hkPresent(IDXGISwapChain* sc, UINT si, UINT fla
             logf("[cap] frame %u inventory: %u draws", g_frame, g_drawIdx);
         if (g_nwsite) {
             logf("[emit] %d distinct geometry writers seen so far:", g_nwsite);
-            for (int i = 0; i < g_nwsite; ++i) {
-                uintptr_t a = g_wsite[i].ret, rb = 0;
-                if (g_imgBase && a >= g_imgBase && a < g_imgBase + g_imgSize)
-                    rb = a - g_imgBase + 0x140000000ULL;
-                logf("[emit]   0x%llX  flags=0x%X  x%u",
-                     (unsigned long long)(rb ? rb : a), g_wsite[i].kind, g_wsite[i].hits);
-            }
+            for (int i = 0; i < g_nwsite; ++i)
+                logf("[emit]   x%-6u flags=0x%X  0x%llX <- 0x%llX <- 0x%llX <- 0x%llX",
+                     g_wsite[i].hits, g_wsite[i].kind,
+                     (unsigned long long)g_wsite[i].ret[0], (unsigned long long)g_wsite[i].ret[1],
+                     (unsigned long long)g_wsite[i].ret[2], (unsigned long long)g_wsite[i].ret[3]);
         }
         } else if ((g_burstGot % 60) == 0) {
             logf("[burst] %u/%u frames (%u draws, %d textures, %lld MB queued to disk)",
