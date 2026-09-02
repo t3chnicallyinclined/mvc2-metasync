@@ -51,6 +51,8 @@ was given the other's answer.
 ⚠ ROM-derived. The .seq embeds the game's own pixels. Never commit one, never serve it publicly.
 """
 import argparse
+import base64
+import gzip
 import hashlib
 import json
 import os
@@ -175,7 +177,40 @@ def main():
     ap.add_argument('--swap-teams', action='store_true')
     a = ap.parse_args()
 
-    tape = json.load(open(a.tape, encoding='utf-8'))
+    raw = open(a.tape, 'rb').read()
+    if raw[:2] == bytes([0x1F, 0x8B]):
+        raw = gzip.decompress(raw)
+    tape = json.loads(raw)
+    # ⭐ TAPE v3. `nodes` is the engine's own draw list -- fighters and pool objects interleaved,
+    # in paint order. When present it REPLACES the per-slot columns and the objs stream: the record
+    # index is the z-order, so the sort/layer/registration model below is bypassed entirely.
+    # `pals` is the palette each node's `pal` indexes: 32 B ARGB4444 (u16 LE, A15-12 R11-8 G7-4
+    # B3-0, nibble*17). Verified: all 5 resolved rows of tape 59612530 match an atlas LUT row
+    # byte-for-byte.
+    v3nodes, v3pals = {}, []
+    if tape.get('nodes'):
+        nb = gzip.decompress(base64.b64decode(tape['nodes']))
+        off = 0
+        while off + 6 <= len(nb):
+            fr = struct.unpack_from('<I', nb, off)[0]
+            n = struct.unpack_from('<H', nb, off + 4)[0]
+            off += 6
+            rows = []
+            for _ in range(n):
+                v = struct.unpack_from('<BBBbBBBBHHHBBBBHHHfffII', nb, off)
+                off += 44
+                rows.append(dict(kind=v[0], slot=v[1], cat=v[2], sort=v[3], layer=v[4], face=v[5],
+                                 owner=v[6], drawn=v[7], sid=v[8], pal=v[9], zx=v[15] / 4096.0,
+                                 fsx=v[18], fsy=v[19], depth=v[20], gfx1=v[21]))
+            v3nodes[fr] = rows
+        pb = gzip.decompress(base64.b64decode(tape.get('pals', '')))
+        for i in range(len(pb) // 32):
+            pal = np.zeros((256, 4), np.uint8)
+            for j in range(16):
+                w = struct.unpack_from('<H', pb, i * 32 + j * 2)[0]
+                pal[j] = ((w >> 8) & 15) * 17, ((w >> 4) & 15) * 17, (w & 15) * 17, ((w >> 12) & 15) * 17
+            v3pals.append(pal)
+        print('  TAPE v3: %d frames of ordered nodes, %d palettes' % (len(v3nodes), len(v3pals)))
     cols = [s.strip() for s in tape['schema'].strip('[]').split(',')]
     C = {n: i for i, n in enumerate(cols)}
     for need in ('drawn[6]', 'sid[6]', 'sx[6]', 'sy[6]', 'facing[6]'):
@@ -194,8 +229,10 @@ def main():
     print('  P1 %s   P2 %s' % (['PL%02X' % c for c in p1], ['PL%02X' % c for c in p2]))
 
     objs = {}
-    if not a.no_objs:
-        for fr, lst in tape.get('objs', ()):
+    # v2 only: the local test tapes carry `objs` pre-decoded as [frame, rows] pairs; a server tape
+    # carries it as a base64 gz string. On a v3 tape the node stream supersedes it, so skip both.
+    if not a.no_objs and not v3nodes and isinstance(tape.get('objs'), list):
+        for fr, lst in tape['objs']:
             objs[int(fr)] = lst
     print('  objs stream: %d frames carry objects (%d rows total)'
           % (len(objs), sum(len(v) for v in objs.values())))
@@ -226,7 +263,22 @@ def main():
         # Tris asked "there has to be a pointer or function telling that object what order to draw
         # in" -- this is it, and it is already in every tape we have recorded.
         items = []
-        for slot in range(6):
+        fr_clock = int(r[C['frame']])
+        if v3nodes:
+            # v3: the order IS the payload. No sort below is applied; `kind` picks the atlas lookup.
+            for nd in v3nodes.get(fr_clock, ()):
+                if nd['kind'] == 0:
+                    cid = (p1 if nd['slot'] % 2 == 0 else p2)[nd['slot'] // 2]
+                    mir = bool(nd['face'])
+                else:
+                    if nd['owner'] > 5:
+                        missing['object with owner %d (unowned)' % nd['owner']] += 1
+                        continue
+                    cid = (p1 if nd['owner'] % 2 == 0 else p2)[nd['owner'] // 2]
+                    mir = bool(nd['face']) != bool(nd['sid'] & 0x8000)
+                items.append((0, Atlas.get(a.atlas, cid), nd['sid'] & 0x7FFF, nd['fsx'], nd['fsy'],
+                              mir, 'body' if nd['kind'] == 0 else 'obj', nd['pal']))
+        for slot in range(6 if not v3nodes else 0):
             if not r[C['drawn[6]']][slot]:
                 continue
             lay = r[C['layer[6]']][slot] if 'layer[6]' in C else 8
@@ -243,7 +295,7 @@ def main():
         # zx is 6826 in every row of this tape = 5/3 exactly, i.e. the same 640->384 factor the
         # origins use, so the native scale is 1 and no scaling is applied here. A tape where zx
         # VARIES would need it -- that is the DC walker's scaled branch, and it is not exercised yet.
-        for ob in objs.get(int(r[C['frame']]), ()):
+        for ob in (() if v3nodes else objs.get(int(r[C['frame']]), ())):
             sid_raw, osx, osy, zx, face, cat, owner, lay = ob[0], ob[1], ob[2], ob[3], ob[4], ob[5], ob[6], ob[7]
             if owner > 5:
                 missing['object with owner %d (unowned)' % owner] += 1
@@ -279,7 +331,8 @@ def main():
         KIND = {'body': 0, 'obj': 1}                 # registration order: fighters, then the pool
         if a.objs_under:
             KIND = {'body': 1, 'obj': 0}
-        items.sort(key=lambda t: ((-t[0] if a.layer_desc else t[0]), KIND[t[6]]))
+        if not v3nodes:
+            items.sort(key=lambda t: ((-t[0] if a.layer_desc else t[0]), KIND[t[6]]))
 
         for lay, at, sid, tsx, tsy, mir, kind, cos in items:
             if at is None:
@@ -293,7 +346,10 @@ def main():
             if a.flip_facing:
                 mir = not mir
 
-            pal = at.palette(a.bank, cos)
+            if v3nodes and a.bank is None and 0 <= cos < len(v3pals):
+                pal = v3pals[cos]                      # v3: `cos` is the resolved palette index
+            else:
+                pal = at.palette(a.bank, cos)
             palkey = '%s_pal_%s' % (at.name, sha8(pal.tobytes()))
             if palkey not in textures:
                 textures[palkey] = {'w': 256, 'h': 1, 'fmt': 28, **intern(pal.tobytes())}
