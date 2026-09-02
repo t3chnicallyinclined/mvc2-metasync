@@ -87,7 +87,10 @@ function bindSchema(schemaStr, hasNodes) {
 //   44 B: u8 kind, u8 slot, u8 cat, i8 sort, u8 layer, u8 face, u8 owner, u8 drawn,
 //         u16 sid, u16 pal, u16 flash, u8 glow, u8 is_effect, u8 blend, u8 atimer,
 //         u16 zx, u16 zy, u16 effect_key, f32 fsx, f32 fsy, f32 depth, u32 gfx1, u32 gfx2
-export function decodeNodesBytes(bytes) {
+// TAPE v4 (agent 0.3.34+): the same record with a 6 B tail -- u16 angle (H+0x148, 0x10000 = 360
+// degrees, 0 = axis-aligned; the SH4 rotation path, NOT a flag), i16 hotx, i16 hoty (H+0x178, the
+// rotation pivot). The tape says which via `nodes_stride` (44 = v3, 50 = v4).
+export function decodeNodesBytes(bytes, stride = 44) {
   const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   const byFrame = new Map();
   let off = 0;
@@ -95,7 +98,7 @@ export function decodeNodesBytes(bytes) {
     const frame = dv.getUint32(off, true); off += 4;
     const count = dv.getUint16(off, true); off += 2;
     const out = [];
-    for (let i = 0; i < count && off + 44 <= bytes.length; i++) {
+    for (let i = 0; i < count && off + stride <= bytes.length; i++) {
       out.push({
         kind: bytes[off], slot: bytes[off + 1], cat: bytes[off + 2],
         sort: dv.getInt8(off + 3), layer: bytes[off + 4], face: bytes[off + 5],
@@ -108,9 +111,12 @@ export function decodeNodesBytes(bytes) {
         sx: dv.getFloat32(off + 24, true), sy: dv.getFloat32(off + 28, true),
         depth: dv.getFloat32(off + 32, true),
         gfx1: dv.getUint32(off + 36, true), gfx2: dv.getUint32(off + 40, true),
+        angle: stride >= 50 ? dv.getUint16(off + 44, true) : 0,
+        hotx: stride >= 50 ? dv.getInt16(off + 46, true) : 0,
+        hoty: stride >= 50 ? dv.getInt16(off + 48, true) : 0,
         z: i,                       // paint order, and the ONLY ordering input the renderer needs
       });
-      off += 44;
+      off += stride;
     }
     byFrame.set(frame, out);
   }
@@ -221,7 +227,7 @@ export class TapeAdapter {
       p1_team: rawTape.p1_team, p2_team: rawTape.p2_team, objRecBytes: recBytes,
       objsByFrame: objsBytes ? decodeObjsBytes(objsBytes, recBytes) : new Map(),
       // v3 streams, when the tape carries them. Both are gunzipped by the caller, like objs.
-      nodesByFrame: rawTape.nodesBytes ? decodeNodesBytes(rawTape.nodesBytes) : new Map(),
+      nodesByFrame: rawTape.nodesBytes ? decodeNodesBytes(rawTape.nodesBytes, rawTape.nodesStride || 44) : new Map(),
       pals: rawTape.palsBytes ? decodePals(rawTape.palsBytes) : [],
       stage_id: rawTape.stage_id,
     });

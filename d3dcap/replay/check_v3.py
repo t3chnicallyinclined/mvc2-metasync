@@ -62,6 +62,13 @@ def main():
     # 2. decode
     nb = b64gz(t['nodes'])
     pals = b64gz(t['pals']) if t.get('pals') else b''
+    # v4 (agent 0.3.34+): 50 B = the 44 B v3 record + u16 angle, i16 hotx, i16 hoty. `nodes_stride`
+    # says which; a v3 tape has no key and is 44.
+    stride = int(t.get('nodes_stride', 44))
+    print('nodes_stride %d (ver %s)' % (stride, t.get('nodes_ver', 3)))
+    if stride not in (44, 50):
+        fail('nodes_stride %d is neither 44 (v3) nor 50 (v4)' % stride)
+        return 1
     frames, off = {}, 0
     while off + 6 <= len(nb):
         fr = struct.unpack_from('<I', nb, off)[0]
@@ -69,16 +76,18 @@ def main():
         off += 6
         rows = []
         for _ in range(n):
-            if off + 44 > len(nb):
+            if off + stride > len(nb):
                 fail('nodes stream truncated inside frame %d' % fr)
                 break
             (kind, slot, cat, srt, layer, face, owner, drawn, sid, pal, flash, glow, isfx, blend,
              atimer, zx, zy, ekey, fsx, fsy, depth, gfx1, gfx2) = struct.unpack_from(
                 '<BBBbBBBBHHHBBBBHHHfffII', nb, off)
+            angle, hotx, hoty = struct.unpack_from('<Hhh', nb, off + 44) if stride >= 50 else (0, 0, 0)
             rows.append(dict(kind=kind, slot=slot, cat=cat, sort=srt, layer=layer, face=face,
                              owner=owner, drawn=drawn, sid=sid, pal=pal, flash=flash, glow=glow,
-                             zx=zx / 4096.0, fsx=fsx, fsy=fsy, gfx1=gfx1))
-            off += 44
+                             zx=zx / 4096.0, fsx=fsx, fsy=fsy, gfx1=gfx1,
+                             angle=angle, hotx=hotx, hoty=hoty))
+            off += stride
         frames[fr] = rows
     if off != len(nb):
         fail('nodes stream has %d trailing bytes -- stride mismatch?' % (len(nb) - off))
@@ -135,6 +144,16 @@ def main():
     print('nodes whose fsx has a fractional part: %d of %d' % (frac, total))
     if total and frac == 0:
         fail('fsx is integral everywhere -- precision was lost somewhere before the wire')
+
+    # 8. v4: the rotation fields are live (angle is a u16 with 0x10000 = 360 deg; every rotated node
+    #    seen so far is exactly 0x8000 -- any other non-zero value is NEW DATA, print it)
+    if stride >= 50:
+        av = Counter(r['angle'] for rows in frames.values() for r in rows if r['angle'])
+        hv = Counter((r['hotx'], r['hoty']) for rows in frames.values() for r in rows if r['angle'])
+        print('v4 rotated nodes: %d   angles %s   hotspots %s' % (sum(av.values()), dict(av.most_common(6)), dict(hv.most_common(4))))
+        odd = {a: c for a, c in av.items() if a != 0x8000}
+        if odd:
+            print('  NOTE: angles other than 0x8000 present %s -- the general rotation formula is specified but unexercised' % odd)
 
     # 7. v2 wire unchanged
     if t.get('objs'):

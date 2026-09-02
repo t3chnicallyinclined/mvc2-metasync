@@ -102,16 +102,37 @@ class Atlas:
         # row is applied by WHICH 256x1 palette the draw binds (the index pages are plain 1..15
         # under every palette -- measured, 0 texels > 15 in 130k). This is the "PL32 needs sub-row
         # 2" gap, closed: the sub-row is per RECORD, from the ROM, not per costume.
-        self.rows = {}
+        self.rows, self.flags = {}, {}
         g = glob.glob('C:/Users/trist/projects/maplecast-flycast/dasm_PLDAT/Output/%s_DAT/*GFX_DATA_01.BIN' % self.name)
         if RIP and g:
             cells = RIP.read_cells(open(g[0], 'rb').read())[0]
             for sel, recs in (cells.items() if isinstance(cells, dict) else enumerate(cells)):
                 self.rows[int(sel)] = [((r['flags'] >> 4) & 7) for r in (recs or [])]
+                # per-record FLAGS: 0x8000 = hflip (XOR the node's facing), 0x4000 = vflip
+                # (Steam walker, Ghidra chunk 0x140612f70; v3gate 100% with this mapping)
+                self.flags[int(sel)] = [r['flags'] for r in (recs or [])]
+        # GFX1 LOGICAL DIMS. Header [lw][lh][sw][sh] in 8 px units: a scale-walker record (sid
+        # bit 15) draws lw*8 x lh*8 -- the top-left of the storage block -- and is PLACED by that
+        # width (SH4 bank03 loc_8c0348c8). The deployed json carries STORAGE dims. Tiled bodies keep
+        # storage dims. v3gate: 98.5% -> 100% on the super frames.
+        self.dims = {}
+        g0 = glob.glob('C:/Users/trist/projects/maplecast-flycast/dasm_PLDAT/Output/%s_DAT/*GFX_DATA_00.BIN' % self.name)
+        if g0:
+            b = open(g0[0], 'rb').read()
+            n = struct.unpack_from('<I', b, 0)[0] >> 2
+            for sel in range(n):
+                o = struct.unpack_from('<I', b, sel * 4)[0]
+                if o + 4 <= len(b):
+                    lw, lh, sw, sh = b[o:o + 4]
+                    self.dims[sel] = (sw, sh, lw, lh)
 
     def row_of(self, sel, ri):
         rows = self.rows.get(int(sel))
         return rows[ri] if rows and ri < len(rows) else 0
+
+    def flag_of(self, sel, ri):
+        fl = self.flags.get(int(sel))
+        return fl[ri] if fl and ri < len(fl) else 0
 
     @classmethod
     def get(cls, base, cid):
@@ -122,9 +143,16 @@ class Atlas:
                 cls._cache[cid] = None
         return cls._cache[cid]
 
-    def part_bitmap(self, pid, vflip=True):
+    def part_bitmap(self, pid, vflip=True, logical=False):
         p = self.parts[str(pid)]
         a = self.idx[p['y']:p['y'] + p['h'], p['x']:p['x'] + p['w']]
+        if logical and int(pid) in self.dims:
+            sw, sh, lw, lh = self.dims[int(pid)]
+            cw = lw * 8 if 0 < lw <= sw else p['w']
+            ch = lh * 8 if 0 < lh <= sh else p['h']
+            if (cw, ch) != (p['w'], p['h']):
+                b = a[::-1][:ch, :cw]            # top-left in DC (top-down) orientation
+                return (b.copy() if vflip else b[::-1].copy()), cw, ch
         # ⭐ EVERY PART IS STORED UPSIDE DOWN. Verified against Steam's OWN rendered frame
         # (scene_5630): PL32 sel 13 assembled with a full vertical flip is Colossus in exactly the
         # captured pose; without it, or with a 32-row band reversal, it is scrambled.
@@ -213,6 +241,9 @@ def main():
     v3nodes, v3pals = {}, []
     if tape.get('nodes'):
         nb = gzip.decompress(base64.b64decode(tape['nodes']))
+        # v4 (agent 0.3.34+): 50 B = the 44 B v3 record + u16 angle (H+0x148, 0x10000 = 360 deg),
+        # i16 hotx, i16 hoty (H+0x178, the rotation pivot). `nodes_stride` says which.
+        stride = int(tape.get('nodes_stride', 44))
         off = 0
         while off + 6 <= len(nb):
             fr = struct.unpack_from('<I', nb, off)[0]
@@ -221,10 +252,12 @@ def main():
             rows = []
             for _ in range(n):
                 v = struct.unpack_from('<BBBbBBBBHHHBBBBHHHfffII', nb, off)
-                off += 44
+                angle, hotx, hoty = struct.unpack_from('<Hhh', nb, off + 44) if stride >= 50 else (0, 0, 0)
+                off += stride
                 rows.append(dict(kind=v[0], slot=v[1], cat=v[2], sort=v[3], layer=v[4], face=v[5],
                                  owner=v[6], drawn=v[7], sid=v[8], pal=v[9], zx=v[15] / 4096.0,
-                                 fsx=v[18], fsy=v[19], depth=v[20], gfx1=v[21]))
+                                 fsx=v[18], fsy=v[19], depth=v[20], gfx1=v[21],
+                                 angle=angle, hot=(hotx, hoty)))
             v3nodes[fr] = rows
         pb = gzip.decompress(base64.b64decode(tape.get('pals', '')))
         for i in range(len(pb) // 32):
@@ -233,7 +266,8 @@ def main():
                 w = struct.unpack_from('<H', pb, i * 32 + j * 2)[0]
                 pal[j] = ((w >> 8) & 15) * 17, ((w >> 4) & 15) * 17, (w & 15) * 17, ((w >> 12) & 15) * 17
             v3pals.append(pal)
-        print('  TAPE v3: %d frames of ordered nodes, %d palettes' % (len(v3nodes), len(v3pals)))
+        print('  TAPE v%d: %d frames of ordered nodes, %d palettes, stride %d' % (
+            4 if stride >= 50 else 3, len(v3nodes), len(v3pals), stride))
     cols = [s.strip() for s in tape['schema'].strip('[]').split(',')]
     C = {n: i for i, n in enumerate(cols)}
     for need in ('drawn[6]', 'sid[6]', 'sx[6]', 'sy[6]', 'facing[6]'):
@@ -300,23 +334,27 @@ def main():
             for _si, nd in ordered:
                 if nd['kind'] == 0:
                     cid = (p1 if nd['slot'] % 2 == 0 else p2)[nd['slot'] // 2]
-                    mir = bool(nd['face'])
                 else:
                     if nd['owner'] > 5:
                         missing['object with owner %d (unowned)' % nd['owner']] += 1
                         continue
                     cid = (p1 if nd['owner'] % 2 == 0 else p2)[nd['owner'] // 2]
-                    mir = bool(nd['face']) != bool(nd['sid'] & 0x8000)
+                # mirror = the node's facing ONLY. sid bit 15 selects the record FORMAT (the
+                # scale walker), it is not a flip (Ghidra FUN_1406129f0; v3gate 100% with this).
+                mir = bool(nd['face'])
                 items.append((0, Atlas.get(a.atlas, cid), nd['sid'] & 0x7FFF, nd['fsx'], nd['fsy'],
-                              mir, 'body' if nd['kind'] == 0 else 'obj', nd['pal']))
+                              mir, 'body' if nd['kind'] == 0 else 'obj', nd['pal'],
+                              dict(bit15=bool(nd['sid'] & 0x8000), angle=nd.get('angle', 0), hot=nd.get('hot', (0, 0)))))
         for slot in range(6 if not v3nodes else 0):
             if not r[C['drawn[6]']][slot]:
                 continue
             lay = r[C['layer[6]']][slot] if 'layer[6]' in C else 8
+            sid_raw = int(r[C['sid[6]']][slot])
             items.append((lay, Atlas.get(a.atlas, (p1 if slot % 2 == 0 else p2)[slot // 2]),
-                          int(r[C['sid[6]']][slot]),
+                          sid_raw & 0x7FFF,
                           r[C['sx[6]']][slot], r[C['sy[6]']][slot],
-                          bool(r[C['facing[6]']][slot]), 'body', costume[slot]))
+                          bool(r[C['facing[6]']][slot]), 'body', costume[slot],
+                          dict(bit15=bool(sid_raw & 0x8000), angle=0, hot=(0, 0))))
         # OBJECTS -- capes, projectiles, satellites. Not drawing these is why a cape can simply
         # VANISH on one animation and be fine on another: in some poses it is part of the body
         # sprite, in others it is its own pool node.
@@ -333,7 +371,8 @@ def main():
                 continue
             items.append((lay, Atlas.get(a.atlas, (p1 if owner % 2 == 0 else p2)[owner // 2]),
                           sid_raw & 0x7FFF, osx, osy,
-                          bool(face) != bool(sid_raw & 0x8000), 'obj', costume[owner]))
+                          bool(face), 'obj', costume[owner],       # facing only; bit 15 is not a flip
+                          dict(bit15=bool(sid_raw & 0x8000), angle=0, hot=(0, 0))))
 
         # ⭐⭐ THE DRAW ORDER, CONFIRMED FROM THE DISASSEMBLY (mvc2-sh4-re-expert, bank03/bank04).
         # Battle sprites do NOT use the linked-list buckets I first read. There are TWO render
@@ -365,7 +404,7 @@ def main():
         if not v3nodes:
             items.sort(key=lambda t: ((-t[0] if a.layer_desc else t[0]), KIND[t[6]]))
 
-        for lay, at, sid, tsx, tsy, mir, kind, cos in items:
+        for lay, at, sid, tsx, tsy, mir, kind, cos, extra in items:
             if at is None:
                 missing['no atlas'] += 1
                 continue
@@ -415,13 +454,32 @@ def main():
                 palkey = '%s_pal_%s' % (at.name, sha8(pal.tobytes()))
                 if palkey not in textures:
                     textures[palkey] = {'w': 256, 'h': 1, 'fmt': 28, **intern(pal.tobytes())}
-                bmp, pw, ph = at.part_bitmap(pid, not a.no_vflip)
+                bmp, pw, ph = at.part_bitmap(pid, not a.no_vflip, logical=extra['bit15'])
+                # per-record flags: vflip in the bitmap; hflip in the bitmap too -- the node's mirror
+                # is applied by the UV winding below, so the net is (mir XOR hf), as on Steam.
+                fl = at.flag_of(sid, ri)
+                if fl & 0x4000:
+                    bmp = bmp[::-1]
+                if fl & 0x8000:
+                    bmp = bmp[:, ::-1]
+                # ROTATION (SH4 bank03 loc_8c03481c; v3gate 24/24): +0x148 is an angle, 0x8000 =
+                # 180 deg. With a zero hotspot that is a point reflection of the whole assembly
+                # through (floor(sx), floor(sy)) with the texels flipped both ways. Other angles are
+                # specified (rigid rotation about the hotspot) but unexercised -- drawn unrotated
+                # and counted, so a tape that carries one is noticed.
+                rot180 = extra['angle'] == 0x8000 and tuple(extra['hot']) == (0, 0)
+                if extra['angle'] and not rot180:
+                    missing['angle 0x%04X hot %s (unrotated)' % (extra['angle'], extra['hot'])] += 1
+                if rot180:
+                    bmp = bmp[::-1, ::-1]
                 key = '%s_p%d_%s' % (at.name, pid, sha8(bmp.tobytes()))
                 if key not in textures:
                     textures[key] = {'w': pw, 'h': ph, 'fmt': 61, **intern(bmp.tobytes())}
 
                 left = (ox + rec['dx'] - pw) if mir else (ox - rec['dx'])
                 top = oy + rec['dy']
+                if rot180:
+                    left, top = 2 * ox - left - pw, 2 * oy - top - ph
                 x0, x1 = left / SX - 1.0, (left + pw) / SX - 1.0
                 y0, y1 = 1.0 - top / SY, 1.0 - (top + ph) / SY
                 z = Z0 - len(draws) * ZSTEP
