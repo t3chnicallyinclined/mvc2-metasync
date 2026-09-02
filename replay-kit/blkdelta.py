@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """blkdelta.py — how many bytes of `blk` actually change per GAME FRAME?
 
-    python blkdelta.py [frames]        # default 600 (10 s at 60 fps)
+    python blkdelta.py [frames] [--save]      # default 600 (10 s at 60 fps)
 
 READ-ONLY. It attaches to the running game and reads; it never writes.
 
@@ -48,7 +48,7 @@ from collections import Counter
 import numpy as np
 
 from savestate import Game, BLK_PTR, BLKSZ, FC_OFF
-from verify import MODE_OFF
+from verify import MODE_OFF, H0, STRIDE
 
 
 def main():
@@ -134,6 +134,41 @@ def main():
     print(f"  for comparison — the D3D11 draw stream  : ~400 MB")
     print(f"  the agent state tape                    : ~1.5 MB")
     print(f"  confirmed GGPO inputs                   : ~0.01 MB")
+
+    # ── WHERE the volatile words are, against the structures we already know ────────────────────
+    # The hypothesis this answers: blk is [match data loaded once] + [per-frame simulation state].
+    # If so, the static majority ships ONCE in the anchor and only the volatile part is per-frame.
+    KNOWN = [
+        ("fighter slots (6 x 0x738)", H0, H0 + 6 * STRIDE),
+        ("frame clock",               FC_OFF, FC_OFF + 4),
+        ("mode / gameflow",           MODE_OFF, MODE_OFF + 8),
+        ("match options",             0x3C40, 0x3D08),
+        ("roster unlock mask",        0x3CE8, 0x3CF0),
+        ("stage id (a)",              0x6D3C, 0x6D40),
+        ("camera",                    0x6914, 0x6924),
+        ("stage id (b)",              0x32530, 0x32534),
+        ("object pool (0x280 stride)", 0x3DB8 + 6 * STRIDE, 0x32530),
+    ]
+    print()
+    print("{:28s} {:>10s} {:>10s} {:>8s}".format("REGION", "words", "volatile", "%"))
+    covered = np.zeros(BLKSZ // 4, bool)
+    for name, lo, hi in KNOWN:
+        w0, w1 = lo // 4, (hi + 3) // 4
+        seg = hot[w0:w1]
+        covered[w0:w1] = True
+        if len(seg):
+            print("{:28s} {:10,d} {:10,d} {:7.1f}%".format(
+                name, len(seg), int((seg > 0).sum()), 100.0 * (seg > 0).mean()))
+    rest = hot[~covered]
+    print("{:28s} {:10,d} {:10,d} {:7.1f}%".format(
+        "everything else", len(rest), int((rest > 0).sum()), 100.0 * (rest > 0).mean()))
+
+    if "--save" in sys.argv:
+        np.save("blk_hot.npy", hot)
+        with open("blk_snapshot.bin", "wb") as f:
+            f.write(prev.tobytes())
+        print("wrote blk_hot.npy (per-word change counts) and blk_snapshot.bin "
+              "(211 KB) for offline analysis")
 
     touched = int((hot > 0).sum())
     print(f"\nof {BLKSZ//4:,} words in blk, {touched:,} ({100*touched/(BLKSZ//4):.1f}%) changed at "
