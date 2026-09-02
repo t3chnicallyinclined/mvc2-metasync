@@ -289,10 +289,56 @@ a whole-buffer rebuild each frame is, by construction, a **pure function of the 
 moment**. It does not prove D3 — but a game that incrementally patched its vertex buffer would have
 made D3 false on the spot, and this one does not.
 
+### ⭐⭐⭐ AND WE DO NOT HAVE TO PORT IT — the emitter is ALREADY reverse-engineered, on the DC side
+
+Tris: *"we have the ROM though, we know exactly how the game behaves too."* Correct, and it changes
+the build entirely. The re_kb already carries the DC sprite-emission chain, cited to instruction:
+
+```
+loc_8c030af8   satellite/effect setup   (sibling of loc_8c03093c "Render Main Sprite")
+  -> loc_8c034bea   sel dispatch on node+0x144: 0xFF = terminator, &0x8000 = scaled, else ->
+    -> loc_8c0344d4   THE BODY WALKER            bank03.asm:10218
+         record loop          loc_8c03489e :10772
+         per-record entry     loc_8c0345c4 :10349   (@(0x6,r11) = sel)
+         count gate           loc_8c034782 :10608
+         PER-TILE SUBMIT      loc_8c034864 :10739
+         flag axes            0x4000 @10477 / 0x8000 @10503; neg Y control 0x20, neg X control 0x10
+         the transform itself fr12 = (r10+r4)*scaleX@0xEC,  fr13 = (@0x14+r5)...
+  -> bank12   loc_8c1216c0 transform,  loc_8c1244b0 / 0x8C1248CC  SPRITE-PARA SUBMIT
+```
+
+**Steam's emitter IS a recompile of that code.** So "port Steam's ~30 subsystems" was the wrong
+framing — the correct one is *implement the DC emitter we already have*, and
+`buildEmitterDrawList` in `sprite-client.mjs` is already a partial implementation of exactly this
+walker.
+
+**⟹ The reason to go to Steam was never the LOGIC. It is the ASSETS and the ORACLE:**
+* the effect cells and the HUD bank, which do not exist offline
+* a pixel-exact reference to check the emitter against, which never existed before
+
+And it re-prices everything. The build is no longer "reverse-engineer and port an unknown
+subsystem". It is:
+
+1. **feed the existing emitter properly** — `blk` delta gives 276 B of node state where the tape gave
+   32 B, which is the measured ratio behind the reconstruction ceiling;
+2. **map `blk` -> DC work-RAM** — already established as 5 piecewise deltas that close to the byte
+   (`mvc2-dc-steam-block-map`), and the object pool is confirmed on both sides;
+3. **fix the assembly data** — ⚠ this is the real open risk, not the code. The union-of-tiles search
+   found no convergence (best 0.685), which means our offline `_asm.json` geometry may not describe
+   the engine's actual quads. **More state does not fix a wrong assembly table.**
+
+⚠ Two honest cautions against over-reading this:
+* the DC chain is CONFIRMED for the BODY walker. The effect/satellite path, the 3D class and the HUD
+  list are separately mapped and less complete.
+* `node+0x144` is the `sel` dispatch field on the DC side. In our Steam pool read it was **not** hot —
+  but the 44 nodes sampled were category 0x0B (HUD), which is a different tenant of the pool. Nothing
+  is settled there yet.
+
 ### The honest scoping verdict
 
-The emitter is **one (or a few) of those ~30 subsystems**, not the whole game. Bounded and
-identifiable — but the tick functions are game logic, so porting is real work, not a translation.
+The emitter is **one (or a few) of those ~30 subsystems**, not the whole game — and per the section
+above, **we do not need to port it at all**, because it is a recompile of DC code we have already
+disassembled and partly implemented. Steam's value here is the oracle and the assets, not the logic.
 
 **Next, and it is small:** `FUN_140371620` receives a descriptor carrying the SOURCE pointer
 (`+0x20`, or `+0x38` on the alternate path). Log it, and we learn **where the CPU-side vertex buffer
