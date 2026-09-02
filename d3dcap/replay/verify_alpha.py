@@ -92,6 +92,8 @@ def raster(P, alpha, depth, written_by, di, cls, aref, idxplane, palA, texA, t0,
         # NEGATIVE signed area (counter-clockwise with y down) the front face.
         ccw, mode = cull
         front = (den < 0) if ccw else (den > 0)
+        if os.environ.get("CULL") == "invert":
+            front = not front
         if (mode == 2 and front) or (mode == 3 and not front):
             return 0
     inside = (l0 >= 0) & (l1 >= 0) & (l2 >= 0)
@@ -220,6 +222,11 @@ def main(frame):
         if h in cbs and len(cbs[h]) >= 4:
             aref = struct.unpack_from("<f", cbs[h], 0)[0]
 
+        only = os.environ.get("ONLY")
+        if only and cls != only:
+            stats[f"filtered out: {cls}"] += 1
+            continue
+
         tl = d.get("tex") or []
         t0 = tl[0] if tl else None
         t1 = tl[1] if len(tl) > 1 else None
@@ -277,7 +284,7 @@ def main(frame):
 
         rs = d.get("raster") or {}
         cull = None
-        if os.environ.get("CULL") == "1" and rs.get("cull", 1) != 1:
+        if os.environ.get("CULL") in ("1", "invert") and rs.get("cull", 1) != 1:
             cull = (bool(rs.get("ccw", 0)), rs["cull"])
         dfunc, dwrite = depth_state(d)
         wrote = 0

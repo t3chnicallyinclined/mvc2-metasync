@@ -113,6 +113,11 @@ $('run').onclick = async () => {
     const t0 = performance.now();
     const { target, stats, pipelines } = r.render({ only, cullNone });
     const ours = { width: r.width, height: r.height, data: await r.readback(target) };
+    if (stats.noLayout) {
+      log(`${stats.noLayout} draws skipped: their captured input layout does not supply every ` +
+          `attribute the shader reads (the 28-byte POSITION+NORMAL layout). Rendering them would ` +
+          `mean inventing colours and UVs.`, 'warn');
+    }
     log(`drew ${stats.drawn} (${JSON.stringify(stats.byVariant)}), skipped ${stats.skipped}, ` +
         `${pipelines} pipelines, ${(performance.now() - t0).toFixed(0)} ms`);
 

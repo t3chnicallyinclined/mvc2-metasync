@@ -1485,3 +1485,49 @@ search space, exactly as the capture expert predicted it would.
   threshold on alpha alone.
 * The dead degenerate-triangle check in `pack_replay.py`'s `strip_to_list` — `a`, `b`, `c` are always
   three distinct consecutive indices, so it could never fire.
+
+### The bug Gate 0 flushed out: a byte offset packed as a vertex index
+
+With the model proved exact, the WebGPU replay's own split metric read:
+
+```
+COVERAGE   we cover 916,417 px (74.578%)   truth 1,228,764 (99.997%)   MISSING 312,348 (25.419%)
+```
+
+`pack_replay.py` was computing each draw's first vertex as
+
+```python
+first = (d["voff"] + d["start"] * stride) // stride
+```
+
+which folds the vertex buffer's **byte** offset into a vertex **index**. That is only valid when
+`voff` is a whole number of vertices. In frame 4261 it usually is not:
+
+| voff | stride | draws | voff % stride |
+| ---: | ---: | ---: | ---: |
+| 65,536 | 28 | 1 | 16 |
+| 65,648 | 40 | 1 | 8 |
+| 65,808 | 28 | 1 | 8 |
+| 65,920 | 40 | 202 | 0 |
+| 98,304 | 40 | 172 | **24** |
+| 131,072 | 40 | 154 | **32** |
+| 163,840 | 40 | 176 | 0 |
+| 196,608 | 40 | 53 | **8** |
+
+**382 of 760 draws — 50.3% — fetched POSITION out of the middle of the previous vertex.** It failed
+the way a subtle bug does: the surviving half still landed somewhere plausible, so the frame looked
+roughly right and two rounds of analysis read it as a shading problem.
+
+Fixed by keeping `voff` a byte offset and binding it with `setVertexBuffer(0, vb, d.voff)`, which
+takes one; indices are now relative to it. All offsets are multiples of 4, which is what WebGPU
+requires. The packer asserts that and now prints the alignment picture every run.
+
+Two related things fell out of the same look:
+
+* the vertex layout was **hardcoded** to `arrayStride: 40`, but the frame has four input layouts
+  including a 28-byte POSITION+NORMAL one with no colours and no texture coordinates. The layout is
+  now built from the captured `D3D11_INPUT_ELEMENT_DESC[]`, which the pack carries, and a draw whose
+  layout cannot supply every attribute the shader reads is **skipped and counted** rather than
+  rendered from invented data (`verify_alpha.py` confirms those 2 draws contribute no coverage);
+* the pipeline cache key did not include the layout, so the first draw's layout would have been
+  reused for every later draw with matching states.

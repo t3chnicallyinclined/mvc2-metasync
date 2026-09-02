@@ -138,17 +138,43 @@ export function createResources(device, pack) {
 }
 
 /**
- * Vertex layout, straight from the captured D3D11_INPUT_ELEMENT_DESC[].
- * ⚠ shaderLocation 1 (NORMAL) is deliberately ABSENT: the vertex shader never declares it and the
- * game leaves those 8 bytes uninitialised, so real captures hold NaN there. Declaring it "for
- * debugging" would propagate NaN through interpolation.
+ * Vertex layout, built from the captured D3D11_INPUT_ELEMENT_DESC[] rather than hardcoded.
+ *
+ * ⚠ shaderLocation 1 (NORMAL) is deliberately DROPPED: the vertex shader never declares it and the
+ * 40-byte layouts leave those bytes uninitialised, so real captures hold NaN there. Declaring it
+ * "for debugging" would propagate NaN through interpolation.
+ *
+ * ⚠ There is no single layout to hardcode. Frame 4261 has four input layouts: three 40-byte ones
+ * that happen to be byte-identical, and one 28-byte POSITION+NORMAL layout with no colours and no
+ * texture coordinates at all. A hardcoded arrayStride of 40 reads that fourth layout at the wrong
+ * pitch and its colours out of thin air.
  */
-export const VERTEX_LAYOUT = {
-    arrayStride: 40,
-    attributes: [
-        { shaderLocation: 0, offset: 0,  format: 'float32x4' },   // POSITION (.xyz read)
-        { shaderLocation: 2, offset: 24, format: 'unorm8x4'  },   // TANGENT  = colour 0
-        { shaderLocation: 3, offset: 28, format: 'unorm8x4'  },   // BINORMAL = colour 1
-        { shaderLocation: 4, offset: 32, format: 'float32x2' },   // TEXCOORD
-    ],
+const SEMANTIC_LOCATION = { POSITION: 0, NORMAL: 1, TANGENT: 2, BINORMAL: 3, TEXCOORD: 4 };
+
+// DXGI_FORMAT -> GPUVertexFormat, for the formats this capture actually uses. Anything else must
+// throw: silently substituting a same-width format would put plausible garbage in a varying.
+const VERTEX_FORMAT = {
+    2:  'float32x4',   // R32G32B32A32_FLOAT
+    6:  'float32x3',   // R32G32B32_FLOAT
+    16: 'float32x2',   // R32G32_FLOAT
+    28: 'unorm8x4',    // R8G8B8A8_UNORM  (RGBA, NOT BGRA -- no swizzle needed)
 };
+
+// The attributes the WGSL actually declares. A layout that cannot supply all of them cannot feed the
+// shader, and WebGPU rejects such a pipeline outright -- so those draws are skipped and counted
+// rather than rendered from invented data.
+export const REQUIRED_LOCATIONS = [0, 2, 3, 4];
+
+export function vertexLayoutFor(stride, elements) {
+    const attributes = [];
+    for (const e of elements || []) {
+        const shaderLocation = SEMANTIC_LOCATION[e.semantic];
+        if (shaderLocation === undefined || shaderLocation === 1) continue;
+        const format = VERTEX_FORMAT[e.format];
+        if (!format) throw new Error(`unmapped DXGI vertex format ${e.format} on ${e.semantic}`);
+        attributes.push({ shaderLocation, offset: e.offset, format });
+    }
+    const have = new Set(attributes.map((a) => a.shaderLocation));
+    if (!REQUIRED_LOCATIONS.every((l) => have.has(l))) return null;
+    return { arrayStride: stride, attributes };
+}

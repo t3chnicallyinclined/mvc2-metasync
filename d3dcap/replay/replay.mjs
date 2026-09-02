@@ -10,7 +10,7 @@
 // ⚠⚠ A pixel diff that improves is a MEASUREMENT, not a mechanism. A match shows our translation of
 // the captured state reproduces the pixels; it establishes nothing about MvC2 itself.
 
-import { loadPack, createResources, VERTEX_LAYOUT } from './resources.mjs';
+import { loadPack, createResources, vertexLayoutFor } from './resources.mjs';
 import { toBlendState, toWriteMask, toDepthStencil, applyDepthBias, toPrimitive, applyViewport,
          pipelineKey } from './state.mjs';
 
@@ -95,8 +95,23 @@ export class Replayer {
         return this;
     }
 
-    _pipeline(d, variant) {
-        const key = pipelineKey(d, `${variant.vs}|${variant.fs}`, 'triangle-list');
+    /** The draw's vertex layout, or null when its input layout cannot feed the shader. */
+    _layout(d) {
+        if (!this._layoutCache) this._layoutCache = new Map();
+        const key = `${d.il}:${d.stride}`;
+        if (!this._layoutCache.has(key)) {
+            const elements = this.pack.head.inputLayouts?.[d.il];
+            if (!elements) throw new Error(`pack has no input layout ${d.il} -- repack the frame`);
+            this._layoutCache.set(key, vertexLayoutFor(d.stride, elements));
+        }
+        return this._layoutCache.get(key);
+    }
+
+    _pipeline(d, variant, layout) {
+        // The vertex layout is part of the pipeline, so it must be part of the key. Leaving it out
+        // lets the first draw's layout be reused for every later draw with the same states.
+        const key = pipelineKey(d, `${variant.vs}|${variant.fs}`, 'triangle-list')
+                  + `:${d.il}:${d.stride}`;
         let p = this.pipelines.get(key);
         if (p) return p;
 
@@ -110,7 +125,7 @@ export class Replayer {
 
         p = this.device.createRenderPipeline({
             layout: this.layout,
-            vertex: { module: this.module, entryPoint: vsEntry, buffers: [VERTEX_LAYOUT] },
+            vertex: { module: this.module, entryPoint: vsEntry, buffers: [layout] },
             fragment: {
                 module: this.module, entryPoint: fsEntry,
                 targets: [{ format: this.format, writeMask: toWriteMask(d.blend),
@@ -176,17 +191,24 @@ export class Replayer {
             },
         });
 
-        pass.setVertexBuffer(0, this.res.vertexBuffer);
         pass.setIndexBuffer(this.res.indexBuffer, 'uint32');
 
-        const stats = { drawn: 0, skipped: 0, byVariant: {} };
+        const stats = { drawn: 0, skipped: 0, noLayout: 0, byVariant: {} };
         head.draws.forEach((d, i) => {
             const variant = variantFor(d);
             const cls = classOf(d);
             if (opts.only && cls !== opts.only) { stats.skipped++; return; }
 
+            const layout = this._layout(d);
+            if (!layout) { stats.noLayout++; return; }
+
             const dd = opts.cullNone ? { ...d, raster: { ...(d.raster || {}), cull: 1 } } : d;
-            pass.setPipeline(this._pipeline(dd, variant));
+            pass.setPipeline(this._pipeline(dd, variant, layout));
+            // THE VERTEX OFFSET IS A BYTE OFFSET AND MUST BE BOUND AS ONE. Half the draws in a frame
+            // start part-way through a vertex (voff % stride != 0), so it cannot be folded into the
+            // first index -- doing that silently fetched POSITION out of the middle of the previous
+            // vertex for 382 of 760 draws and cost a quarter of the frame's coverage.
+            pass.setVertexBuffer(0, this.res.vertexBuffer, d.voff);
             pass.setBindGroup(0, this.bg0, [i * this.res.uniformStride]);
             pass.setBindGroup(1, this._bindGroup(d));
             applyViewport(pass, d.vp);

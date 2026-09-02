@@ -147,7 +147,7 @@ def main():
 
     vs_hash = blob_map("vs_%s.cso", "vs")
     ps_hash = blob_map("ps_%s.cso", "ps")
-    il_hash = {}
+    il_hash, il_elements = {}, {}
     for d in scene:
         ptr = d.get("il")
         if not ptr or ptr in il_hash:
@@ -155,6 +155,10 @@ def main():
         f = os.path.join(CAP, "il_%s.json" % ptr)
         if os.path.exists(f):
             il_hash[ptr] = sha8(open(f, "rb").read())
+            # The ELEMENTS have to travel with the pack, not just a hash of them: the replayer builds
+            # its GPUVertexBufferLayout from these. Hardcoding one layout works only while every draw
+            # shares it, and this frame already has a 28-byte position+normal layout that does not.
+            il_elements[il_hash[ptr]] = json.load(open(f))["elements"]
     print("shaders: %d VS, %d PS, %d input layouts (content-hashed)"
           % (len(vs_hash), len(ps_hash), len(il_hash)))
 
@@ -183,7 +187,20 @@ def main():
         stride = d.get("stride") or 0
         if not stride:
             continue
-        first = (d["voff"] + d["start"] * stride) // stride
+        # ⚠⚠ THE VERTEX-OFFSET TRAP (measured 2026-09-01, cost a full round of false leads).
+        # This used to be  first = (voff + start * stride) // stride,  folding the vertex buffer's
+        # BYTE offset into a vertex INDEX. That is only valid when voff is a whole number of
+        # vertices, and in frame 4261 it is not: voff takes the values 65536, 65648, 65808, 98304,
+        # 131072 and 196608 against strides of 40 and 28, so 382 of 760 draws -- 50.3% -- were
+        # misaligned by 8, 16, 24 or 32 bytes. Every one of them fetched POSITION out of the middle
+        # of the previous vertex. It failed exactly the way a subtle bug does: half the geometry
+        # still landed somewhere plausible, so the frame looked roughly right and the diff read as a
+        # shading problem for two rounds.
+        # The fix is to keep voff as a BYTE offset and hand it to setVertexBuffer, which takes one.
+        if d["voff"] % 4:
+            sys.exit("draw %d has vertex offset %d, which WebGPU cannot bind (must be a multiple "
+                     "of 4)" % (d["i"], d["voff"]))
+        first = d["start"]
         topo = d.get("topo")
         topo_hist[topo] += 1
         if topo == D3D_TRIANGLESTRIP:
@@ -196,7 +213,9 @@ def main():
             continue
         out_draws.append({
             "i": d["i"], "firstIndex": len(indices), "indexCount": len(idx),
-            "stride": stride,
+            # voff is a BYTE offset into the vertex buffer and stays one; indexCount/firstIndex index
+            # the pack's own index buffer, and the index VALUES are relative to voff.
+            "stride": stride, "voff": d["voff"],
             "vs": vs_hash.get(d.get("vs")), "ps": ps_hash.get(d.get("ps")),
             "il": il_hash.get(d.get("il")),
             "vsVariant": smap["vs"].get(vs_hash.get(d.get("vs")), {}).get("variant"),
@@ -223,6 +242,12 @@ def main():
         print("  ⚠ %d draws have no shader variant: %s"
               % (sum(unmapped.values()), dict(unmapped)))
     print("variants: %s" % dict(Counter((d.get("vsVariant"), d.get("psVariant")) for d in out_draws)))
+
+    voffs = Counter((d["voff"], d["stride"]) for d in out_draws)
+    ragged = sum(n for (v, st), n in voffs.items() if v % st)
+    print("vertex offsets: %d distinct, %d of %d draws start mid-vertex (%d%%) -- these are exactly "
+          "the draws the old byte-offset-as-index packing destroyed"
+          % (len(voffs), ragged, len(out_draws), round(100.0 * ragged / max(1, len(out_draws)))))
 
     print("topology in: %s -> all triangle lists out, %d indices, %d draws"
           % ({("STRIP" if k == 5 else "LIST" if k == 4 else k): v for k, v in topo_hist.items()},
@@ -276,6 +301,7 @@ def main():
         "clears": clears,
         "vb": add(vb),
         "ib": add(struct.pack("<%dI" % len(indices), *indices)),
+        "inputLayouts": il_elements,
         "textures": {},
         "constantBuffers": {},
         "draws": out_draws,
