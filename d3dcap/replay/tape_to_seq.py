@@ -57,6 +57,7 @@ import gzip
 import hashlib
 import json
 import os
+import math
 import struct
 import sys
 from collections import Counter, OrderedDict
@@ -310,6 +311,7 @@ def main():
     textures, heads = OrderedDict(), []
     cb_recs = {h: intern(b) for h, b in tcbs.items()}
     missing, drawn_total = Counter(), 0
+    rotated_general = Counter()   # angle -> parts drawn through the general (ungated) rotation path
 
     for r in rows:
         verts, idxs, draws = bytearray(), [], []
@@ -468,8 +470,17 @@ def main():
                 # specified (rigid rotation about the hotspot) but unexercised -- drawn unrotated
                 # and counted, so a tape that carries one is noticed.
                 rot180 = extra['angle'] == 0x8000 and tuple(extra['hot']) == (0, 0)
-                if extra['angle'] and not rot180:
-                    missing['angle 0x%04X hot %s (unrotated)' % (extra['angle'], extra['hot'])] += 1
+                # GENERAL ROTATION (SH4 bank03 loc_8c03481c / loc_8c034b66 + bank12 loc_8C1244B0,
+                # mvc2-sh4-re-expert, CONFIRMED in the disassembly; first seen in DATA on tape
+                # 59612784: angle 0x1400 = 28.125 deg with hotspots like (-48,-104)):
+                #   pivot P = origin + (facing ? -hotX : hotX, hotY)      [native px; E0/E4 + s*hot]
+                #   theta   = ((facing ? -A : A) & 0xFFFF) * 2pi / 65536   [+A = CCW on the y-down screen]
+                #   corner' = P + R(corner - P),  R(x, y) = (x*c + y*s, -x*s + y*c)
+                # The A=0 layout is the proven placement law; the rotation is RIGID about P, applied
+                # to the four corners of each part AFTER placement (post-scale). ⚠ Pixel-exactness of
+                # this path is NOT gated: no capture holds a non-0x8000 angle yet. 0x8000 with a zero
+                # hotspot is the exact special case (reflection with texel flips, gated 24/24).
+                rot_gen = bool(extra['angle']) and not rot180
                 if rot180:
                     bmp = bmp[::-1, ::-1]
                 key = '%s_p%d_%s' % (at.name, pid, sha8(bmp.tobytes()))
@@ -480,13 +491,22 @@ def main():
                 top = oy + rec['dy']
                 if rot180:
                     left, top = 2 * ox - left - pw, 2 * oy - top - ph
-                x0, x1 = left / SX - 1.0, (left + pw) / SX - 1.0
-                y0, y1 = 1.0 - top / SY, 1.0 - (top + ph) / SY
+                # corners in native px: TL, BL, TR, BR (index order the IB below expects)
+                corners = [(left, top), (left, top + ph), (left + pw, top), (left + pw, top + ph)]
+                if rot_gen:
+                    sgn = -1.0 if mir else 1.0
+                    hx, hy = extra['hot']
+                    Px, Py = ox + sgn * hx, oy + hy
+                    th = (((-extra['angle']) if mir else extra['angle']) & 0xFFFF) * (2.0 * math.pi / 65536.0)
+                    c, sn = math.cos(th), math.sin(th)
+                    corners = [(Px + (cx - Px) * c + (cy - Py) * sn, Py - (cx - Px) * sn + (cy - Py) * c)
+                               for cx, cy in corners]
+                    rotated_general[extra['angle']] += 1
                 z = Z0 - len(draws) * ZSTEP
                 u0, u1 = (1.0, 0.0) if mir else (0.0, 1.0)   # the mirror lives in the UV winding
                 first = len(verts) // STRIDE
-                for px, py, u, v in ((x0, y0, u0, 0.0), (x0, y1, u0, 1.0),
-                                     (x1, y0, u1, 0.0), (x1, y1, u1, 1.0)):
+                for (cx, cy), u, v in zip(corners, (u0, u0, u1, u1), (0.0, 1.0, 0.0, 1.0)):
+                    px, py = cx / SX - 1.0, 1.0 - cy / SY
                     verts += struct.pack('<4f', px, py, z, 0.0)      # POSITION  @0
                     verts += struct.pack('<2f', 0.0, 0.0)            # NORMAL    @16 (never read)
                     verts += bytes((255, 255, 255, 255))             # color0    @24  white, opaque
@@ -524,6 +544,9 @@ def main():
             f.write(p)
     total = 8 + len(hb) + sum(len(p) for p in pool)
 
+    if rotated_general:
+        print('  general-rotation parts (disassembly formula, NOT pixel-gated): %s'
+              % {('0x%04X' % k): v for k, v in rotated_general.items()})
     print('\n%d frames, %d draws (%.1f/frame), %d distinct textures'
           % (len(heads), drawn_total, drawn_total / max(1, len(heads)), len(textures)))
     if missing:
