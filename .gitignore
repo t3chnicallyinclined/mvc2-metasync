@@ -104,3 +104,7 @@ docs/BTCPAY-ECONOMY-STUDY.md
 
 # d3dcap sequences: a burst of captured frames, ROM-derived like the .pack files.
 /d3dcap/replay/*.seq
+
+# BYOR: live game-state dumps and derived volatility maps are ROM-derived
+replay-kit/blk_snapshot.bin
+replay-kit/blk_hot.npy

@@ -739,3 +739,128 @@ Everything in Lane C except C3-C5, and everything in Lane B after capture, is **
 * Is DC `0x8C3496B0` the same counter as Steam `blk+0x3CC8`? INFERRED-consistent, not proven; the two
   sit in different segments of the 5-delta piecewise DC↔blk map. **Route to `mvc2-sh4-re-expert`.**
 * Asset identity Steam vs DC GDI — UNKNOWN until M6 runs. Everything pixel-level is conditional on it.
+
+---
+
+## 12. ⭐⭐⭐ M6 ANSWERED — the asset identity is CONFIRMED, and the assembly table is SOUND
+
+> 2026-09-02. `d3dcap/replay/asm_ident.py`, run on packs already on disk. No live session, no new
+> capture, no game state, zero fitted constants. This closes the open item that section 11 ended on
+> ("Asset identity Steam vs DC GDI — UNKNOWN until M6 runs. Everything pixel-level is conditional on
+> it") and it retires the "the assembly data may be wrong" risk that the rest of this document was
+> written around.
+
+### 12.1 What Steam's character path actually is
+
+Measured on frame 2574 (84 indexed draws). Every character draw is **one quad**, and:
+
+* quads are exactly **8x8, 16x16 or 32x32** in native units — integer, square, power of two;
+* the **UV span in TEXELS equals the size in native units EXACTLY**. Scale is 1:1. There is no zoom
+  and no transform;
+* every quad samples a **32x32 R8_UNORM index page** plus a 256x1 RGBA palette, POINT on both;
+* **index values are 0..15 only** — 4bpp is preserved end to end, index 0 is the transparent entry;
+* **each quad carries its own z**, stepping by a constant ~1.79e-7 per draw. Draw order is encoded in
+  the depth value — the registration counter, exactly as `mvc-render-composite-model` states.
+
+So the Steam character path is a **plain 2D tile blit**: the sprite is cut into 8/16/32 tiles taken
+from 32x32 pages. The DC assembly record `(dx, dy, part)` sits **one level above** this, which is why
+comparing the two needs a union and not a per-quad match.
+
+### 12.2 M6: the pixel banks are the SAME BYTES
+
+Take each captured 32x32 index page and search for a byte-exact copy in every offline `PLxx_idx.png`
+— a 4bpp bitmap match across **60 candidate characters** with zero free parameters.
+
+```
+frame 2574:  8 pages matched byte-exact -> PL17 x7, PL2C x1
+frame 5630: 12 pages matched byte-exact -> PL32 x7, PL2A x5
+frame 3893:  8 pages matched byte-exact -> PL17 x6, PL2C x2
+```
+
+Matches are at **exactly 1.000**, not a threshold, and matched positions cluster into contiguous
+32-aligned blocks in the atlas. **⟹ the ROM-extracted index pixels ARE the bytes Steam draws.** The
+offline extraction pipeline is correct at the pixel level, and Steam vs DC GDI asset identity is
+CONFIRMED rather than assumed.
+
+A second capability falls out for free: **the character is recoverable from a capture that carries no
+game state at all.** That does not remove the need to log `blk` at Present, but it does mean every
+capture already on disk can be labelled retroactively.
+
+### 12.3 The falsifier: does the assembly table place the parts?
+
+For each matched tile we know its atlas position AND its screen position, so we can resolve which
+packed part contains it and derive that part's screen top-left. Seven independent tiles on frame 2574
+collapse onto just **two** part placements, each confirmed redundantly and with **no disagreeing
+observation**. Then: is there one assembly whose records place every observed part at one origin?
+
+```
+frame 2574  PL17   part 1149 (32x64) @ 328.8,82.1  [2 tiles]   part 1158 (64x128) @ 296.8,130.1  [5]
+            -> EXACT, zero residual, facing LEFT.  origin (319.8, 202.067).  sel 10 of 681
+frame 5630  PL32   part 89   (32x32) @ 363.6,167.1 [1 tile]    part 81  (128x64) @ 315.6, 87.1  [6]
+            -> EXACT, zero residual, facing LEFT.  origin (354.6, 202.067).  sel  1 of 581
+```
+
+**Two different characters, two different frames, both exact, and both land on `origin_y =
+202.067`.** Neither run was given the other's answer — a shared ground line is an independent
+cross-check that the model is not fitting noise. Frame 5630 pins the `sel` **uniquely, 1 of 581**.
+
+### 12.4 The placement law (confirmed, no fitted constants)
+
+```
+screen_x = origin_x - dx           # facing LEFT (mirrored);  + dx when facing right
+screen_y = origin_y + dy
+within a part, a tile at atlas offset (offx, offy):
+    x += offx
+    y += (part_h - tile_h - offy)  # the packed part bitmap rows are BOTTOM-UP
+```
+
+### 12.5 ⚠⚠ THE MISTAKE THIS ALMOST BECAME, and the rule that catches it
+
+The first version of this test reported "1 of 2 parts agree" and pointed at the assembly table as the
+defect. It was **my test that was wrong, not the data**, and the tell was sitting in the numbers:
+
+```
+observed part-to-part delta   dx = +32   dy = -48
+table   part-to-part delta    dx = -32   dy = -48
+```
+
+**One axis exactly negated and the other exactly equal is the signature of a MIRROR** — the facing
+flip, the DC walker's neg-X control (`0x10`, bank03) surfacing in Steam pixels. It is not the
+signature of corrupt geometry, which does not politely preserve one axis.
+
+> **RULE: a near-miss in ONE axis only is a transform you have not modelled. It is almost never bad
+> data.** Corruption is not axis-aligned.
+
+The same applies to the earlier **union-of-tiles / IoU test that "found no convergence, best 0.685"**
+and was read as evidence against the assembly data. That reading was wrong for a different reason:
+**silhouette IoU between two conservative covers of a humanoid has no discriminating power.** Steam's
+tiles and the assembly's part rects over-approximate the same sprite at different granularities, so
+two *different* characters also score 0.7-0.8. Re-run here it tops out at **0.802 on an unrelated
+character**. The test could not have failed for the right reason, so it could not have passed for one
+either. **A test with no discriminating power produces a null result, not a negative one — and the
+two must never be recorded as the same thing.**
+
+### 12.6 What this does NOT establish
+
+* The placement law is confirmed on **2 parts per body, on 2 frames**. It is not certified over a
+  whole pose, and no record has been checked for characters other than PL17 and PL32.
+* Frames 2700 and 3893 matched only ONE part each. **With a single part the origin is always
+  solvable**, so those runs test nothing and the tool refuses them rather than reporting a pass.
+* **The within-part vertical inversion is measured but NOT explained.** Five tiles of part 1158 are
+  consistent only with bottom-up part rows while the record says `flipy=0`. The likely cause is the
+  row order `rip_gfx2_assembly.py` writes into `_parts.png`, not the engine — but it is unproven, and
+  it is exactly the shape of defect that turns a limb into a column or a blob. Check it before
+  blaming placement for one (see `mvc-render-composite-model`, the Blackheart "column to blob" note).
+* Effect cells, the HUD bank and the 3D class are untouched by this. It covers the **body walker's**
+  output only.
+
+### 12.7 What it changes for the build
+
+The three-part plan in section 11 was: (1) feed the emitter 276 B of node state instead of 32 B,
+(2) map `blk` to DC work RAM, (3) **fix the assembly data — flagged as the real open risk.**
+
+**Item 3 is now closed, and it was never broken.** Pixels, parts and placement records are all sound;
+what was missing was the facing sign and the part row order in the consumer. That removes the one
+risk that could have invalidated everything downstream, and it means `buildEmitterDrawList` can be
+validated against the Path B capture **tile by tile** rather than against a whole-frame percentage —
+a diff that says *which* tile is misplaced, instead of "0.685".
