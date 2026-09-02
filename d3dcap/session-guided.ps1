@@ -64,6 +64,13 @@ $deadline = (Get-Date).AddMinutes(2)
 while (-not (Game) -and (Get-Date) -lt $deadline) { Start-Sleep -Milliseconds 200 }
 if (-not (Game)) { Say "[game] process did not survive launch" Red; exit 1 }
 Say "[inject] injected pre-execution; capture is HELD until a step arms it" Green
+# The TCW logger runs BESIDE the capture for the whole session: it reads every drawn world-space
+# node's matrix and the TCW of its polygon list (outside the state block, so the dump cannot
+# have it). Joined on the matrix afterwards (tcw_build.py), that names the texture of every
+# world-space draw in the capture -- effects included, which only exist while they are on screen.
+$tcwLog = Join-Path $capDir 'tcw_log.json'
+$tcw = Start-Process -FilePath python -ArgumentList @((Join-Path $here 'replay	cw_logger.py'), '--out', $tcwLog) -PassThru -WindowStyle Hidden
+Say "[tcw] logger running (pid $($tcw.Id)) -> $tcwLog" Green
 Say ""
 Rule
 Say " GET INTO TRAINING MODE: Sentinel vs Storm (you control whichever the step names)." Cyan
@@ -141,5 +148,7 @@ Say " DONE" Cyan
 Rule
 $results | Format-Table -AutoSize | Out-String | ForEach-Object { Say $_ }
 $results | ConvertTo-Json | Set-Content -Encoding utf8 (Join-Path $capDir 'steps.json')
+if ($tcw -and -not $tcw.HasExited) { Stop-Process -Id $tcw.Id -Force -ErrorAction SilentlyContinue; Start-Sleep -Seconds 1 }
+if (Test-Path $tcwLog) { Say "[tcw] log saved: $tcwLog" Green }
 Say "[next] python $(Join-Path $here 'replay\serve.py')   then   http://localhost:8099/player.html" Green
 Say "[gate] python $(Join-Path $here 'replay\v3gate.py') $capDir\..\  -- see replay\v3gate.py for the per-step gate" Green
