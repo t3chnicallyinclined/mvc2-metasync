@@ -167,16 +167,29 @@ live   241 of 280 nodes changed at least once over 600 frames; 191 have >20 hot 
 hot    69 of 160 words per node are volatile in >50% of nodes
 ```
 
-**8 of the 69 hot columns match known fighter-struct fields** — `+0x124 screenX`, `+0x144 sprite_id`,
-`+0x154 facing`, `+0x168 anim_ptr`, `+0x170 drawn`, `+0x188 sid`, `+0x1A0 gfx1`, `+0x1D0 anim_state`.
-Which confirms "node = fighter-struct prefix" and **names the gap: 61 hot columns are unidentified.**
+⚠⚠ **RETRACTED BEFORE IT WAS RECORDED: the node PHASE is undetermined, and the field mapping I first
+wrote down was chance.** Reshaping from `0x6908` gave "8 of 18 known fighter-struct fields land on hot
+columns", which looked like confirmation. It is not: **a random 69-of-160 hot set hits ~7.8 of 18 by
+chance.** 8 is exactly noise.
 
-### ⭐ Why the state tape hits a ceiling, in one line
+A full phase sweep settles that it cannot be resolved this way: the ledger's base `0x6DD8` scores
+12/18, but so do `0x6B58`, `0x6938` and `0x6918` — four different phases tie, and 11/18 is reached by
+several more. **Volatility alone cannot fix the phase.** It needs the allocator
+(`loc_8c044dce`, per the ledger) or a live pointer walk, not a histogram.
 
-The agent's tape carries **32 B per object node**. Steam's emitter reads a node whose volatile part is
-**69 words = 276 B**. **The tape is a lossy projection that keeps roughly 8 of 69 live fields.** That
-is not a bug in the tape — it is why reconstruction has a ceiling and always will, and it is why
-`blk` is the right feed for a pixel-exact replay while the tape stays right for everything else.
+**What survives, and it is the load-bearing part:**
+* the `0x280` periodicity itself — 85% of columns decisive vs ~16% for every other stride, a 5x
+  margin. The region IS a `0x280`-stride array.
+* 69 of 160 words per node are volatile in over half the nodes, whatever those words are called.
+* the region sizes and volatility percentages above.
+
+### ⭐ Why the state tape hits a ceiling — the version that does not depend on the phase
+
+The agent's tape carries **32 B per object node**. The volatile part of a pool node is **69 words =
+276 B**. **The tape is a lossy projection keeping under an eighth of what changes.** That ratio holds
+regardless of which offsets the words sit at, and it is why reconstruction has a ceiling and always
+will — while `blk` is the right feed for a pixel-exact replay and the tape stays right for everything
+else.
 
 ### The per-frame economics
 
