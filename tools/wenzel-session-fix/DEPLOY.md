@@ -4,7 +4,8 @@ Land the two edits in EDITS.md, build with the tb feature, staging-then-prod swa
 recipe, bust the OG image cache, then verify the wenzel card reads 9-1 with no regressions.
 DISPLAY-ONLY: no matches.json write, no money/ledger touch, no schema change.
 
-- Server:        root@149.28.44.118 (VPS)
+- Server:        ubuntu@15.204.141.58 (rise3; prod since 2026-09-01, key ~/.ssh/ovh_maplecast,
+                 no root login - sudo for privileged steps)
 - rr-server:     127.0.0.1:7250  (systemd unit: rr-server)  live binary: /opt/rr-server/rr-server
 - source clone:  /opt/rr-server-src   (build here: /root/.cargo/bin/cargo)
 - staging:       /opt/rr-staging  127.0.0.1:7260  (unit: rr-staging; own snapshot, RR_BUS=0, no Surreal)
@@ -13,7 +14,7 @@ DISPLAY-ONLY: no matches.json write, no money/ledger touch, no schema change.
 The checker (verify.sh + verify.py) lives in this folder. Copy it to the box first:
 
 ```bash
-scp verify.py verify.sh root@149.28.44.118:/root/rrfix/
+scp verify.py verify.sh ubuntu@15.204.141.58:/tmp/rrfix/
 ```
 
 ## 0. Pre-flight snapshot (BEFORE any change)

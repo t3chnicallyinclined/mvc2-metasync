@@ -99,12 +99,22 @@ Paste this section (or link it) into every task prompt. Violating any of these i
 ### B. The Oracle (the live engine = ground truth; derive from it, don't re-RE)
 - Headless: `maplecast-flycast/build-headless-win/flycast.exe` on `C:\roms\roms\mvc2.gdi`; autoloads
   slot 0; live replica `ws://127.0.0.1:7212`. *(mem: mvc-hud-list0b-live-re)*
-- Remote oracle box **`149.28.44.118`** — `flycast-36g-traced` + `maplecast-headless.service`
-  (LIVE-but-idle, separate instance only — ⚠ NEVER disturb the live service or wager/tape data).
-- Build box: OVH Rise **`ubuntu@15.204.141.58`** key `~/.ssh/ovh_maplecast`, 24 cores.
-  *(mem: rr-flycast-resim-confirmed-tape)*
+- ⚠ **PROD MOVED 2026-09-01.** `nobd.net` / `play.nobd.net` and the whole arcade stack
+  (`rr-server`, `nobd-web`, `maplecast-*`, SurrealDB, the Discord bots) now run on **rise3
+  `15.204.141.58`** (`ubuntu@`, key `~/.ssh/ovh_maplecast`, passwordless sudo). rise3 is both
+  prod AND the build box. `149.28.44.118` (Vultr, `flycast-inputserver-nyc`) is still powered on
+  and still running its own copy of that stack, but it is **no longer the origin** — do not
+  treat it as prod. Architecture SSOT: forgily-creations `plans/rise3_handover.md` section 0 (copy `~/HANDOVER.md` on rise3).
+- Oracle-tracing instance: `flycast-36g-traced` exists on **both** boxes (`/opt/maplecast/`).
+  `maplecast-headless.service` is LIVE-but-idle on `149.28.44.118` and **masked** on rise3
+  (which runs `maplecast-flycast.service` instead). ⚠ NEVER disturb a live service or
+  wager/tape data on either box — isolated instances only.
+- Build box: rise3 **`ubuntu@15.204.141.58`** key `~/.ssh/ovh_maplecast`, 24 cores; holds
+  `~/src/maplecast-flycast` + `~/roms/mvc2.gdi`. *(mem: rr-flycast-resim-confirmed-tape)*
 
-### C. The KB — `re_kb` (SurrealDB) on `149.28.44.118`. RE knowledge graph; query, don't re-derive.
+### C. The KB — `re_kb` (SurrealDB, namespace `re`). RE knowledge graph; query, don't re-derive.
+⚠ A copy is live on **both** boxes (rise3 and `149.28.44.118`, both `127.0.0.1:8000`). Confirm
+which is authoritative before writing to it; prefer rise3 (prod).
 
 ### D. The disassembly — `marvelous2` / `maplecast-flycast/_marv_re/build/*.asm`
    (`loc_8c…` label address == PC). e.g. camera in `bank03.asm:1281,1495-1516`, `bank12.asm:5271`.
@@ -325,7 +335,8 @@ window** to prove the run wasn't a neutral re-run. KILL = any divergence at/afte
   the tapecanvas full-VRAM renderer (`render_ta_wire.mjs` / `play_zcst.html`) renders them CLEAN, no fix needed.
 - **2026-08-30** — Baseline PUSHED (`origin/quarters-tigerbeetle`, `e9a4066`). Fresh-tape validation **DONE**:
   pulled a real server tape (match **59603897**, 19:08, **800 rollbacks**, confirmed_in 6394 fr) from
-  `149.28.44.118:/opt/rr-server/gamestates/` → the confirmed-input replay HANDLED it: roster exact, coherent
+  `149.28.44.118:/opt/rr-server/gamestates/` (that box was prod at the time; **since 2026-09-01
+  pull tapes from rise3** `ubuntu@15.204.141.58:/opt/rr-server/gamestates/`) → the confirmed-input replay HANDLED it: roster exact, coherent
   combat, **clean Magneto super** (`build-headless-win/render_ta_wire_fresh.zcst`, 894 fr). Rollbacks are
   irrelevant to the resim BY DESIGN (confirmed_in = linear forward stream → forward-only, no desync).
   ⚠ **Seat mapping is PER-TAPE** (keyed on `local_pn`): this tape P1=seat0/P2=seat1 (local_pn=1), OPPOSITE
@@ -452,7 +463,9 @@ window** to prove the run wasn't a neutral re-run. KILL = any divergence at/afte
 
 - **2026-08-31 — rise3 = the flycast resim/render build host (GO, live-verified).** rise3 = `ns1012691` @
   **15.204.141.58** (OVH, Ubuntu 22.04, passwordless sudo via `~/.ssh/ovh_maplecast` user `ubuntu`); dev0ps =
-  65.109.77.178 (Hetzner, current prod). CONFIRMED GO for the headless flycast resim: **no GPU needed** (NO_REND
+  65.109.77.178 (Hetzner) was prod for forgily at the time. **SUPERSEDED 2026-09-01: rise3 is now
+  prod for everything — forgily AND the whole nobd/arcade stack — and dev0ps is a frozen
+  rollback standby that runs no maplecast.** The "rise3 NOT prod yet" caveat below is stale. CONFIRMED GO for the headless flycast resim: **no GPU needed** (NO_REND
   null renderer; `.zcst` = CPU TA-list + VRAM memwatch), toolchain present (gcc11 / cmake3.22 / ninja / node22),
   and a **working `build-headless/flycast` already builds + runs** at `/home/ubuntu/src/maplecast-flycast` (branch
   `feat/executor-pool-spawn`, HEAD f6ff8964b — USE THIS TREE; `/home/ubuntu/projects/maplecast-flycast` is NOT

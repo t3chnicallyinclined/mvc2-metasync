@@ -51,7 +51,7 @@ not code to copy or re-derive.
 | The renderer (sprite-client, webgpu, atlases, bake) | `maplecast-flycast` (`web/`, `tools/`) | render authority = its `docs/RENDER-STATE.md` + `_consolidated/CURRENT-STATE.md` |
 | The Steam tape capture (0.3.26 agent) | `RetroReceipts-agent` | worktree-locked here → ship as diffs (`docs/patches/agent-0.3.26-reader.diff`) |
 | The tape/replay specs + this handoff | `mvc-live-skins-quarters/docs` | `CONFIRMED-TAPE-AND-FLYR-REPLAY.md`, `REPLAY-ENGINE-DESIGN.md`, this file |
-| The tape server (`/rr/gamestate`) | `RetroReceipts-server` | I own deploy (149.28.44.118) |
+| The tape server (`/rr/gamestate`) | `RetroReceipts-server` | I own deploy (**rise3** `ubuntu@15.204.141.58` since 2026-09-01) |
 | The tape→movie converter (flycast Path 2) | `mvc-live-skins-quarters/replay-kit` | `tape_to_flycast_movie.py` |
 
 ## DONE this session (2026-08-27)
@@ -62,7 +62,9 @@ not code to copy or re-derive.
 - **413 upload blocker FIXED.** `nginx /rr/` had no `client_max_body_size` → inherited the 1 MB default;
   render-column tapes upload as `base64(gz)` in JSON (+33% → ~1.26 MB) and 413'd. Added
   `client_max_body_size 64M;` to the `/rr/` block on 149.28.44.118 (backup in `/root/nginx-backups/`,
-  NOT sites-enabled). All tapes now upload 200.
+  NOT sites-enabled). All tapes now upload 200. **Carried over to rise3 (verified 2026-09-02):**
+  the loaded `/rr/` block there has `client_max_body_size 64M`, and the k8s `arcade` Ingresses in
+  front of it carry `nginx.ingress.kubernetes.io/proxy-body-size: 64m` — both hops are raised.
 
 ## NEXT — Path A IS the pixel-perfect target (decided 2026-08-27)
 
@@ -83,7 +85,9 @@ COMPLETE, correctly-sized, correctly-palettized state + validating against groun
 
 ## TEST / DEPLOY (from `maplecast-flycast/docs/DEPLOYMENT.md`)
 
-- **rise3 = OVH Rise build box** `ubuntu@15.204.141.58` (key `~/.ssh/ovh_maplecast`). Prod = `149.28.44.118`.
+- **rise3 `ubuntu@15.204.141.58`** (key `~/.ssh/ovh_maplecast`) is the build box **AND prod**
+  since the 2026-09-01 cutover. `149.28.44.118` is no longer the origin (still powered on).
+  Architecture SSOT: forgily-creations `plans/rise3_handover.md` section 0 (copy `~/HANDOVER.md` on rise3).
 - **Git-first, always:** edit local → `git commit` → `deploy/scripts/deploy-web.sh <HOST>` /
   `deploy-headless.sh <HOST>` (they back up + confirm). **Never raw scp to prod.** If prod was edited
   directly, `scp` it back to git and commit BEFORE changing anything.
