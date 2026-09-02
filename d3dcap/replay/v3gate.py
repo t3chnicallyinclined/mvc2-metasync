@@ -130,8 +130,15 @@ def main():
     tot = Counter()
     for pk in args:
         frame = int(os.path.basename(pk).split('_')[1].split('.')[0])
+        # ⭐ PAIR frame N's DRAWS WITH blk(N+1). The walker (FUN_140620F10) WRITES node+0x124/+0x128
+        # during frame N's render, and the shim's first build dumped blk at openFrame(N) -- i.e. before
+        # that walk -- so the snapshot named N carries frame N-1's placement. Measured on every failing
+        # frame: the tile-solved origin equals floor(blk(N+1).sy) exactly (446/422/437) while blk(N)
+        # holds the previous value (444.11/420.54/439.83); the frames that passed were the ones where
+        # nobody moved. Captures made after the shim dumps at Present pair 1:1 instead (`--paired`).
+        use = frame if '--paired' in sys.argv else frame + 1
         try:
-            meta, blk = BS.load_frame(frame)
+            meta, blk = BS.load_frame(use)
         except SystemExit:
             continue
         base, score, _ = BS.find_base(blk)

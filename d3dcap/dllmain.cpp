@@ -1529,7 +1529,6 @@ static bool openFrame(unsigned frame) {
     g_nRtSeen = 0;
     g_frameTex = 0;
     markAllTexDirty();
-    dumpBlk(frame);          // the state that BUILT this frame's draws -- see dumpBlk's header
     return true;
 }
 
@@ -1541,6 +1540,13 @@ static HRESULT STDMETHODCALLTYPE hkPresent(IDXGISwapChain* sc, UINT si, UINT fla
     // Present(N) holds frame N -- so closing the inventory and grabbing the shot here makes the
     // .ndjson and the .bmp describe the SAME frame.
     if (g_capturing) {
+        // ⚠ STATE IS DUMPED HERE, AT PRESENT, NOT AT openFrame. The walker writes the per-node screen
+        // coords (+0x124/+0x128) DURING the frame's render, so a block read at openFrame(N) carries
+        // frame N-1's placement. Measured: every frame whose character moved failed the render gate
+        // by exactly one frame of motion, and passed once paired with the NEXT snapshot. Reading at
+        // Present pairs state and draws 1:1. (The draw-list array is still intact here: the counts
+        // are cleared at the START of the next registration.)
+        dumpBlk(g_frame);
         // The heavy ground-truth grabs are worth one frame of a burst, not every frame: the scene RT
         // is an 8 MB BMP and the backbuffer another full copy. One is enough to prove the sequence
         // renders correctly, and the rest of the burst is what makes it a PLAYBACK.
