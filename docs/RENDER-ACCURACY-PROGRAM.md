@@ -1597,3 +1597,62 @@ is wrong and the shards are something else.
 
 ⚠ The in-match gate counts texture OBJECTS, not generations — a frame that rewrites one page eight
 times must not read as eight pages, since the 50-texture threshold was calibrated on objects.
+
+---
+
+## 2026-09-01 — the stale-texture hypothesis is REFUTED; the real bug was the packer's glob
+
+The versioned-texture build's own counter answered it on the first capture, across six frames:
+
+```
+[tex] 234 distinct textures, 46928 writes seen, 0 of them rewrote a texture a draw had already
+      sampled, 230 snapshots to write
+```
+
+**Zero.** Within a frame, once a texture has been sampled by a draw it is never written again — so
+the Present-time snapshot was valid after all and the "stale texture content" diagnosis was wrong.
+The versioning stays: it costs one staging copy per upload, it is correct rather than
+correct-by-luck, and the counter is now the instrument that settles this question on any future
+frame. (⚠ the `writes seen` figure spans the ~8 s between captures, not one frame; the rewrite
+counter is the one scoped to the captured frame.)
+
+### What was actually wrong: `tex_*` matched every captured frame
+
+`pack_replay.py` looked up a texture's pixels with
+
+```python
+glob.glob(os.path.join(CAP, "tex_*_%dx%d_f%d_%s.bin" % (w, h, fmt, ptr)))[0]
+```
+
+A capture run keeps every frame it sampled, and a texture object that lives across frames has one
+dump per frame. The wildcard matched all of them and `[0]` took the **alphabetically first frame
+number**. Measured on frame 4360: **21 of 223 textures were loaded from frames 2965 and 3893.** The
+character index tiles change every frame, so on the earlier capture this drew the characters as
+scattered shards of a different animation frame over a perfectly correct stage — and read like a
+shading bug for two rounds. Fixed to match `tex_<this frame>_…` exactly, and to refuse rather than
+guess if more than one dump still matches.
+
+⚠ Honest limit: frame 4261's dumps were cleared by the next capture run, so this cannot be replayed
+against the frame that showed the shards. On 4360 the 21 mis-picked textures happened to hold
+identical content in both frames, so fixing the glob changed the numbers by nothing there. The
+mechanism is confirmed; its responsibility for the 4261 shards is inferred.
+
+### Where frame 4360 stands
+
+```
+COVERAGE  MISSING 26 px of 1,228,800
+COLOUR    mean |delta| B=0.646 G=0.447 R=0.684 A=0.001   differing 4,797 px (0.390%)
+
+indexed : 196 draws -- 124 pixel-exact, 0 wrong somewhere, 72 never the last writer
+texalpha:  52 draws --  25 pixel-exact, 5 wrong somewhere, 22 never the last writer
+opaque  : 623 draws -- 244 pixel-exact, 39 wrong somewhere, 340 never the last writer
+```
+
+**Every character draw is pixel-exact.** 4,619 of the 4,797 wrong pixels belong to three opaque stage
+draws (85, 86, 87) at the extreme left edge of the viewport, `x = 0..42` in crop space. Those draws
+paint pure black (`colour0 = (0,0,0,1)`, so `tex*0 + 0`) and truth there is a bright `(127, 74, 129)`
+— so in Steam's frame something LATER covers those pixels and in ours it does not. Fog is not
+involved: `fFogDensity = 0` on every stage draw in this frame too.
+
+That left edge is the next thread. `FOCUS=<draw> python verify_frame.py <frame>` prints the delta
+percentiles, bbox and mean colour for the pixels one draw owns.

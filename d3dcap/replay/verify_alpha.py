@@ -61,18 +61,20 @@ def sha8(b):
     return hashlib.sha256(b).hexdigest()[:16]
 
 
-def tex_files(t):
-    """Dumps for ONE content generation of a texture.
+def tex_files(frame, t):
+    """The dump for this texture, IN THIS FRAME.
 
-    A texture's identity in a capture is "pointer#generation": the game rewrites textures mid-frame,
-    so the pointer alone is not an identity. Captures before 2026-09-01 have no "#" and no "_v"
-    suffix on the filename; both forms are accepted.
+    ⚠ Never glob `tex_*` here. A capture run keeps several frames, and a texture object that lives
+    across frames has one dump per frame; the wildcard matched all of them and the first hit was the
+    alphabetically lowest frame number. That is what drew the characters as shards of another
+    animation frame. Identity is "pointer#generation" on captures from 2026-09-01 onward; older ones
+    have neither, so both forms are accepted.
     """
     p = str(t["p"])
     if "#" in p:
         ptr, ver = p.split("#", 1)
-        return glob.glob(os.path.join(CAP, f"tex_*_{t['w']}x{t['h']}_f{t['fmt']}_{ptr}_v{ver}.bin"))
-    return glob.glob(os.path.join(CAP, f"tex_*_{t['w']}x{t['h']}_f{t['fmt']}_{p}.bin"))
+        return glob.glob(os.path.join(CAP, f"tex_{frame}_{t['w']}x{t['h']}_f{t['fmt']}_{ptr}_v{ver}.bin"))
+    return glob.glob(os.path.join(CAP, f"tex_{frame}_{t['w']}x{t['h']}_f{t['fmt']}_{p}.bin"))
 
 
 def depth_state(d):
@@ -177,7 +179,7 @@ def main(frame):
             return None
         if t["p"] in tex_cache:
             return tex_cache[t["p"]]
-        hit = tex_files(t)
+        hit = tex_files(frame, t)
         out = None
         if hit:
             raw = np.frombuffer(open(hit[0], "rb").read(), np.uint8)
@@ -194,7 +196,7 @@ def main(frame):
             return None
         if t["p"] in pal_cache:
             return pal_cache[t["p"]]
-        hit = tex_files(t)
+        hit = tex_files(frame, t)
         out = None
         if hit:
             raw = np.frombuffer(open(hit[0], "rb").read(), np.uint8)

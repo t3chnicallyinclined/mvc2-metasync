@@ -396,6 +396,22 @@ def compare(frame, color, head, png, only, owner=None):
                 if frac:
                     print(f"      i={i:4d} {frac*100:5.1f}% of its {held[i]:6,} px wrong")
 
+    import os as _os
+    focus = _os.environ.get("FOCUS")
+    if focus and owner is not None:
+        fi = int(focus)
+        m = (own == fi)
+        dd = np.abs(ours_bgra - truth)[m]
+        print()
+        print(f"  FOCUS draw {fi}: {int(m.sum()):,} px it owns")
+        print(f"    delta percentiles B: {np.percentile(dd[:,0], [50,90,99,100]).round(1)}")
+        print(f"    delta percentiles G: {np.percentile(dd[:,1], [50,90,99,100]).round(1)}")
+        print(f"    delta percentiles R: {np.percentile(dd[:,2], [50,90,99,100]).round(1)}")
+        ys, xs = np.nonzero(m)
+        print(f"    bbox x={xs.min()}..{xs.max()} y={ys.min()}..{ys.max()}")
+        o = ours8[m][:, :3].mean(axis=0); t = truth[m][:, [2,1,0]].mean(axis=0)
+        print(f"    mean ours RGB {o.round(1)}   mean truth RGB {t.round(1)}")
+
     if png:
         try:
             from PIL import Image

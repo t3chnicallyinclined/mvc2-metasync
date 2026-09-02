@@ -116,17 +116,24 @@ def main():
             p = t["p"]
             if p in tex_index:
                 continue
-            # ⚠ p is "pointer#generation" on captures from 2026-09-01 onward. The game rewrites
-            # textures mid-frame, so a pointer alone is not an identity -- packing by pointer handed
-            # every draw the LAST content the object held and turned the characters into scattered
-            # sprite shards. Older captures have no "#"; both forms are accepted.
+            # ⚠⚠ MATCH THIS FRAME'S DUMP, NOT `tex_*`. A capture run keeps every frame it sampled,
+            # and a texture object that lives across frames has one dump per frame. The wildcard
+            # matched all of them and this took hits[0] -- the alphabetically FIRST frame number, not
+            # this one. Measured on frame 4360: 21 of 223 textures were being loaded from frames 2965
+            # and 3893. On the earlier frame it caught the character tiles, whose contents change
+            # every frame, and drew the characters as scattered shards of another animation frame
+            # over a perfectly correct stage. It read like a shading bug for two rounds.
+            # "pointer#generation" is the identity on captures from 2026-09-01 onward; older ones
+            # have no "#" and no `_v` suffix, so both forms are accepted.
             if "#" in p:
                 ptr, ver = p.split("#", 1)
-                hits = glob.glob(os.path.join(CAP, "tex_*_%dx%d_f%d_%s_v%s.bin"
-                                              % (t["w"], t["h"], t["fmt"], ptr, ver)))
+                pat = "tex_%s_%dx%d_f%d_%s_v%s.bin" % (a.frame, t["w"], t["h"], t["fmt"], ptr, ver)
             else:
-                hits = glob.glob(os.path.join(CAP, "tex_*_%dx%d_f%d_%s.bin"
-                                              % (t["w"], t["h"], t["fmt"], p)))
+                pat = "tex_%s_%dx%d_f%d_%s.bin" % (a.frame, t["w"], t["h"], t["fmt"], p)
+            hits = glob.glob(os.path.join(CAP, pat))
+            if len(hits) > 1:
+                sys.exit("texture %s matches %d dumps in frame %s -- ambiguous, refusing to guess"
+                         % (p, len(hits), a.frame))
             if not hits:
                 missing[t["fmt"]] += 1
                 continue
