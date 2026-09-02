@@ -1119,11 +1119,16 @@ binary in Ghidra or the DC disassembly. `v3gate.py` is the falsifier: **30 state
   ours to 0.1 px.
 * **storm-down** (sels 668/669/670, `0xC000`/`0x8000` on 64×64, 128×16 parts): **8/8 100.00%**
   with the tiled-flip-about-the-logical-box rule.
-* **storm-hail / storm-lightning**: the Present-time state dump read `+0x170 == 0` on EVERY node
-  and both fighters parked off-screen with constant sids for all 180 frames, while Steam drew them
-  moving. The start-of-frame dump (openFrame(N+1) ↔ draws of N) was exact on 30 frames INCLUDING
-  Hail Storm, so the shim is back on it; those two steps need re-recording. What clears `+0x170`
-  at end-of-frame during a super is a Ghidra question (write xrefs), not yet asked.
+* **storm-hail / storm-lightning: 8/8 and 8/8 at 100.00%** (up to 51 nodes a frame, 0x8000 bolts).
+  They first read as "every node `+0x170 == 0`, fighters parked off-screen for 180 frames" — that
+  was the READER: `blkstate.find_base` votes over stride-aligned handles and cannot tell the true
+  base from one shifted by whole fighter slots; with the active pair in slots 2/3 it read the parked
+  point characters in slots 0/1. Fixed by a pointer-coherence tie-break, and the shim now writes the
+  exact base into the sidecar. On the way, Ghidra gave the Steam sprite walker `FUN_140620f10`
+  (writes every render field; angle = `+0x64` + the animation cell's angle via `+0x191/+0x1C0`) and
+  the shim now dumps the block right after it returns (`"at":"walk"`, paired with the same frame) —
+  the one moment the block is exactly what was drawn. Delta chains are ordered by capture time, not
+  frame number (`-Keep` sessions restart numbering).
 
 ### 15.2 What REMAINS, each with its evidence and owner
 | gap | evidence | status |
