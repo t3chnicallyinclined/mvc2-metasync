@@ -13,6 +13,12 @@ exactly as the tape recorded them. A divergence names the frame and field.
 Inputs and their provenance:
   * run/pre: dump_live.py images (exe_image, dcram, ctx, blk, blk2, game_state; meta.json). The run's blk clock is the
     anchor frame; the tape must contain that frame (`frame` column == blk+0x3CC8).
+    With agent 0.3.47+ the anchor comes from the TAPE: build the run with d3dcap/receipt/anchor_to_run.py <tape> <dump> <out>
+    (blk/game_state/exe page/ctx slots from the tape's battle_anchor; exe_image/dcram/ctx from a dump of the same boot), then
+    d3dcap/receipt/pl_rebuild.py <out> --write (post-match dumps have PL slot 1 overwritten by the results screen; the recipe
+    rebuilds every slot from the user's arc, 55/55 files). FIRST REAL PASS 2026-09-03: stage 9 offline tape, 60/60.
+  * INPUT SEMANTICS (measured): tape row N's seat_in are the inputs that PRODUCED frame N (sampled at the clock edge after
+    the tick) -> tick k consumes row start+k+1 (--input-shift 1, the default).
   * tape: agent GS tape (0.3.24+): tape['schema'] positional columns, tape['frames'] rows; needs seat_in[2], px[6], py[6],
     hp[6], frame. p1_team / p2_team = roster (cids).
   * PL images (DETERMINISM-CONTRACT s6c, CONFIRMED 2026-09-03): position pos of the six 0x150000-B PL regions at DC
@@ -184,6 +190,7 @@ def main():
     ap.add_argument('--negative', action='store_true')
     ap.add_argument('--flip-bit', type=lambda x: int(x, 0), default=0x8, help='raw pad bit XORed into seat 0 for --negative (raw->sim table DAT_140a4f780: 0x8->0x8000, 0x1->0x4000, 0x10->0x2000, 0x40->0x1000, 0x80->0x800, 0x20->0x400)')
     ap.add_argument('--json', default=None)
+    ap.add_argument('--input-shift', type=int, default=1, help='feed tick k the seat words of tape row start+k+SHIFT. DEFAULT 1 (MEASURED 2026-09-03, stage 9 offline tape: shift 0 -> px 38/60, py 43/60, first divergence tick 2; shift 1 -> 60/60 on clock/px/py/hp): the agent samples seat_in at the clock edge AFTER the tick, so row N carries the inputs that PRODUCED frame N.')
     a = ap.parse_args()
     R = F.load_run(a.run)
     pre = R['blk_bytes']
@@ -218,7 +225,7 @@ def main():
         sys.exit('PL images do not match the arc: refusing to tick on a torn character image')
     seat_words = []
     for k in range(n):                    # frame N's seat words produce frame N+1
-        r = by_frame.get(start + k)
+        r = by_frame.get(start + k + a.input_shift)
         if r is None:
             n = k
             break
