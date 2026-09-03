@@ -157,6 +157,28 @@ NOT viable: a "lightweight WASM emulator running Marvel in the browser" -- that 
 D3D11 + the packed, self-hooking exe executing on the client, and it is Capcom's code shipped to users. The Dreamcast
 route (flycast compiled to WASM + the user's own ROM) is a different product: DC pixels, not Steam's, and a ROM per user.
 
+#### G2/G3 — the thin-client chain (Tris, 2026-09-03: "compute the frame headless like maplecast-flycast, send to the emitter, then render; run the game in a browser or thin client; roll our own netcode")
+The chain is the same three boxes in every form: **frame function** (`FUN_140607d60`: inputs + state -> next state,
+GGPO-deterministic) -> **emitter** (state -> draw list; the rules derived today) -> **renderer** (WebGPU/wgpu).
+Only the first box differs by host:
+- **G (native headless, now):** the real executable on our own Windows box / Proton container, the shim driving the
+  frame function in a loop without vsync and injecting the seat words each tick; the emitter reads the block; no
+  D3D11 needed (we render). Runs on our servers; also a Windows/Linux thin client where the user owns the game.
+  Our own netcode sits naturally on top: the tick consumes two input words per frame and the block is the whole
+  state, so P2P lockstep/rollback or server-authoritative (the server runs the frame function, clients render the
+  emitted frames) are both just input-routing policies around the same tick. Open: injection point, headless
+  window/Steam-runtime stubs, throughput per instance.
+- **G2 (native, no Steam runtime):** the unpacked image + the read set (`FRAME-READSET.md`) executed in-process by a
+  small loader that provides the exe's imports (UCRT, the DC-RAM image, the arc banks) -- the p-code harness
+  already runs the frame this way at 7.8 s/frame in Ghidra; a native loader runs it at machine speed. Still the
+  game's code, still on hosts we control or the user's own machine.
+- **G3 (browser):** the game's ~11k functions statically translated x86-64 -> WASM (the same operation Capcom did
+  SH4 -> x86-64), driven by the same loader shape; the frame is ~460k instructions = well under a millisecond in
+  WASM, so performance is not the obstacle. The obstacle is distribution: translated game code on the client is
+  the game, so G3 is a LICENSED product with Capcom, not a BYOR trick. Technically it is the natural end of G2.
+Order: G (this quarter's proof: one headless instance replaying a receipt faster than real time) -> G2 (loader,
+drops Steam/D3D) -> netcode experiments on G2 -> G3 only with a licence.
+
 ### Workstream F — Receipt lane (server-side)
 Agent records snapshot + input words (0.3.24 anchor + `seat_in` exist; align to `game_state+0x218/+0x21C`);
 `emu_gate.py frame` replays a disputed match server-side; PL image loader table UNKNOWN → dump-once until derived.
