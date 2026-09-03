@@ -831,6 +831,8 @@ static void hkWalk(void) {
     if (g_capturing && !InterlockedExchange(&g_walkDumped, 1)) { g_dumpAt = "walk"; dumpBlk(g_frame); dumpAObjs(g_frame); }
 }
 
+#include "receipt_player.inl"   // Workstream G: receipt replay (frame-tick hook + command channel)
+
 static void installDrawHooks(ID3D11DeviceContext* ctx) {
     if (!ctx || InterlockedExchange(&g_drawHooksDone, 1)) return;
     void** vt = *(void***)ctx;
@@ -877,6 +879,7 @@ static void installDrawHooks(ID3D11DeviceContext* ctx) {
         g_walkHooked = (b == MH_OK);
         logf("[mh] %-22s create=%d enable=%d  (%p; state dumps %s)", "SpriteWalker", (int)a, (int)b, wt,
              g_walkHooked ? "after the walk, paired with the same frame" : "fall back to openFrame, pair N<->N+1");
+        installTickHook();   // receipt player (receipt_player.inl): FUN_140607d60, the frame entry
     }
 }
 
@@ -1974,6 +1977,7 @@ static DWORD WINAPI worker(LPVOID) {
 
     for (;;) {
         probeSample();
+        rcPoll();            // receipt player command file (%TEMP%\rrcap\CMD); no-op unless the driver writes it
         const char* why = nullptr;
         if (GetAsyncKeyState(VK_F9) & 0x8000) {
             why = "F9";
