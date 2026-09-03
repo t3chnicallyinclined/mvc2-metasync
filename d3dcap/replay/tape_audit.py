@@ -41,6 +41,8 @@ def main():
 
     cols = [c.strip() for c in t['schema'].strip('[]').split(',')]
     C = {n: i for i, n in enumerate(cols)}
+    for _n, _i in list(C.items()):
+        if _n.endswith(']') and '[' in _n: C.setdefault(_n[:_n.index('[')], _i)
     rows = t['frames']
     print('tape %s  ver %s  tape_ver %s  frames %d  cols %d' % (os.path.basename(a.tape)[:40], t.get('ver'), t.get('tape_ver'), len(rows), len(cols)))
 
@@ -129,7 +131,7 @@ def main():
     astride_ = int(t.get('anodes_stride', 96))
     line(True, 'C7 world-node alpha multiplier (0.3.39, anodes_stride 100)', 'stride %d: %s' % (astride_, 'present' if astride_ >= 100 else 'ABSENT (1.0 assumed; bit-5 nodes may blend wrong)'))
     if 'cam_state' in C:
-        cs = Counter(int(float(r[C['cam_state']])) for r in rows)
+        cs = Counter(int(float(r[C['cam_state']])) & 0xFF for r in rows)   # blk+0x6908 is a BYTE state (0x6909.. are other camera bytes)
         line(cs.get(1, 0) == 0, 'E3 camera state 0 (fight camera) on every row', 'states %s%s' % (dict(cs), '' if cs.get(1, 0) == 0 else '  <- scripted camera frames: renderer must use look/fov/yoff/roll'))
         bo = sum(1 for r in rows if int(float(r[C['blackout']])) != 0) if 'blackout' in C else -1
         line(True, 'E4 blackout gate / deck colour carried (0.3.39)', 'blackout rows %d; deck sample %s' % (bo, rows[len(rows) // 2][C['deck']] if 'deck' in C else 'ABSENT'))

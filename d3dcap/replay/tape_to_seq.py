@@ -517,6 +517,10 @@ def main():
             4 if stride >= 50 else 3, len(v3nodes), len(v3pals), stride))
     cols = [s.strip() for s in tape['schema'].strip('[]').split(',')]
     C = {n: i for i, n in enumerate(cols)}
+    # 0.3.39 array columns carry their arity in the name (look[3], deck[3]); expose the bare name too
+    for _n, _i in list(C.items()):
+        if _n.endswith(']') and '[' in _n:
+            C.setdefault(_n[:_n.index('[')], _i)
     # ── v5 world-space stream ──
     v5nodes, v5objs = decode_anodes(tape)
     wt = None
@@ -828,6 +832,7 @@ def main():
                 # 0.3.39 rows: blackout gate blk+0x3D50 (!= 0 -> no deck draw, FUN_140620960) and the
                 # deck colour multiplier blk+0x6CA8 (FUN_140849b00 before the model-0 walk)
                 blackout = int(float(r[C['blackout']])) if 'blackout' in C else 0
+                cam_state = (int(float(r[C['cam_state']])) & 0xFF) if 'cam_state' in C else 0   # byte at blk+0x6908; 1 = scripted camera (not yet rendered: closed form needs look/fov/yoff/roll)
                 deck_col = tuple(float(x) for x in r[C['deck']]) if 'deck' in C and isinstance(r[C['deck']], (list, tuple)) else (1.0, 1.0, 1.0)
                 if not blackout:
                     emit_stage(cam, deck_col)
