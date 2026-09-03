@@ -186,7 +186,10 @@ def decode_anodes(tape):
                              matrix=struct.unpack_from('<16f', ab, off + 8),
                              colour=struct.unpack_from('<3f', ab, off + 72),
                              obj=struct.unpack_from('<H', ab, off + 84)[0],
-                             model=struct.unpack_from('<Q', ab, off + 88)[0]))
+                             model=struct.unpack_from('<Q', ab, off + 88)[0],
+                             # 0.3.39 (stride 100): node+0x90 alpha multiplier, applied on flag-bit-5
+                             # nodes (FUN_140849c30/be0); < 1.0 forces the normal-blend preset 0x45
+                             alpha=struct.unpack_from('<f', ab, off + 96)[0] if stride >= 100 else 1.0))
             off += stride
         frames[fr] = rows
     ob = gzip.decompress(base64.b64decode(tape.get('aobjs', ''))) if tape.get('aobjs') else b''
@@ -729,7 +732,7 @@ def main():
         world_missing = Counter()
         world_state = Counter()             # how each world draw's D3D state was served (WorldTemplate.select)
         last_cull = [None]                  # ring cull state carried across draws (FUN_140849ac0 path)
-        def emit_stage(cam):
+        def emit_stage(cam, deck_col=(1.0, 1.0, 1.0)):
             """The loaded stage's 3D deck from the ARC RIP (STGxx.json model 0), not from a capture.
             Model 0 of every stage is the world-placed deck+skydome at an IDENTITY world matrix
             (rip_stage.py, re_kb 26; the STG00 tape renderer drew it that way with real pixels).
@@ -769,6 +772,8 @@ def main():
                             x, y, z = vtx['pos']
                             u, v = vtx['uv']
                             c = vtx.get('col') or (255, 255, 255, 255)
+                            c = (min(255, int(c[0] * deck_col[0])), min(255, int(c[1] * deck_col[1])),
+                                 min(255, int(c[2] * deck_col[2])), c[3])
                             verts.extend(struct.pack('<4f', x, y, z, 0.0))
                             verts.extend(struct.pack('<2f', 0.0, 0.0))
                             verts.extend(bytes((int(c[2]), int(c[1]), int(c[0]), int(c[3]))))
@@ -820,7 +825,12 @@ def main():
             cam = (float(r[C['eyeX']]) if 'eyeX' in C else 0.0, float(r[C['eyeY']]) if 'eyeY' in C else 0.0,
                    float(r[C['zoom']]) if 'zoom' in C else 812.357)
             if lists[0] == 5:
-                emit_stage(cam)
+                # 0.3.39 rows: blackout gate blk+0x3D50 (!= 0 -> no deck draw, FUN_140620960) and the
+                # deck colour multiplier blk+0x6CA8 (FUN_140849b00 before the model-0 walk)
+                blackout = int(float(r[C['blackout']])) if 'blackout' in C else 0
+                deck_col = tuple(float(x) for x in r[C['deck']]) if 'deck' in C and isinstance(r[C['deck']], (list, tuple)) else (1.0, 1.0, 1.0)
+                if not blackout:
+                    emit_stage(cam, deck_col)
             for nd in rows_w:
                 if nd['list'] not in lists or nd['obj'] >= len(v5objs):
                     if nd['list'] in lists and nd['model']:
@@ -882,14 +892,17 @@ def main():
                     # rest are node multipliers (127 = 0.5 etc.).
                     col = rec['colour']
                     cm = tuple(nd['colour']) if (nd['flags'] & 0x400) else (1.0, 1.0, 1.0)
+                    # 0.3.39: bit-5 nodes multiply the record alpha by node+0x90 (tape 'alpha'; 1.0 on
+                    # older tapes) -- the render-state gate's only blend residual (4/824)
+                    amult = min(1.0, float(nd.get('alpha', 1.0))) if (nd['flags'] & 0x20) else 1.0
                     cbytes = bytes((min(255, max(0, int(col[3] * 255 * cm[2]))),
                                     min(255, max(0, int(col[2] * 255 * cm[1]))),
                                     min(255, max(0, int(col[1] * 255 * cm[0]))),
-                                    min(255, max(0, int(col[0] * 255)))))
+                                    min(255, max(0, int(col[0] * 255 * amult)))))
                     for gflags, gverts in rec['groups']:          # one polygon GROUP = one D3D draw
                         if not gverts:
                             continue
-                        pred = TS.predict(rec['pcw'], rec['isp'], rec['tsp'], gflags, kind=kind)
+                        pred = TS.predict(rec['pcw'], rec['isp'], rec['tsp'], gflags, kind=kind, alpha_mult=amult)
                         if nd['flags'] & 0x2000:
                             pred['cull'] = last_cull[0]           # kind-2/param-2 path sends no cull word
                         elif pred['cull'] is not None:

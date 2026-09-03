@@ -126,6 +126,15 @@ def main():
         line(True, 'C6 raw owner link (0.3.38 owner_off)', 'linked %d of %d objects; agrees with owner byte on %d of %d owned' % (linked, len(objs), agree, sum(1 for o in objs if o.get('oslot', -1) >= 0 and o['owner'] < 6)))
     line(bad_owner / max(1, len(objs)) < 0.05, 'C2 objects resolve to a character (owner or GFX1)', 'unresolvable %d of %d (%.1f%%)' % (bad_owner, len(objs), 100.0 * bad_owner / max(1, len(objs))))
     line(len(sorts) > 1 and sorts.get(0, 0) < len(allnodes), 'C3 sort key live', 'values %s' % dict(sorts.most_common(6)))
+    astride_ = int(t.get('anodes_stride', 96))
+    line(True, 'C7 world-node alpha multiplier (0.3.39, anodes_stride 100)', 'stride %d: %s' % (astride_, 'present' if astride_ >= 100 else 'ABSENT (1.0 assumed; bit-5 nodes may blend wrong)'))
+    if 'cam_state' in C:
+        cs = Counter(int(float(r[C['cam_state']])) for r in rows)
+        line(cs.get(1, 0) == 0, 'E3 camera state 0 (fight camera) on every row', 'states %s%s' % (dict(cs), '' if cs.get(1, 0) == 0 else '  <- scripted camera frames: renderer must use look/fov/yoff/roll'))
+        bo = sum(1 for r in rows if int(float(r[C['blackout']])) != 0) if 'blackout' in C else -1
+        line(True, 'E4 blackout gate / deck colour carried (0.3.39)', 'blackout rows %d; deck sample %s' % (bo, rows[len(rows) // 2][C['deck']] if 'deck' in C else 'ABSENT'))
+    else:
+        line(True, 'E3 camera state column', 'ABSENT (pre-0.3.39 tape: fight camera assumed)')
     line(stride >= 50, 'C4 rotation angle + hotspot carried (v4)', 'stride %d, rotated nodes %d, angles %s' % (stride, sum(angles.values()), {hex(k): v for k, v in angles.most_common(5)}))
     zero_gfx = sum(1 for n in objs if n['gfx1'] == 0)
     line(zero_gfx == 0, 'C5 objects carry a GFX1 bank', 'zero gfx1 %d' % zero_gfx)
