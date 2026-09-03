@@ -841,7 +841,11 @@ def main():
                     if nd['list'] in lists and nd['model']:
                         world_missing['3D model node (list %d)' % nd['list']] += 1
                     continue
-                variant = 'list6' if nd['list'] in (5, 6, 11, 12, 13) else 'list7'
+                # scene CB per list (Ghidra, docs/STAGE-DRAW-GHIDRA.md + WORLD-CAMERA-GHIDRA.md): deck/5/6/12 =
+                # world camera FUN_14061d7e0; 7/8/9 = x0.1 camera FUN_14061d6a0; HUD 0xB/0xD = FUN_14061d5b0
+                # (angle 0x4000, V = I -> the camera-independent block 04E19F4C). Gold frame 4445: 171/177
+                # list-11 draws bind 04E19F4C -- the old 'list6' choice projected the HUD with the world camera.
+                variant = 'hud' if nd['list'] in (11, 13) else ('list6' if nd['list'] in (5, 6, 12) else 'list7')
                 m = nd['matrix']
                 cbw = struct.pack('<12f', m[0], m[4], m[8], m[12], m[1], m[5], m[9], m[13], m[2], m[6], m[10], m[14])
                 scb = scene_block(cam, variant)
