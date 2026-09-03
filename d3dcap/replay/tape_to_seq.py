@@ -376,11 +376,15 @@ def main():
             for _ in range(n):
                 v = struct.unpack_from('<BBBbBBBBHHHBBBBHHHfffII', nb, off)
                 angle, hotx, hoty = struct.unpack_from('<Hhh', nb, off + 44) if stride >= 50 else (0, 0, 0)
+                # 0.3.38 (stride 54): u32 blk-relative offset of *(H+0x28) = the owning fighter's
+                # H base (blk+0x3DB8+slot*0x738), or 0. Resolves the slot with no bank guess.
+                owner_off = struct.unpack_from('<I', nb, off + 50)[0] if stride >= 54 else 0
                 off += stride
+                oslot = (owner_off - 0x3DB8) // 0x738 if owner_off >= 0x3DB8 and (owner_off - 0x3DB8) % 0x738 == 0 else -1
                 rows.append(dict(kind=v[0], slot=v[1], cat=v[2], sort=v[3], layer=v[4], face=v[5],
                                  owner=v[6], drawn=v[7], sid=v[8], pal=v[9], zx=v[15] / 4096.0,
                                  fsx=v[18], fsy=v[19], depth=v[20], gfx1=v[21],
-                                 angle=angle, hot=(hotx, hoty)))
+                                 angle=angle, hot=(hotx, hoty), oslot=oslot if 0 <= oslot < 6 else -1))
             v3nodes[fr] = rows
         pb = gzip.decompress(base64.b64decode(tape.get('pals', '')))
         for i in range(len(pb) // 32):
@@ -511,7 +515,9 @@ def main():
                         # fighter node (a parked fighter carries gfx1 == 0) by ELIMINATION if exactly one
                         # slot has no known bank. First v5 tape: 13% of objects were this class.
                         b = nd['gfx1'] & 0xFFFF
-                        if b in bank_slot:
+                        if nd.get('oslot', -1) >= 0:
+                            owner = nd['oslot']          # 0.3.38 raw owner link
+                        elif b in bank_slot:
                             owner = bank_slot[b]
                         elif len(unknown_slots) == 1:
                             owner = unknown_slots[0]

@@ -1,43 +1,55 @@
 [
 {
-"file": "tape_v5_59613130.seq",
-"mb": 355.9
+"file": "tape_v5_59613270_stage15.seq",
+"mb": 358.9
 },
 {
-"file": "render_storm-hail_world.seq",
-"mb": 143.9
+"file": "tape_v5_59613255_stage5.seq",
+"mb": 630.4
 },
 {
-"file": "tape_v4_59612822.seq",
-"mb": 80.0
-},
-{
-"file": "render_storm-hail.seq",
-"mb": 13.2
-},
-{
-"file": "render_storm-lightning.seq",
-"mb": 17.3
-},
-{
-"file": "cap_storm-lightning.seq",
-"mb": 52.8
-},
-{
-"file": "cap_storm-hail.seq",
-"mb": 53.9
-},
-{
-"file": "cap_sent-hsf.seq",
-"mb": 47.5
+"file": "cap_normals.seq",
+"mb": 63.1
 },
 {
 "file": "cap_storm-down.seq",
-"mb": 61.7
+"mb": 59.6
 },
 {
 "file": "cap_sent-rocket.seq",
-"mb": 60.5
+"mb": 59.8
+},
+{
+"file": "cap_sent-hsf.seq",
+"mb": 49.9
+},
+{
+"file": "cap_storm-lightning.seq",
+"mb": 49.3
+},
+{
+"file": "cap_storm-hail.seq",
+"mb": 53.2
+},
+{
+"file": "tape_v5_59613130.seq",
+"mb": 339.4
+},
+{
+"file": "render_storm-hail_world.seq",
+"mb": 137.2
+},
+{
+"file": "tape_v4_59612822.seq",
+"mb": 76.3
+},
+{
+"file": "render_storm-lightning.seq",
+"mb": 16.5
+},
+{
+"file": "render_storm-hail.seq",
+"mb": 12.6
 },
 {
 "file": "tape_v4_59612784_rot.seq",

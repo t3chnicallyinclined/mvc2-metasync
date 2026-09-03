@@ -59,7 +59,8 @@ def main():
             if off + stride > len(nb): break
             v = struct.unpack_from('<BBBbBBBBHHHBBBBHHHfffII', nb, off)
             ang, hx, hy = struct.unpack_from('<Hhh', nb, off + 44) if stride >= 50 else (0, 0, 0)
-            lst.append(dict(kind=v[0], slot=v[1], cat=v[2], sort=v[3], layer=v[4], face=v[5], owner=v[6], drawn=v[7],
+            oo = struct.unpack_from('<I', nb, off + 50)[0] if stride >= 54 else 0
+            lst.append(dict(owner_off=oo, oslot=((oo - 0x3DB8) // 0x738 if oo >= 0x3DB8 and (oo - 0x3DB8) % 0x738 == 0 and (oo - 0x3DB8) // 0x738 < 6 else -1)) | dict(kind=v[0], slot=v[1], cat=v[2], sort=v[3], layer=v[4], face=v[5], owner=v[6], drawn=v[7],
                             sid=v[8], pal=v[9], flash=v[10], glow=v[11], zx=v[15], zy=v[16], fsx=v[18], fsy=v[19],
                             depth=v[20], gfx1=v[21], gfx2=v[22], angle=ang, hot=(hx, hy)))
             off += stride
@@ -120,6 +121,9 @@ def main():
     sorts = Counter(n['sort'] for n in allnodes)
     angles = Counter(n['angle'] for n in allnodes if n['angle'])
     line(bad_layer == 0, 'C1 layer in 0..15', 'bad %d' % bad_layer)
+    if stride >= 54:
+        linked = sum(1 for o in objs if o.get('oslot', -1) >= 0); agree = sum(1 for o in objs if o.get('oslot', -1) >= 0 and o['owner'] < 6 and o['owner'] == o['oslot'])
+        line(True, 'C6 raw owner link (0.3.38 owner_off)', 'linked %d of %d objects; agrees with owner byte on %d of %d owned' % (linked, len(objs), agree, sum(1 for o in objs if o.get('oslot', -1) >= 0 and o['owner'] < 6)))
     line(bad_owner / max(1, len(objs)) < 0.05, 'C2 objects resolve to a character (owner or GFX1)', 'unresolvable %d of %d (%.1f%%)' % (bad_owner, len(objs), 100.0 * bad_owner / max(1, len(objs))))
     line(len(sorts) > 1 and sorts.get(0, 0) < len(allnodes), 'C3 sort key live', 'values %s' % dict(sorts.most_common(6)))
     line(stride >= 50, 'C4 rotation angle + hotspot carried (v4)', 'stride %d, rotated nodes %d, angles %s' % (stride, sum(angles.values()), {hex(k): v for k, v in angles.most_common(5)}))
