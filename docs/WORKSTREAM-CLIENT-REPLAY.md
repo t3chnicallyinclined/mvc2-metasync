@@ -200,6 +200,16 @@ Order: G (proof: one headless instance replaying a receipt faster than real time
 image, no Steam/D3D at runtime) -> netcode experiments on G2 -> G3 (browser: the recipe applied to the user's
 image in WASM).
 
+#### G result 2026-09-03 05:30 (RECEIPT-PLAYER-G.md) — the first falsification, and the corrected design
+The tick hook, seat-word injection, anchor relocation (257 pointers, self-check PASS) and the interlock all WORK. What
+FAILED: driving the game from a blk-only CHARACTER-SELECT anchor through its own shell into the match — the shell is
+not in blk (wrong team locked) and match init reads the exe-global entity list `DAT_142edf628` (heap pointers) ->
+crash. Confirms FRAME-READSET §5: the tick is NOT a function of blk alone. Corrected receipt (agent 0.3.47+):
+(1) anchor at the FIRST BATTLE FRAME, not char select; (2) carry the game_state page (0x142D10B90.., incl. +0x758
+picks), the `0x142edf300` page and the ctx slot table; (3) the player sets the picks directly (`game_state+0x758`),
+lets the TARGET process run its own match init (so its heap entities are valid), then applies the battle-frame
+anchor and feeds `seat_in`. Gate unchanged: fighters px/py/hp per frame vs the tape rows.
+
 ### Workstream F — Receipt lane (server-side)
 Agent records snapshot + input words (0.3.24 anchor + `seat_in` exist; align to `game_state+0x218/+0x21C`);
 `emu_gate.py frame` replays a disputed match server-side; PL image loader table UNKNOWN → dump-once until derived.
