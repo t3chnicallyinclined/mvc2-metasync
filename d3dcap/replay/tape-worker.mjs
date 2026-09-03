@@ -14,6 +14,7 @@ import init, { WebFeed } from './wasm/rr_render.js';
 
 const ready = init({ module_or_path: new URL('./wasm/rr_render_bg.wasm', import.meta.url) });
 let feed = null;
+let next = null;   // next frame index the feed has not yet emitted (set on open from opts.start)
 
 self.onmessage = async (e) => {
     const m = e.data;
@@ -28,9 +29,20 @@ self.onmessage = async (e) => {
             self.postMessage({ type: 'opened', info, ms: performance.now() - t0 });
         } else if (m.type === 'frame') {
             if (!feed) throw new Error('frame before open');
+            // FrameRecords carry first-use tables relative to what the feed has ALREADY emitted, so records must reach
+            // the main thread in feed order. A seek past unserved frames first serves the gap (decode-only on the
+            // main thread, ~25 ms each); a rewind re-serves the frame meta-only, which the main thread already holds.
+            if (next === null) next = m.i;            // the first request defines where the feed starts emitting
+            if (m.i > next) {
+                for (let j = next; j < m.i; j++) {
+                    const b = feed.frame(j);
+                    self.postMessage({ type: 'frame', i: j, buf: b.buffer, ms: 0, fill: true }, [b.buffer]);
+                }
+            }
             const t0 = performance.now();
             const bytes = feed.frame(m.i);            // a fresh Uint8Array copied out of wasm memory
             const ms = performance.now() - t0;
+            next = Math.max(next ?? 0, m.i + 1);
             self.postMessage({ type: 'frame', i: m.i, buf: bytes.buffer, ms }, [bytes.buffer]);
         } else if (m.type === 'close') {
             feed?.free(); feed = null;

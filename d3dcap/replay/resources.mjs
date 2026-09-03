@@ -29,6 +29,27 @@ export async function loadPack(url) {
  * and one uniform buffer holding a 256-byte-aligned slice per draw. After this, rendering a frame is
  * pure state-setting plus drawIndexed.
  */
+/** Upload every texture record of `pack` that carries bytes into `textures` (keyed by the pack's texture key).
+ *  A FrameRecord (tape-player.mjs) carries a texture's bytes ONLY in the frame that first uses it; later frames
+ *  reference it meta-only. So records must be uploaded in ARRIVAL ORDER, whether or not they are ever shown --
+ *  TapePlayer calls this on every decoded record (seek fix, 2026-09-03: jumping 0 -> 60 hit a meta-only texture and
+ *  writeTexture failed on an undefined source). Meta-only entries are skipped here and resolved from `textures`. */
+export function uploadTextures(device, pack, textures) {
+    const { head, slice } = pack;
+    let uploaded = 0;
+    for (const [ptr, t] of Object.entries(head.textures)) {
+        if (textures.has(ptr)) continue;
+        const bytes = slice(t);
+        if (!bytes) continue;                       // meta-only reference: uploaded by an earlier record
+        const tex = device.createTexture(textureDescriptor(t));
+        const bytesPerPixel = toTextureFormat(t.fmt) === 'r8unorm' ? 1 : 4;
+        device.queue.writeTexture({ texture: tex }, bytes, { bytesPerRow: t.w * bytesPerPixel, rowsPerImage: t.h }, { width: t.w, height: t.h });
+        textures.set(ptr, { tex, view: tex.createView(), ...t });
+        uploaded++;
+    }
+    return uploaded;
+}
+
 export function createResources(device, pack, shared = null) {
     const { head, slice } = pack;
     // A SEQUENCE hands the same `shared` object to every frame. Frames of one burst overwhelmingly
@@ -60,20 +81,7 @@ export function createResources(device, pack, shared = null) {
     // index lands in a different bank entirely. That looks like "wrong colours", not "wrong mip".
     // Going via copyExternalImageToTexture would also colour-manage data that is not a colour.
     const textures = texShared ?? new Map();
-    let uploaded = 0;
-    for (const [ptr, t] of Object.entries(head.textures)) {
-        if (textures.has(ptr)) continue;
-        const tex = device.createTexture(textureDescriptor(t));
-        const bytesPerPixel = toTextureFormat(t.fmt) === 'r8unorm' ? 1 : 4;
-        device.queue.writeTexture(
-            { texture: tex },
-            slice(t),
-            { bytesPerRow: t.w * bytesPerPixel, rowsPerImage: t.h },
-            { width: t.w, height: t.h },
-        );
-        textures.set(ptr, { tex, view: tex.createView(), ...t });
-        uploaded++;
-    }
+    const uploaded = uploadTextures(device, pack, textures);
 
     // A 1x1 opaque white stand-in for slots a draw does not bind. The bind group layout is fixed, so
     // every draw must supply both textures and both samplers even when the shader ignores one.

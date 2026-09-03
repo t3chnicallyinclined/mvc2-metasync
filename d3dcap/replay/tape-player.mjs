@@ -6,6 +6,7 @@
 // and pipeline states arrive once (first use) and are cached by id; a texture uploads once per tape.
 //
 // Ring: 16 prepared GPU frames (review-render §3.2) and 16 decoded-ahead records.
+import { uploadTextures } from './resources.mjs';
 import { SequencePlayer } from './player.mjs';
 import { Replayer } from './replay.mjs';
 
@@ -142,6 +143,9 @@ export class TapePlayer extends SequencePlayer {
             try { pack = decodeFrameRecord(m.buf, this.tables, this.session); }
             catch (err) { this.pending.get(i)?.[1](err); this.pending.delete(i); return; }
             this.decoded.set(i, pack);
+            // seek fix: first-use texture bytes ride in whichever record first uses them -- upload on arrival so a
+            // later frame shown out of order finds them in the shared map (the worker serves records in feed order).
+            if (this.replayer && this.shared?.textures) uploadTextures(this.replayer.device, pack, this.shared.textures);
             this.pending.get(i)?.[0](pack);
             this.pending.delete(i);
         } else if (m.type === 'error') {
