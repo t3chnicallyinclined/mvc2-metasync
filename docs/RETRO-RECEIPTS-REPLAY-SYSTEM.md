@@ -131,6 +131,11 @@ cd C:\Users\trist\projects\RetroReceipts-agent\pwa && node scripts\smoke-replay.
 
 Today: agent → server API (:7250) → tape store on disk → static web → browser (wasm worker + WebGPU); live results ride
 Redis pub/sub + the SSE gateway (:7251). Dev-only: Python oracle emitter, standalone player, `serve.py`, the pack script.
+**Two product rules (Tris, 2026-09-03):** (1) replays are for signed-in users — the PWA resolver refuses a tape without an
+account (`source.ts`, shipped), and the future public tape read must be authed; (2) **host/lobby nodes render**: the
+arcade host machines own the game, so they can derive asset packs and run the emitter (later the receipt runner) as
+their work and serve rendered results to signed-in viewers, which is how phones and non-owners get replays without any
+ROM-derived bytes leaving a machine that owns the game.
 Target: three components — agent (capture + local asset derivation, the pack step moves into `rr-render` and runs on the
 user's machine), server (store + bus + the public tape read), PWA (emit + render). The receipt runner later replaces the
 geometry tape inside the agent/emitter without changing the count.

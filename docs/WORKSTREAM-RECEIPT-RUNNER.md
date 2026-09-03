@@ -74,6 +74,9 @@ The Steam executable is the native x86-64 recompilation of the Dreamcast game. I
 
 - **Native host (Windows/Linux, BYOR):** receipt in, runner + emitter + `rr-render` local. The user's exe image and arc never leave their machine.
 - **Phone / browser (M-interim):** a server-side runner (the match participants' images cannot be used server-side without their consent — product decision) emits FrameRecords over Redis/NATS. Measured today 719 KB/frame with the static deck re-emitted; strip the deck → ~100 KB (INFERRED from measured VB 547 / IB 55 / deck 464 KB sections); keyed frames → 20–50 KB (estimate); or send the tape (0.5–0.9 KB/frame gz + 21 MB pack) and run the wasm emitter on the device (27.8 ms/frame desktop measured; phone UNKNOWN). Byte-exact gate: per-frame sha256 of FrameRecord (both sides emit from frame 0) + `gate_l3.mjs` scene-RT sha (order-independent; the gate for join-at-keyframe).
+- **Host/lobby nodes as runners (Tris, 2026-09-03):** the arcade host machines own the game; they can run the emitter today and
+  the receipt runner later as their work, serving rendered frames to signed-in viewers (phones, non-owners) — the BYOR-clean
+  answer to the M-interim question. Replays require sign-in (PWA resolver gates on auth; server tape read must be authed).
 - **Browser-native frame function** (lift x86-64 → wasm): UNPROVEN; not on the path until Gate 3 passes.
 
 ## 6. Residuals the runner makes easier (RENDER §4)
