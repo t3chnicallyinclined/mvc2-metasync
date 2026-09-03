@@ -112,3 +112,6 @@ d3dcap/replay/tcw_pages/
 d3dcap/replay/re_map/cache/
 d3dcap/replay/re_map/*.jsonl
 d3dcap/replay/re_map/__pycache__/
+
+# TTD time-travel traces + live memory images (game-derived, multi-GB) -- never commit
+/d3dcap/ttd/runs/
