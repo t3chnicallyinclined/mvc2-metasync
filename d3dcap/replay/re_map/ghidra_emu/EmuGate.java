@@ -38,6 +38,12 @@
 //                                     sentinel) is an OS/DLL call: logged (target, return, RCX, RDX, R8), RAX = 0, RET
 //   extstub on|off
 //   callother skip|abort              unimplemented CALLOTHER (vfmadd, rdtsc, cpuid ...): log + skip, or abort the run
+//   probe <hexaddr> <name>            log XMM0/XMM1 (low 64 bits) whenever PC reaches addr; execution unchanged
+//   nudge <hexaddr> <name>            when PC reaches addr, XMM0.single += 1 ulp (sensitivity test for a float routine's result:
+//                                     put it on the instruction AFTER the call, or on the routine's RET)
+//   fma on|off                        compute the FMA3 CALLOTHERs (vf[n]m{add,sub}{132,213,231}{ss,sd,ps,pd}) with Java
+//                                     Math.fma (one rounding = the hardware result); result line `fmacount N`.
+//                                     Lets the tick run with DAT_142eefbd8 = 1 (docs/DETERMINISM-CONTRACT.md s3)
 //   note <text>                       copied into the result file (job provenance)
 //   heap <hexaddr> <hexsize>          zero-filled bump-allocator arena for `extalloc`
 //   extalloc <hexaddr> <reg>          external target with allocator semantics (e.g. RtlAllocateHeap: size in R8):
@@ -87,6 +93,11 @@ public class EmuGate extends GhidraScript {
     long heapBase = 0, heapSize = 0, heapCur = 0;
     Map<Long, String> extAlloc = new HashMap<>();
     Map<Long, Long> extRet = new HashMap<>();
+    Map<Long, String> probes = new HashMap<>();   // `probe <addr> <name>`: log XMM0/XMM1 low 64 bits when PC reaches addr (no effect on execution)
+    Map<Long, Integer> ulpNudge = new HashMap<>(); // `ulp <addr> <n>`: when PC reaches the RETURN of a float routine... (see nudge below)
+    Map<Long, String> nudgeAt = new HashMap<>();   // `nudge <addr> <name>`: at addr (a RET site or the instruction after a CALL) add 1 ulp to XMM0 single
+    boolean fmaEnabled = false;      // `fma on`: compute vf[n]m{add,sub}* CALLOTHERs with Math.fma (else skip/abort as before)
+    long fmaCount = 0;
 
     void traceRec(int kind, long pc, long addr, int size) {
         if (trace == null) return;
@@ -192,6 +203,19 @@ public class EmuGate extends GhidraScript {
                 doRet();
                 continue;
             }
+            String pr = probes.get(pc);
+            if (pr != null) {
+                BigInteger x0 = emu.readRegister("XMM0"), x1 = emu.readRegister("XMM1");
+                stubHits.add(String.format("probe %s pc=%x xmm0=%016x xmm1=%016x step=%d", pr, pc,
+                    x0.and(new BigInteger("ffffffffffffffff", 16)).longValue(), x1.and(new BigInteger("ffffffffffffffff", 16)).longValue(), steps));
+            }
+            String nd = nudgeAt.get(pc);
+            if (nd != null) {
+                float f = xmm0f();
+                float g = Float.intBitsToFloat(Float.floatToRawIntBits(f) + 1);
+                setXmm0f(g);
+                stubHits.add(String.format("nudge %s pc=%x %.9g -> %.9g step=%d", nd, pc, f, g, steps));
+            }
             Stub s = stubs.get(pc);
             if (s != null) {
                 long rcx = reg("RCX");
@@ -268,9 +292,61 @@ public class EmuGate extends GhidraScript {
                 String key = name + "@" + Long.toHexString(curPc);
                 callotherCounts.merge(key, 1, Integer::sum);
                 traceRec(4, curPc, 0, 0);
+                if (fmaEnabled && fmaOp(op, name)) return true;    // computed (DETERMINISM-CONTRACT: FMA3 CRT path)
                 if (!callotherSkip) throw new RuntimeException("unimplemented CALLOTHER " + name + " at " + Long.toHexString(curPc));
                 return true;      // skipped: outputs left unchanged
             }
+
+            // vf[n]m{add,sub}{132,213,231}{ss,sd,ps,pd}_fma( XmmReg1=dst, vexVVVV=src2, XmmReg2_m = src3 ) -> tmp (output size)
+            // 132: dst*src3 + src2   213: src2*dst + src3   231: src2*src3 + dst   (Intel SDM); fnm negates the product,
+            // *sub negates the addend. Scalar forms keep the upper lanes of dst. Java Math.fma = one IEEE-754 rounding, the
+            // same operation the hardware performs, so the emulated bits equal the FMA3 hardware bits.
+            boolean fmaOp(PcodeOpRaw op, String name) {
+                java.util.regex.Matcher m = java.util.regex.Pattern.compile("^vf(n?)m(add|sub)(132|213|231)(ss|sd|ps|pd)_").matcher(name);
+                if (!m.find() || op.getNumInputs() < 4 || op.getOutput() == null) return false;
+                boolean neg = m.group(1).equals("n"), sub = m.group(2).equals("sub");
+                String form = m.group(3), type = m.group(4);
+                boolean dbl = type.endsWith("d"), scalar = type.startsWith("s");
+                int lane = dbl ? 8 : 4;
+                ghidra.pcode.memstate.MemoryState ms = emulate.getMemoryState();
+                byte[] dst = leBytes(ms.getBigInteger(op.getInput(1), false), op.getInput(1).getSize());
+                byte[] s2 = leBytes(ms.getBigInteger(op.getInput(2), false), op.getInput(2).getSize());
+                byte[] s3 = leBytes(ms.getBigInteger(op.getInput(3), false), op.getInput(3).getSize());
+                int outSize = op.getOutput().getSize();
+                byte[] out = new byte[outSize];
+                System.arraycopy(dst, 0, out, 0, Math.min(dst.length, outSize));
+                int lanes = scalar ? 1 : outSize / lane;
+                for (int i = 0; i < lanes; i++) {
+                    if (dbl) {
+                        double a = ld(dst, i * 8), b = ld(s2, i * 8), c = ld(s3, i * 8), r;
+                        if (form.equals("132")) r = fma3(a, c, b, neg, sub);
+                        else if (form.equals("213")) r = fma3(b, a, c, neg, sub);
+                        else r = fma3(b, c, a, neg, sub);
+                        std(out, i * 8, r);
+                    } else {
+                        float a = lf(dst, i * 4), b = lf(s2, i * 4), c = lf(s3, i * 4), r;
+                        if (form.equals("132")) r = fma3f(a, c, b, neg, sub);
+                        else if (form.equals("213")) r = fma3f(b, a, c, neg, sub);
+                        else r = fma3f(b, c, a, neg, sub);
+                        stf(out, i * 4, r);
+                    }
+                }
+                ms.setValue(op.getOutput(), new BigInteger(1, reverse(out)));
+                fmaCount++;
+                return true;
+            }
+            double fma3(double x, double y, double z, boolean neg, boolean sub) { return Math.fma(neg ? -x : x, y, sub ? -z : z); }
+            float fma3f(float x, float y, float z, boolean neg, boolean sub) { return Math.fma(neg ? -x : x, y, sub ? -z : z); }
+            byte[] leBytes(BigInteger v, int size) {
+                byte[] be = v.toByteArray(); byte[] le = new byte[size];
+                for (int i = 0; i < size && i < be.length; i++) le[i] = be[be.length - 1 - i];
+                return le;
+            }
+            byte[] reverse(byte[] a) { byte[] r = new byte[a.length]; for (int i = 0; i < a.length; i++) r[i] = a[a.length - 1 - i]; return r; }
+            double ld(byte[] b, int o) { return o + 8 <= b.length ? ByteBuffer.wrap(b, o, 8).order(ByteOrder.LITTLE_ENDIAN).getDouble() : 0.0; }
+            float lf(byte[] b, int o) { return o + 4 <= b.length ? ByteBuffer.wrap(b, o, 4).order(ByteOrder.LITTLE_ENDIAN).getFloat() : 0f; }
+            void std(byte[] b, int o, double v) { if (o + 8 <= b.length) ByteBuffer.wrap(b, o, 8).order(ByteOrder.LITTLE_ENDIAN).putDouble(v); }
+            void stf(byte[] b, int o, float v) { if (o + 4 <= b.length) ByteBuffer.wrap(b, o, 4).order(ByteOrder.LITTLE_ENDIAN).putFloat(v); }
         });
         List<String> results = new ArrayList<>();
         for (String raw : lines) {                       // pre-scan so an aborted run still reports
@@ -316,6 +392,9 @@ public class EmuGate extends GhidraScript {
                     case "image": imgLo = Long.parseUnsignedLong(t[1], 16); imgHi = Long.parseUnsignedLong(t[2], 16); break;
                     case "extstub": extStub = t[1].equals("on"); break;
                     case "callother": callotherSkip = t[1].equals("skip"); break;
+                    case "fma": fmaEnabled = t[1].equals("on"); break;
+                    case "probe": probes.put(Long.parseUnsignedLong(t[1], 16), t[2]); break;
+                    case "nudge": nudgeAt.put(Long.parseUnsignedLong(t[1], 16), t[2]); break;
                     case "note": notes.add(ln.substring(5)); break;
                     case "heap": heapBase = Long.parseUnsignedLong(t[1], 16); heapSize = Long.parseUnsignedLong(t[2], 16);
                         heapCur = heapBase + 16; emu.writeMemory(A(heapBase), new byte[(int) heapSize]); break;
@@ -347,6 +426,7 @@ public class EmuGate extends GhidraScript {
                     for (String s : notes) w.println("note " + s);
                     w.println("traced " + traceCount);
                     if (heapSize != 0) w.println(String.format("heapused %x", heapCur - heapBase));
+                    w.println("fmacount " + fmaCount);
                     for (Map.Entry<String, Integer> e : extCounts.entrySet()) w.println("extcount " + e.getKey() + " " + e.getValue());
                     for (Map.Entry<String, Integer> e : callotherCounts.entrySet()) w.println("callother " + e.getKey() + " " + e.getValue());
                     for (String s : log) w.println(s);
