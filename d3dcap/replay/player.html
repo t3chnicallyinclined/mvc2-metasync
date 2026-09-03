@@ -112,6 +112,12 @@ $('load').onclick = async () => {
     $('log').textContent = '';
     gpu ??= await boot();
     const q = new URLSearchParams(location.search);
+    // display options: res = internal resolution as a multiple of 640x480 (2 = the capture's own; 3, 4 supersample),
+    // filter = box | nearest; canvas 640x480 whenever res is given (the picture is downsampled, never upscaled).
+    const res = Number(q.get('res') || 2);
+    const dopts = { scale: res / 2, filter: q.get('filter') || (q.get('res') ? 'box' : 'nearest'),
+                    canvas: q.get('res') ? { w: 640, h: 480 } : null };
+    if (dopts.canvas) { $('cv').width = dopts.canvas.w; $('cv').height = dopts.canvas.h; }
     const progress = (got, total, what) => {
       $('readout').textContent = (total
         ? `${(100 * got / total).toFixed(0)}%  (${(got / 1048576).toFixed(1)} MB)`
@@ -121,7 +127,7 @@ $('load').onclick = async () => {
       // TAPE mode: the wasm emitter in a worker renders the tape directly -- no .seq anywhere
       const tapeUrl = $('tape').value.trim(), packUrl = $('pack').value.trim();
       log(`loading tape ${tapeUrl} with pack ${packUrl} …`);
-      player = await new TapePlayer(gpu.device, gpu.format).load(tapeUrl, packUrl, {
+      player = await new TapePlayer(gpu.device, gpu.format, dopts).load(tapeUrl, packUrl, {
         start: Number(q.get('start') || 0), count: q.get('count') ? Number(q.get('count')) : Infinity, onProgress: progress,
       });
       const inf = player.info;
@@ -131,7 +137,7 @@ $('load').onclick = async () => {
     } else {
       const url = $('seq').value.trim();
       log(`loading ${url} …`);
-      player = await new SequencePlayer(gpu.device, gpu.format).load(url, progress);
+      player = await new SequencePlayer(gpu.device, gpu.format, dopts).load(url, progress);
     }
     const m = player.seq.meta;
     log(`${player.count} frames (${m.first}..${m.first + m.count - 1}), ` +

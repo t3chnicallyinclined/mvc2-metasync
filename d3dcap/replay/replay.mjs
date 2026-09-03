@@ -58,6 +58,11 @@ export class Replayer {
         this.format = format;           // matches the captured scene RT (fmt 87 = B8G8R8A8_UNORM)
         this.pipelines = new Map();
         this.bindGroups = new Map();
+        // INTERNAL RESOLUTION (2026-09-03): multiplies the captured scene RT and every per-draw viewport. The capture's
+        // own RT is 2048x1024 with the game viewport at 1280x960 (= 2x of 640x480), so scale 1 == the capture, scale 2
+        // == 4x of native. Vertex positions are already NDC on the sprite and world paths (sprite.wgsl), so a larger
+        // viewport is a genuinely higher-resolution raster of the same draws. Set before attach().
+        this.scale = 1;
     }
 
     async load(url) {
@@ -100,8 +105,8 @@ export class Replayer {
         });
 
         const rt = this.pack.head.sceneRT;
-        this.width = rt.w;
-        this.height = rt.h;
+        this.width = Math.round(rt.w * this.scale);
+        this.height = Math.round(rt.h * this.scale);
         return this;
     }
 
@@ -264,7 +269,8 @@ export class Replayer {
             pass.setVertexBuffer(0, this.res.vertexBuffer, d.voff);
             pass.setBindGroup(0, this.bg0, [i * this.res.uniformStride]);
             pass.setBindGroup(1, this._bindGroup(d));
-            applyViewport(pass, d.vp);
+            applyViewport(pass, this.scale === 1 || !d.vp ? d.vp
+                : [d.vp[0] * this.scale, d.vp[1] * this.scale, d.vp[2] * this.scale, d.vp[3] * this.scale, ...d.vp.slice(4)]);
             pass.drawIndexed(d.indexCount, 1, d.firstIndex, 0, 0);
 
             stats.drawn++;

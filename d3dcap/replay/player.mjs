@@ -70,7 +70,7 @@ export async function loadSequence(url, onProgress) {
 // 2 ms render into a 30 ms frame.
 const BLIT_WGSL = `
 struct VSOut { @builtin(position) pos : vec4f, @location(0) uv : vec2f };
-struct Crop { origin : vec2f, size : vec2f };
+struct Crop { origin : vec2f, size : vec2f, taps : vec2f, mode : f32, pad : f32 };
 @group(0) @binding(0) var samp : sampler;
 @group(0) @binding(1) var src  : texture_2d<f32>;
 @group(0) @binding(2) var<uniform> crop : Crop;
@@ -88,17 +88,35 @@ fn vs(@builtin(vertex_index) i : u32) -> VSOut {
 
 @fragment
 fn fs(in : VSOut) -> @location(0) vec4f {
-    // The scene RT is 2048x1024 and only (384,32)+1280x960 of it is the game's viewport.
+    // The scene RT is 2048x1024 (x internal scale) and only the game viewport region of it is shown.
     let uv = crop.origin + in.uv * crop.size;
     // Alpha in the scene RT is the game's own last-writer alpha and is meaningless on screen;
     // forcing 1 stops the canvas compositing the page background through the picture.
-    return vec4f(textureSample(src, samp, uv).rgb, 1.0);
+    if (crop.mode < 0.5) {
+        return vec4f(textureSample(src, samp, uv).rgb, 1.0);
+    }
+    // BOX FILTER: average the taps.x by taps.y RT texels that map onto this canvas pixel (supersampling).
+    // Integer taps only (the caller rounds); textureLoad so no sampler filtering is mixed in.
+    let dims = vec2f(textureDimensions(src));
+    let base = vec2i(floor(uv * dims - crop.taps * 0.5 + vec2f(0.5)));
+    var acc = vec3f(0.0);
+    let nx = i32(crop.taps.x); let ny = i32(crop.taps.y);
+    for (var y = 0; y < ny; y++) {
+        for (var x = 0; x < nx; x++) {
+            acc += textureLoad(src, base + vec2i(x, y), 0).rgb;
+        }
+    }
+    return vec4f(acc / f32(nx * ny), 1.0);
 }`;
 
 export class SequencePlayer {
-    constructor(device, canvasFormat) {
+    constructor(device, canvasFormat, opts = {}) {
         this.device = device;
         this.canvasFormat = canvasFormat;
+        // display options (2026-09-03): scale = internal-resolution multiplier on the captured RT (1 = the capture's
+        // own 2x of native); filter = 'nearest' (one RT texel per canvas pixel, the historical blit) or 'box'
+        // (average every RT texel under the canvas pixel -- true supersampling); canvas = {w,h} of the output.
+        this.opts = { scale: 1, filter: 'nearest', canvas: null, ...opts };
         this.shared = { textures: new Map(), samplers: new Map() };
         this.cache = new Map();
         this.maxPrepared = 300;
@@ -108,6 +126,7 @@ export class SequencePlayer {
     async load(url, onProgress) {
         this.seq = await loadSequence(url, onProgress);
         this.replayer = new Replayer(this.device, 'bgra8unorm');
+        this.replayer.scale = this.opts.scale;
         await this.replayer.attach(this.seq.frames[0], this.shared);
 
         const vp = this.seq.frames[0].head.viewport ?? [0, 0, this.replayer.width, this.replayer.height];
@@ -126,12 +145,17 @@ export class SequencePlayer {
             primitive: { topology: 'triangle-list' },
         });
         this.cropBuffer = this.device.createBuffer({
-            size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+            size: 32, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
         });
+        const s = this.replayer.scale;
+        const cw = this.opts.canvas?.w ?? vp[2] * s, ch = this.opts.canvas?.h ?? vp[3] * s;   // canvas pixels
+        const tx = Math.max(1, Math.round(vp[2] * s / cw)), ty = Math.max(1, Math.round(vp[3] * s / ch));
         this.device.queue.writeBuffer(this.cropBuffer, 0, new Float32Array([
-            vp[0] / this.replayer.width, vp[1] / this.replayer.height,
-            vp[2] / this.replayer.width, vp[3] / this.replayer.height,
+            vp[0] * s / this.replayer.width, vp[1] * s / this.replayer.height,
+            vp[2] * s / this.replayer.width, vp[3] * s / this.replayer.height,
+            tx, ty, this.opts.filter === 'box' ? 1 : 0, 0,
         ]));
+        this.blitTaps = [tx, ty];
         this.blitSampler = this.device.createSampler({ magFilter: 'nearest', minFilter: 'nearest' });
     }
 

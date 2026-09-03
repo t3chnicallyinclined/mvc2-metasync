@@ -77,8 +77,8 @@ function decodeFrameRecord(buf, tables, session) {
 }
 
 export class TapePlayer extends SequencePlayer {
-    constructor(device, canvasFormat) {
-        super(device, canvasFormat);
+    constructor(device, canvasFormat, opts = {}) {
+        super(device, canvasFormat, opts);
         this.maxPrepared = PREPARED;
         this.decoded = new Map();          // tape row -> pack-shaped frame
         this.pending = new Map();          // tape row -> [resolve, reject]
@@ -127,6 +127,7 @@ export class TapePlayer extends SequencePlayer {
 
         const f0 = await this.decode(0);
         this.replayer = new Replayer(this.device, 'bgra8unorm');
+        this.replayer.scale = this.opts.scale;
         await this.replayer.attach(f0, this.shared);
         this._initBlit(f0.head.viewport ?? [0, 0, this.replayer.width, this.replayer.height]);
         this.seq = { meta: { first: this.info.first_clock, count: this._count, worker: true }, frames: null, bytes: 0 };
