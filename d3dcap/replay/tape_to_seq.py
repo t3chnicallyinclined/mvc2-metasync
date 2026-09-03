@@ -98,6 +98,60 @@ TCW_PAGES = os.path.join(HERE, 'tcw_pages')
 STAGE_DIR = 'C:/Users/trist/projects/maplecast-flycast/atlas/stages'   # ModNao-port rips: STGxx.json + STGxx_tNN.png
 
 
+def nl_triangles(pay, has_colored=False):
+    """Expand a NaomiLib mesh payload (polygon groups) into a flat TRIANGLE LIST of
+    (x, y, z, nx, ny, nz, u, v) vertices, in the winding Steam draws them.
+    Group header 8 B: u32 flags (bit0 = cull back, bit3 = 'triple' = independent triangles),
+    u32 count (x3 for triple). Vertex: 0x20 direct (pos@0, normal@0xC, colour BGRA@0x10 when
+    coloured, uv@0x18) or 0x08 reference ((u32@0 >> 16) in 0x5FF0..0x5FFF; i32 @+4 = byte offset
+    from the reference to the referenced vertex, +8). A zero u32 ends the mesh."""
+    out = []
+    n = len(pay)
+    sa = 0
+    while sa + 8 <= n:
+        flags, vcount = struct.unpack_from('<II', pay, sa)
+        if flags == 0 and vcount == 0:
+            break
+        triple = bool((flags >> 3) & 1)
+        cull_back = bool(flags & 1)
+        sa += 8
+        vs = []
+        ended = False
+        for _ in range(vcount * (3 if triple else 1)):
+            if sa + 8 > n:
+                ended = True
+                break
+            head = struct.unpack_from('<I', pay, sa)[0]
+            if head == 0:
+                ended = True
+                sa += 8
+                break
+            if 0x5FF0 <= (head >> 16) <= 0x5FFF:
+                voff = struct.unpack_from('<i', pay, sa + 4)[0]
+                ca = sa + voff + 8
+                sa += 8
+            else:
+                ca = sa
+                sa += 0x20
+            if 0 <= ca and ca + 0x20 <= n:
+                vs.append(struct.unpack_from('<8f', pay, ca))
+            else:
+                vs.append((0.0,) * 8)
+        if triple:
+            for i in range(2, len(vs), 3):
+                out += ([vs[i - 1], vs[i - 2], vs[i]] if not cull_back else [vs[i - 2], vs[i - 1], vs[i]])
+        else:
+            for i in range(max(0, len(vs) - 2)):
+                even = (i % 2 == 0)
+                if (even and not cull_back) or (not even and cull_back):
+                    out += [vs[i + 1], vs[i], vs[i + 2]]
+                else:
+                    out += [vs[i], vs[i + 1], vs[i + 2]]
+        if ended:
+            break
+    return out
+
+
 def decode_anodes(tape):
     """frame -> [node dict]; and the interned objects as [(header bytes, [records])]."""
     if not tape.get('anodes'):
@@ -139,7 +193,13 @@ def decode_anodes(tape):
                 size = struct.unpack_from('<i', body, q + 0x4C)[0]
                 hdr = body[q:q + 0x50]
                 pay = body[q + 0x50:q + 0x50 + max(0, size)]
-                verts = [struct.unpack_from('<8f', pay, v) for v in range(8, len(pay) - 31, 32)]
+                # The record is a NaomiLib MESH (0x50 header: texCtrl/TCW @0x0C, texNum @0x20,
+                # vertexColorMode @0x24 (-3 = coloured verts), alpha @0x2C, RGB @0x30, polyDataLen @0x4C)
+                # followed by POLYGON GROUPS, not a flat vertex array. Steam's FUN_140848ee0 walks the
+                # same records and its D3D draws are indexed TRIANGLE LISTS (gold: indexCount 6/9/42 =
+                # 4/5/16-vertex strips expanded). nl_triangles() does that expansion (format facts:
+                # rip_stage.py scan_model, ModNao scanModel.ts / getVertexAddressingMode.ts).
+                verts = nl_triangles(pay, struct.unpack_from('<i', hdr, 0x24)[0] == -3)
                 tcw = struct.unpack_from('<I', hdr, 0x0C)[0]
                 # a SYNTHETIC tape (states_to_tape) stashes its page key in the header's spare words;
                 # a real object has floats there -- accept only a clean 'sha_<16 hex>' or 8-hex key
@@ -411,7 +471,8 @@ def main():
         else:
             wt = WorldTemplate(a.world_template)
             stage_rip = None
-            stage_geo = []          # arc deck geometry, appended once (see emit_stage)
+            stage_geo = []          # arc deck geometry for the current frame (see emit_stage)
+            stage_announced = []
             sid_ = tape.get('stage_id')
             if sid_ is not None and os.path.exists(os.path.join(STAGE_DIR, 'STG%02X.json' % int(sid_))):
                 stage_rip = json.load(open(os.path.join(STAGE_DIR, 'STG%02X.json' % int(sid_))))
@@ -603,7 +664,11 @@ def main():
             arrive as tape nodes are drawn (by emit_world). Geometry is appended ONCE per seq."""
             if not wt or stage_rip is None:
                 return
-            if not stage_geo:
+            # vertex/index buffers are PER FRAME ('vb' is interned per frame), so the deck geometry is
+            # appended into every frame's buffers; only the mesh->page prep is cached across frames.
+            if stage_geo:
+                stage_geo.clear()
+            if True:
                 for mi, mesh in enumerate(stage_rip['meshes']):
                     if mesh.get('model', 0) != 0 or not mesh.get('placed', True) or not mesh['tris']:
                         continue
@@ -637,8 +702,10 @@ def main():
                     fi = len(idxs)
                     idxs.extend(range(first, first + nv))
                     stage_geo.append(dict(fi=fi, nv=nv, tkey=tkey, opaque=bool(mesh.get('isOpaque', True))))
-                print('  stage %02X: %d model-0 meshes from the arc, %d vertices' % (
-                    int(stage_rip['stageId']), len(stage_geo), sum(g['nv'] for g in stage_geo)))
+                if not stage_announced:
+                    stage_announced.append(1)
+                    print('  stage %02X: %d model-0 meshes from the arc, %d vertices (per frame)' % (
+                        int(stage_rip['stageId']), len(stage_geo), sum(g['nv'] for g in stage_geo)))
             ident = struct.pack('<12f', 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0)
             scb = scene_block(cam, 'list6')
             hw = sha8(ident); hs = sha8(scb)
@@ -711,9 +778,9 @@ def main():
                     if ps_variant not in wt.draw:
                         ps_variant = next(iter(wt.draw))
                     tdraw_w = wt.draw[ps_variant]
-                    col = rec['colour']
-                    cbytes = bytes((int(max(0, min(1, col[2])) * 255), int(max(0, min(1, col[1])) * 255),
-                                    int(max(0, min(1, col[0])) * 255), int(max(0, min(1, col[3])) * 255)))
+                    col = rec['colour']          # (alpha @0x2C, R, G, B @0x30..) per the NL mesh header
+                    cbytes = bytes((int(max(0, min(1, col[3])) * 255), int(max(0, min(1, col[2])) * 255),
+                                    int(max(0, min(1, col[1])) * 255), int(max(0, min(1, col[0])) * 255)))
                     first = len(verts) // STRIDE
                     for (x, y, z, nx, ny, nz, u, v) in rec['verts']:
                         verts.extend(struct.pack('<4f', x, y, z, 0.0))
