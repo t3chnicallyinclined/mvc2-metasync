@@ -140,6 +140,23 @@ E1 server: tape range endpoint (lane 1 contract only: `GET /rr/tape/<id>` with R
 M-interim emitter/publisher. E2 PWA route `/replay/<match>` (desktop: worker + WebGPU; phone: subscriber + WebGPU).
 E3 release gate = headless render-check of 3 gold frames, byte-exact vs stored PNGs, pre-bloom per D-post.
 
+### Workstream G — Game-in-the-loop replay farm (Tris, 2026-09-03: "start from the character-select save state and run off the inputs, reset after every match")
+Everything it needs is already proven: the character-select anchor restores into a DIFFERENT game process with the
+block relocated and the game keeps running at 60 fps (0.3.24); the confirmed input ring is recorded per frame
+(`seat_in`, `game_state+0x218/+0x21C`); GGPO makes the frame function deterministic (RE-C6: 0/211,736 bytes differ);
+a headless Steam game runs in a GPU-shared container on our own server (memory mvc-hosting-virtualization /
+mvc-headless-steam-vps). The farm: one real game process per render job, shim inside it: load anchor -> feed the
+tape's inputs each tick -> capture every frame (the shim already does this pixel-exact by construction, it IS Steam)
+-> encode video or publish keyed frames (M-interim) -> reset to the anchor for the next match. Faster than real time
+is plausible by driving `FUN_140607d60` in a loop from the shim instead of waiting for vsync (UNKNOWN until tried).
+This makes the RECEIPT playable, not only verifiable, and removes the need for the emitter port on the server side;
+the tape + WASM emitter remain the no-game path for browsers. Open items: the input-injection point (write the seat
+words before the tick vs a GGPO local session), stage/costume/rule state carried by the anchor, throughput per GPU.
+Legal: our own licensed copy on our own server; nothing of the game leaves it.
+NOT viable: a "lightweight WASM emulator running Marvel in the browser" -- that is the x86-64 game + Steam runtime +
+D3D11 + the packed, self-hooking exe executing on the client, and it is Capcom's code shipped to users. The Dreamcast
+route (flycast compiled to WASM + the user's own ROM) is a different product: DC pixels, not Steam's, and a ROM per user.
+
 ### Workstream F — Receipt lane (server-side)
 Agent records snapshot + input words (0.3.24 anchor + `seat_in` exist; align to `game_state+0x218/+0x21C`);
 `emu_gate.py frame` replays a disputed match server-side; PL image loader table UNKNOWN → dump-once until derived.
