@@ -51,6 +51,7 @@ maps onto DC work RAM through the piecewise block map (`d3dcap/replay/re_map/blk
 | Stage deck = direct draw of POL model 0, identity W, world CB; props = list-5 nodes; TCW = 0xC10 + texIndex | `docs/STAGE-DRAW-GHIDRA.md` |
 | World camera closed form, stage-independent; no CPU vertex transform on any path | `docs/WORLD-CAMERA-GHIDRA.md`, seed `24_world_camera.surql` |
 | Sprite walker / submit read set (System B) | `docs/TAPE-V3-SPEC.md` §10 |
+| Texture banks: TCW = base + texIndex (0xC10 stage / 0xC50 effects / 0xC90 HUD), files = AFS entries inside game_50.arc, HOST decode (`rip_texbank.py`); 16/16 bank-derivable captured pages byte-exact; `rip_stage.py`'s texture decode is WRONG (transposed twiddle, 565/1555 expansion) | `docs/TEXTURE-BANKS-GHIDRA.md`, seed `31_texture_banks.surql` |
 | Emulation gate: camera routines and sprite walker reproduce captured bytes bit-exact (Ghidra p-code on captured `blk`); matrix stack storage = `blk+0..0x1000`; cell overrides need the DC-RAM image | `docs/EMU-GATE.md`, seed `33_emu_gate.surql`, harness `d3dcap/replay/emu_gate.py` |
 
 ## Agents bound to this method
