@@ -57,7 +57,13 @@ The Steam executable is the native x86-64 recompilation of the Dreamcast game. I
 
 ## 4. Build order — each step has a numeric gate and an existing oracle (RE §8, RENDER §6.2)
 
-0. **Data pair** (owner: live session): one offline Versus match with agent 0.3.47 recording, `dump_live.py` pre images at the first battle frame. Gate 0 = `receipt_gate.py --run <dump> --tape <tape> --frames 60` PASS on clock/px/py/hp. Proves anchor+inputs on real data before any native code. **This is the blocker today.**
+0. **Data pair** — ✅ **GATE 0 PASSED 2026-09-03 (first real receipt):** offline Versus, stage 9, roster [42,23,52,12,44,46], agent 0.3.48
+   tape `local_1788462750766_stage9` (5,222 frames, 0 rollbacks, battle anchor 12,607 B gz) → `anchor_to_run.py` + `pl_rebuild.py`
+   → `receipt_gate.py --frames 60 --input-shift 1`: **clock 60/60, px 60/60, py 60/60, hp 60/60**. Three facts learned:
+   (a) row N's `seat_in` are the inputs that PRODUCED frame N (shift 0 gave px 38/60 with a tick-2 divergence; shift 1 exact);
+   (b) a post-match dump has PL slot 1 (pos 3) overwritten from byte 0 by the results screen (187,803 B) — PL images must come
+   from the arc recipe (55/55 files byte-exact) or a mid-match dump; (c) the agent's trace log truncates on restart (watcher bases).
+   Original step (kept for the record): (owner: live session): one offline Versus match with agent 0.3.47 recording, `dump_live.py` pre images at the first battle frame. Gate 0 = `receipt_gate.py --run <dump> --tape <tape> --frames 60` PASS on clock/px/py/hp. Proves anchor+inputs on real data before any native code. **This is the blocker today.**
 1. **Native runner MVP, Δ=0, images from the dump.** Map image, reserve arena, copy blk/ctx/dcram/gs from `pre/`, replace the 6 IAT slots, set `DAT_142ebc010`, force the seat map, tick N. Gate 1 = runner blk after k ticks == `determinism_gate.py multitick` dump k, byte-exact, k = 1..20 idle, then with the tape's inputs vs Gate 0's per-frame px/py/hp.
 2. **Emitter over runner memory** → v5 tape (harvest port behind the `read_at` seam; `states_to_tape.py` extended to read `palrows` from blk+0x13C0 and objects from dcram). Gate 2 (master) = `runner_tape_gate.py` 100 % per column after torn-row exclusion.
 3. **Loader path replaces the dump** (DC-RAM fill from the user's arc + the §2.3 patches; anchor from the tape). Gate 3 = dcram byte gate + Gate 2 again. Only now is the runner "anchor + arc + image" = BYOR-complete.
@@ -91,7 +97,8 @@ Portraits (pages already in the post-load DC-RAM image at HUD TEX base + loc; wr
 | Every polygon-list object on a HUD/effect-heavy frame inside blk/dcram/ctx (trace was a 5-node idle frame) | UNKNOWN |
 | `+0x1F0` 12 KB PL region writer (`FUN_140612180`) | INFERRED |
 | Tail builder consumer of `DAT_142ec6d00` | UNKNOWN |
-| Pixel-exact receipt end to end | NOT PROVEN — needs Gate 0 data pair |
+| Receipt → sim state, 60 frames of a real offline match (Gate 0) | CONFIRMED 60/60 |
+| Pixel-exact receipt end to end | NOT PROVEN — Gates 1–5 |
 
 ## 8. Knowledge graph
 
