@@ -411,6 +411,7 @@ def main():
         else:
             wt = WorldTemplate(a.world_template)
             stage_rip = None
+            stage_geo = []          # arc deck geometry, appended once (see emit_stage)
             sid_ = tape.get('stage_id')
             if sid_ is not None and os.path.exists(os.path.join(STAGE_DIR, 'STG%02X.json' % int(sid_))):
                 stage_rip = json.load(open(os.path.join(STAGE_DIR, 'STG%02X.json' % int(sid_))))
@@ -591,6 +592,72 @@ def main():
             items.sort(key=lambda t: ((-t[0] if a.layer_desc else t[0]), KIND[t[6]]))
 
         world_missing = Counter()
+        def emit_stage(cam):
+            """The loaded stage's 3D deck from the ARC RIP (STGxx.json model 0), not from a capture.
+            Model 0 of every stage is the world-placed deck+skydome at an IDENTITY world matrix
+            (rip_stage.py, re_kb 26; the STG00 tape renderer drew it that way with real pixels).
+            Its vertices are in the same units as the tape's list-5/6 stage objects (the stage-5
+            tape's objects match the STG05 meshes vertex-for-vertex), so they go through the same
+            vs_world path with CBWorld = identity and the list-6 scene block from the tape camera.
+            Props (models 1..N) have runtime matrices the rip does not carry; only the ones that
+            arrive as tape nodes are drawn (by emit_world). Geometry is appended ONCE per seq."""
+            if not wt or stage_rip is None:
+                return
+            if not stage_geo:
+                for mi, mesh in enumerate(stage_rip['meshes']):
+                    if mesh.get('model', 0) != 0 or not mesh.get('placed', True) or not mesh['tris']:
+                        continue
+                    ti = int(mesh['texIndex'])
+                    key = '%08X' % (0xC10 + ti)
+                    page = tape_pages.get(key)
+                    if page is None and 0 <= ti < len(stage_rip['textures']):
+                        fn = os.path.join(STAGE_DIR, stage_rip['textures'][ti]['file'])
+                        if os.path.exists(fn):
+                            im = Image.open(fn).convert('RGBA')
+                            page = tape_pages[key] = dict(w=im.width, h=im.height, fmt=28, data=np.array(im).tobytes())
+                    if page is None:
+                        world_missing['stage mesh %d: no texture %d' % (mi, ti)] += 1
+                        continue
+                    tkey = 'world_%s' % key
+                    if tkey not in textures:
+                        textures[tkey] = {'w': page['w'], 'h': page['h'], 'fmt': page['fmt'], **intern(page['data'])}
+                    first = len(verts) // STRIDE
+                    nv = 0
+                    for tri in mesh['tris']:
+                        for vtx in tri:
+                            x, y, z = vtx['pos']
+                            u, v = vtx['uv']
+                            c = vtx.get('col') or (255, 255, 255, 255)
+                            verts.extend(struct.pack('<4f', x, y, z, 0.0))
+                            verts.extend(struct.pack('<2f', 0.0, 0.0))
+                            verts.extend(bytes((int(c[2]), int(c[1]), int(c[0]), int(c[3]))))
+                            verts.extend(bytes((0, 0, 0, 0)))
+                            verts.extend(struct.pack('<2f', u, v))
+                            nv += 1
+                    fi = len(idxs)
+                    idxs.extend(range(first, first + nv))
+                    stage_geo.append(dict(fi=fi, nv=nv, tkey=tkey, opaque=bool(mesh.get('isOpaque', True))))
+                print('  stage %02X: %d model-0 meshes from the arc, %d vertices' % (
+                    int(stage_rip['stageId']), len(stage_geo), sum(g['nv'] for g in stage_geo)))
+            ident = struct.pack('<12f', 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0)
+            scb = scene_block(cam, 'list6')
+            hw = sha8(ident); hs = sha8(scb)
+            cb_recs.setdefault(hw, {**intern(ident)})
+            cb_recs.setdefault(hs, {**intern(scb)})
+            for g in stage_geo:
+                ps_variant = 'opaque' if g['opaque'] else 'texalpha'
+                if ps_variant not in wt.draw:
+                    ps_variant = next(iter(wt.draw))
+                pscb = [(sha8(b) if b else None) for b in wt.pscb.get(ps_variant, [])]
+                for b in wt.pscb.get(ps_variant, []):
+                    if b:
+                        cb_recs.setdefault(sha8(b), {**intern(b)})
+                pscb = [(pscb[0] if pscb else None), hs, (pscb[2] if len(pscb) > 2 else None), None]
+                d = dict(wt.draw[ps_variant])
+                d.update({'i': len(draws), 'firstIndex': g['fi'], 'indexCount': g['nv'], 'stride': STRIDE, 'voff': 0,
+                          'tex': [g['tkey'], None], 'vscbHash': [hw, hs, None, None], 'pscbHash': pscb})
+                draws.append(d)
+
         def emit_world(lists):
             """Append vs_world draws for this frame's nodes in `lists`, in list order."""
             if not wt:
@@ -598,6 +665,8 @@ def main():
             rows_w = v5nodes.get(fr_clock, ())
             cam = (float(r[C['eyeX']]) if 'eyeX' in C else 0.0, float(r[C['eyeY']]) if 'eyeY' in C else 0.0,
                    float(r[C['zoom']]) if 'zoom' in C else 812.357)
+            if lists[0] == 5:
+                emit_stage(cam)
             for nd in rows_w:
                 if nd['list'] not in lists or nd['obj'] >= len(v5objs):
                     if nd['list'] in lists and nd['model']:
