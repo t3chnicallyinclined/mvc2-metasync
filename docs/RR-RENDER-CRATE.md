@@ -1,83 +1,97 @@
-# rr-render — the Rust tape decoder + sprite emitter (Track R, W1), as built 2026-09-03
+# rr-render — the Rust tape decoder + frame emitter (Track R, W1 + W2), as built 2026-09-03
 
-*Crate: `C:\Users\trist\projects\RetroReceipts-agent\rr-render\` (standalone Cargo package; `agent/` is untouched —
-there is no workspace `Cargo.toml` at the repo root today, so it is a sibling crate, not yet a workspace member).
-Oracle: `mvc-live-skins-quarters/d3dcap/replay/tape_to_seq.py` (+ `v3gate.py`, `rip_gfx2_assembly.py read_cells`).
-Method: `RE-METHOD.md` — this is a PORT, not an RE task; every rule was already CONFIRMED and gated. Plan:
-`WORKSTREAM-CLIENT-REPLAY.md` §4 W1, review `WORKSTREAM-CLIENT-REPLAY.review-render.md` §1 / §4. Nothing committed.*
+*Crate: `C:\Users\trist\projects\RetroReceipts-agent\rr-render\` (standalone Cargo package; `agent/` untouched — no
+workspace `Cargo.toml` exists at the repo root, so it is a sibling crate, not yet a workspace member). W1 committed
+as c141164; W2 (this revision) uncommitted. Oracle: `mvc-live-skins-quarters/d3dcap/replay/tape_to_seq.py` (+
+`tsp_state.py`, `bg_rule.py`, `v3gate.py`, `rip_gfx2_assembly.py read_cells`). Method: `RE-METHOD.md` — a PORT,
+not an RE task; every rule was already CONFIRMED and gated. Plan: `WORKSTREAM-CLIENT-REPLAY.md` §4 W1/W2, review
+`WORKSTREAM-CLIENT-REPLAY.review-render.md` §1 / §4. Nothing committed by this pass.*
 
 ## 1. What it is
 
-Milestone 1 of the port: the **tape decoder** (v4 / v5 + the 0.3.39..0.3.45 appended fields) and the **sprite
-assembly** (the gated placement law), emitting the SAME RRSQ container the Python writes so the Python can be the
-oracle draw by draw. Python was not changed. Core = `std::fs`-free and thread-free; `cargo check --lib --target
-wasm32-unknown-unknown` passes. Native bin `emit_seq` = the gate driver.
+The **tape decoder** (v4 / v5 + the 0.3.39..0.3.45 appended fields) and the **whole-frame emitter** — preamble,
+arc deck, world lists 5/6/12/13, sprites, lists 7/8/9, HUD 11, the two-phase flush — writing the SAME RRSQ
+container the Python writes, so the Python is the oracle draw by draw (`tools/seq_diff.py`). Python unchanged.
+Core = `std::fs`-free, thread-free; `cargo check --lib --target wasm32-unknown-unknown` passes. Native bin
+`emit_seq` = the gate driver (and `--camera-gate`).
 
 ## 2. Module map (Python function → Rust)
 
 | Rust | Ports (Python) | Notes |
 |---|---|---|
-| `src/util.rs` | `tape_to_seq.sha8`, `intern` hashing | sha256 (sha2), gunzip+base64, `OrderedMap` (dict insertion order) |
-| `src/tape.rs` `Tape::decode` | `main()`: envelope + schema/column map (`C`, bare-name aliases for `look[3]`→`look`), the `nodes` decode loop (`'<BBBbBBBBHHHBBBBHHHfffII'` + v4 tail + 0.3.38 `owner_off`/`oslot`), `pals` (ARGB4444→RGBA×17), `palrows` (148 B/frame) | strides from the envelope (`nodes_stride` 44/50/54, `anodes_stride` 96/100, `palrows_stride`). Record layouts = `agent/src/reader.rs` `spool_gamestate` (2474): `frames` json! 2502-2512 (`GS_SCHEMA` 1226; 0.3.39/0.3.45 row fields 1338/1342), `nodes_raw` 2580 (`ObjNode` 1365, `NODES_STRIDE` 1978), `anodes_raw` 2617 (`ANode` 1419, `ANODES_STRIDE` 1423), `aobjs_raw` 2637, `palrows_raw` 2646, `pals_raw` 2664 |
-| `src/tape.rs` `decode_anodes` / `decode_aobjs` / `nl_groups` | `tape_to_seq.decode_anodes`, `nl_groups` (Steam strip winding, ref-vertex mode, synthetic-tape key stash) | decoded now; consumed by W2 |
-| `src/tape.rs` `RowView` | the row columns the emitter/renderer read | `frame, eyeX/eyeY/ground/zoom, drawn/sid/sx/sy/facing/layer[6], timer, round_no, cam_state, look[3], fov, yoff, roll, deck[3], blackout, bg_mode, bg_col[3], fade_mode, fade_col, bg_gate[6]` (Option per field; absent on older schemas) |
-| `src/assets.rs` `Atlas::from_files` | `tape_to_seq.Atlas.__init__` | consumes exactly: `PLxx_idx.png` (R channel), `PLxx_asm.json` (`parts`, `assemblies`), `PLxx_lut.json` (`banks`, `bodyBank`), `dasm_PLDAT/Output/PLxx_DAT/*GFX_DATA_01.BIN` (raw GFX2 → per-record row `(flags>>4)&7` + FLAGS word), `*GFX_DATA_00.BIN` (GFX1 header `[lw][lh][sw][sh]` → logical dims). Bytes in, no I/O |
-| `src/assets.rs` `read_cells` | `rip_gfx2_assembly.read_cells` | 8-B records, cumulative pen `px += dx; py -= dy`, cells with `cnt==0 / >64 / overflow` skipped |
-| `src/assets.rs` `part_bitmap`, `palette`, `row_of`, `flag_of` | `Atlas.part_bitmap` (every part stored upside down; logical top-left clip for scale-walker records), `Atlas.palette` (`8*costume`, `bank % len`), `row_of`, `flag_of` | |
-| `src/camera.rs` | `scene_block` (fitted `camera_block.json` model, f64 eval → `<108f`), `scene_VP` (rows 7..10 / 15..18), `sprite_vertex_z` (FUN_1408432e0 in f32) | W2 replaces the fitted model with the closed form and must gate against this |
-| `src/sprites.rs` `Emitter::emit_row` | the sprite pass of `main()`: held rows, `LAYERZ` order `(-LAYERZ[layer&15], -index)`, owner resolve (`oslot` → `bank_slot[gfx1]` → single unknown slot), `mir = face`, `floor(sx)*3/5`, palette (`palrows[slot*8+row]` → v3 `pals[pal]` + LUT block locate → `Atlas.palette`), REVERSE record order, `hf = flags&0x8000`, `vf = flags&0x4000`, scale-walker (`sid&0x8000`) logical placement vs tiled flip about the LOGICAL box, `rot180`, general rotation about the hotspot in 640-space (f64 cos/sin), `D = depth + 0.001*ri` (f32), vertex pack (stride 40, UV winding = mirror), `sub = (0, walk, ri)` | v2 fallback (six fighter columns) ported; the pre-decoded local `objs` list form is not |
-| `src/sprites.rs` `order_draws` | `tape_to_seq.order_draws` | cats 0/1 by submission, cat 3 by `(-key, sub)`; keyless draws inherit the previous key |
-| `src/seq.rs` | `template()` / `load_pack_rrpk` (first `psVariant=='indexed'` draw of `frame_2574.pack` + its constant buffers), the frame head + RRSQ writer | pool interned in the Python order (template CBs, then textures first-seen, then vb, ib per frame) |
-| `src/bin/emit_seq.rs` | the CLI of `tape_to_seq.py` restricted to `--no-world` | `--start/--count/-o/--atlas/--dasm/--template/--camera/--bank/--pal-lag/--flip-facing/--swap-teams/--forward-records/--no-vflip/--legacy-order` |
-| `tools/seq_diff.py` | NEW gate (~110 lines) | per draw: every JSON field, texture records + bytes, the 6 indexed vertices' raw 40 B (f32 bit-compare), CB bytes; `--sprites-only` gates the sprite subsequence of a full (world+sprite) Python run |
-| `tools/gate_l1.sh` | the exact L1 invocations below (tape paths + `--start` values live here, not in prose) | |
+| `src/util.rs` | `sha8`, `intern` hashing | sha256, gunzip+base64, `OrderedMap` (dict insertion order) |
+| `src/tape.rs` `Tape::decode` | `main()`: envelope + schema map, `nodes` (44/50/54, angle/hotspot/`owner_off`→`oslot`), `pals`, `palrows`, synthetic `pages` | record layouts = `agent/src/reader.rs` `spool_gamestate` 2474: `frames` json! 2502-2512 (`GS_SCHEMA` 1226; 0.3.39/0.3.45 fields 1338/1342), `nodes_raw` 2580 (`ObjNode` 1365, `NODES_STRIDE` 1978), `anodes_raw` 2617 (`ANode` 1419, `ANODES_STRIDE` 1423), `aobjs_raw` 2637, `palrows_raw` 2646, `pals_raw` 2664 |
+| `src/tape.rs` `decode_anodes` / `decode_aobjs` / `nl_groups` | `decode_anodes`, `nl_groups` (Steam strip winding, ref-vertex mode, synthetic key stash; `centre`/`radius` kept as f64 = exact f32) | |
+| `src/tape.rs` `RowView` | the row columns | `frame, eyeX/eyeY/ground/zoom, drawn/sid/sx/sy/facing/layer[6], timer, round_no, cam_state, look[3], fov, yoff, roll, deck[3], blackout, bg_mode, bg_col[3], fade_mode, fade_col, bg_gate[6]` |
+| `src/assets.rs` | `Atlas.__init__/part_bitmap/palette/row_of/flag_of`, `rip_gfx2_assembly.read_cells` | `PLxx_idx.png`, `_asm.json`, `_lut.json`, `GFX_DATA_01.BIN` (row = `(flags>>4)&7`, flip bits), `GFX_DATA_00.BIN` (logical dims) |
+| `src/camera.rs` | `scene_block` (fitted `camera_block.json`, f64 eval → `<108f`), `scene_VP`, `sprite_vertex_z`; **plus** the closed form of `WORLD-CAMERA-GHIDRA.md` §2 (`perspective` = FUN_140847f20, `look_at` = FUN_140846c80, `closed_form_vp` = the three call sites) and `closed_form_gate` | the emitter USES the fitted model (see §4) |
+| `src/state.rs` | `tsp_state.codes / predict / state_key / BLEND_PRESET / HOST`; `WorldTemplate.__init__ / select` | **frozen constants** `src/frozen/world_4445.json` from `capgate/frame_4445.pack` sha256 `2399a079a7768d1f49a35e86b68c1e9bc380daeac6c042c24fff069409ff6ad6` (generated by `tools/freeze_template.py`): per-variant KEYS draw (`opaque`, `texalpha`), `pscb` (28111758 32 B; texalpha 0DBAD00B 80 B), 13 captured state tuples (`by_state`), the 3 preamble draws + CB 28111758, inputLayouts |
+| `src/bg.rs` | `bg_rule.STAGE_BG / mul_word / background_words / vertex_colours / from_row` | f32 per byte, int trunc, & 0xff |
+| `src/world.rs` | `emit_stage` (arc model 0 at identity, deck colour, host-decoded pages, `FLAT_WHITE`, centroid fallback), `emit_world` (lists → `list6`/`list7`/`hud` scene block, CBWorld = matrix transpose, `complete_prop`, page lookup tape → library → arc, kind 0/2/3, colour law `int(c*255*mult)` R,G,B,A + `min(1, alpha)`, per-group `predict` + `select`, bit-13 cull inheritance, category, sort key, rank), the PREAMBLE block (three quads, `bg_rule`, 28/40/28-B layouts, pad to 40), `complete_prop` (`round(x, 2)` emulated by `{:.2}`, unit-tested vs Python), `sort_key_record` | `sort_key_record` reproduces numpy's float32 BLAS: 4×4 products by sequential FMA (6404/6404 full matrices measured), `v @ M` by the even/odd-lane order `(a0*b0 + a2*b2) + (a1*b1 + a3*b3)` (6404/6404; naive order misses 5) |
+| `src/sprites.rs` `Emitter::emit_row` | the body of `for r in rows:` — preamble → world 5/6/12/13 → sprites → 7/8/9 → 11 → `order_draws`; `emit_sprites` = the sprite loop (W1, unchanged); `order_draws` incl. `_inherit_cull` raster patch | `Draw` carries its state dict + `_cat/_key/_sub`; `FrameCtx` holds `textures`/`cb_recs` across frames |
+| `src/seq.rs` | `template()` (frozen `src/frozen/template_2574.json`, `frame_2574.pack` sha256 `0b22d966e3880c40814d1fe1075243c589bd95c4ffbd293e89315c8b47ae38b1`, draw i=548 + 53 CBs; `--template PACK` still loads a pack), frame head (inputLayouts = 2574 ∪ 4445), RRSQ writer | |
+| `src/bin/emit_seq.rs` | the CLI of `tape_to_seq.py` | `--no-world`, `--no-preamble`, `--stage-dir`, `--tcw-pages`, `--camera-gate` + the W1 switches; decodes STGxx.json/PNGs, `tcw_pages/stage_XX`, `tcw_pages/index.json` |
+| `tools/seq_diff.py` | gate | per draw: every field, texture records+bytes, indexed vertex bytes (f32 bit-compare), CB bytes; `--sprites-only` |
+| `tools/gate_l1.sh` | the exact invocations (`MODE=full` default, `MODE=sprites` = W1) + the camera gate | |
+| `tools/freeze_template.py` | generator of the two frozen JSONs | re-run only if the packs change; cites the sha256 in the JSON |
 
-Not ported (by design, W2+): `WorldTemplate`, `emit_stage`, `emit_world`, the frame preamble, `tsp_state`, `bg_rule`.
+Not ported: the pre-decoded local `objs` list form of v2 tapes (server tapes never carry it); `states_to_tape.py`.
 
-Two exactness rules that mattered: (1) `serde_json` `float_roundtrip` is ON — the default parser is best-effort and
-put `maxlod` 1 ulp off `3.40282e+38` (and would have moved `eyeX/eyeY`, which feed P and every vertex z);
-(2) numpy's `np.float32(depth) + np.float32(0.001)*ri` is f32 under NEP 50 (numpy 2.2.6 here) — the port does the same
-in `f32`; the rotation trig is f64 `cos/sin` on both sides (MSVC CRT) and matched bit-exact on 603 rotated parts.
+Exactness rules that mattered: `serde_json` `float_roundtrip` (default parse is 1 ulp off; `eyeX/eyeY` feed P);
+numpy NEP-50 f32 scalar arithmetic for the sprite depth key; f64 `cos/sin` for rotation (bit-exact on 603 parts);
+the two BLAS accumulation orders above for the world sort key; Python `int()` truncation toward zero for colour bytes.
 
-## 3. Gate numbers (L1 — draw-list equality vs Python, 2026-09-03)
+## 3. Gate (draw-list equality vs `python tape_to_seq.py`, FULL frame — no `--no-world`)
 
-Python invoked as `tape_to_seq.py <tape> --start S --count N --no-world` (sprites only; camera_block.json present so
-`Ps`/depth keys are live); Rust as `emit_seq <tape> --start S --count N`. `seq_diff.py` = exact per draw.
+`seq_diff.py` = exact per draw (fields, textures, vertices, CBs), `tools/gate_l1.sh`, 2026-09-03.
 
-| tape | clip | draws exact / total | notes |
+| tape / clip | stage | draws exact / total | first differing field |
 |---|---|---|---|
-| stage 13 `…_59613662_…` (0.3.39, stride 54, anodes 100) | `--start 1500 --count 60` (clocks 2743..) | **1891 / 1891** | 1 held row ("no nodes") on both sides; 443 textures |
-| same, sprite subsequence of the FULL Python run (world+preamble+sprites, 24,574 draws) | `--start 1500 --count 60`, `--sprites-only` | **1891 / 1891** | relative order of sprite draws survives the cat-3 sort |
-| stage 13, clock **7279** (row 6036) | `--start 6000 --count 60` | **1670 / 1670** | |
-| training stage 11 `…_59613506_…` (0.3.38), clocks **4445** (row 3437) + **4505** (row 3497) | `--start 3430 --count 80` | **2962 / 2962** | ⚠ clock 7279 is NOT in this tape (range 1008..5788); it was gated on the stage-13 tape above |
-| palrows tape `…_59614009_…` (0.3.41, stage 13) | `--start 1000 --count 60` | **3510 / 3510** | exercises `palrows[slot*8 + rec.flags>>4]` |
-| v4 rotation tape `replay-kit/tapes-kept/…_59612784_…` (0.3.34, stride 50) | `--start 3245 --count 60` | **2588 / 2588** | 603 parts through the general-rotation path (0x1400, hotspots (-24,-88)…) |
+| `…_59613662_…` (0.3.39) `--start 1500 --count 60` | 13 (0x0D, arc rip + 7 host pages) | **24,574 / 24,574** | none |
+| same, `--start 6000 --count 60` (clock 7279 @ row 6036) | 13 | **17,969 / 17,969** | none |
+| `…_59613506_…` (0.3.38) `--start 3430 --count 80` (clocks 4445 @ 3437, 4505 @ 3497; 7279 not in this tape) | 11 (0x0B, no arc rip on disk → world nodes only) | **21,061 / 21,061** | none |
+| `…_59614009_…` (0.3.41, palrows) `--start 1000 --count 60` | 13 | **24,481 / 24,481** | none |
+| `replay-kit/tapes-kept/…_59612784_…` (0.3.34, v4, no anodes → sprites only, no preamble) `--start 3245 --count 60` | 0 | **2,588 / 2,588** | none |
+| W1 sprites-only mode (`MODE=sprites`), the same five clips | | 12,621 / 12,621 | none |
 
-Totals: **12,621 / 12,621 sprite draws exact, first differing field: none.** Speed: 60-frame clip 1.1 s (Rust, incl.
-tape parse + 6 atlas PNG decodes) vs 3.8 s (Python).
+Totals: **90,673 / 90,673 draws exact across the six full-frame clips.** Per-clip composition matches the Python
+exactly (e.g. stage 13: cat 0 14,382 + cat 3 10,192; state stats exact 15,649 / patched 494 / partial 6,360;
+"3D model node (list 8)" skips 3/4/5/4). Speed: 60-frame full clip 4.5 s (Rust, incl. asset decode) vs ~50 s (Python).
 
-Not yet run on Rust output: L2 (`v3gate.py` needs an `--emitter rust` adapter reading the Rust draw list), L3 pixels.
+## 4. Closed-form camera vs the fitted `camera_block.json` (report only)
 
-## 4. How to run
+`emit_seq --camera-gate` on 60 rows of `59613662` (eye from `eyeX/eyeY/zoom`, target `(eye.x, eye.y, 0)`, fov 43,
+yoff −0.41, roll 0 — the tapes lack `look/fov/yoff/roll` before 0.3.39; the palrows tape has them and gives the same):
+
+| variant | V rows 7..10 | P rows 15..18 |
+|---|---|---|
+| `list6` (far 1.4e6) | max abs 0, bit-exact 780/960, **signed-zero-only 180**, value-differing 0 | max abs 0, bit-exact 900/960, signed-zero-only 60, value-differing 0 |
+| `list7` (×0.1, far 12000) | **max abs 7.6e-6**, bit-exact 686/960, signed-zero-only 180, value-differing 94 (65 on the palrows tape, max 4.8e-6) | max abs 0, bit-exact 900/960, signed-zero-only 60 |
+| `hud` | bit-exact 960/960 | bit-exact 960/960 |
+
+Verdict: NOT bit-identical (signed zeros everywhere the fitted regression yields −0.0; real 1-ulp-class residuals on
+`list7`, which is the fitted model's own regression error on `eye × 0.1`). **The emitter keeps the fitted model**;
+the closed form stays a gate until the sort keys/vertex z it feeds are shown equal on the draw-list gate.
+
+## 5. How to run
 
 ```
 cd C:\Users\trist\projects\RetroReceipts-agent\rr-render
-cargo build --release
-bash tools/gate_l1.sh            # all six rows of the table above (writes to %TEMP%, never into the repo)
+cargo build --release && cargo test --release --lib
+bash tools/gate_l1.sh                 # full frame, six clips + camera gate (outputs under %TEMP%, never in the repo)
+MODE=sprites bash tools/gate_l1.sh    # the W1 table
 ```
-ROM-derived inputs/outputs (atlases, GFX bins, `.seq`) stay out of git (`.gitignore`: `target/`, `*.seq`).
+ROM-derived inputs/outputs (atlases, GFX bins, stage rips, tcw pages, `.seq`) stay out of git (`.gitignore`).
+The frozen JSONs hold D3D state words, shader/layout hashes and small constant buffers only — no pixels.
 
-## 5. What is next (W2 — world / state), in order
+## 6. What is next
 
-1. `nl` groups are decoded; port `tsp_state.codes/predict/HOST` → `state::tsp` (pure fn), and freeze the two template
-   packs' state tuples as constants (`state::webgpu`) so `WorldTemplate` is not needed (review-render R2; gate =
-   `WorldTemplate.select` would report 0 "patched fallback" on 4445/4505/7279).
-2. `world::deck` (arc `STGxx.json` model 0, static VB) + `world::emit` (lists 5/6/12/13, 7/8/9, 11; CBWorld = node
-   matrix transpose, per-list scene block, colour packing R,G,B,A, `complete_prop`) + the frame preamble
-   (`bg_rule.from_row`, three quads).
-3. `order::flush` already exists (`order_draws`); extend the sort key to world records (`sort_key_record`).
-4. Closed-form camera (`WORLD-CAMERA-GHIDRA.md`) replacing `camera_block.json` — gate bit-identical vs the fitted
-   block rows 7..10/15..18 (`emu_gate.py camera 4445`).
-5. Gate: `seq_diff.py` without `--sprites-only` against the full Python run (24,574 draws on the stage-13 clip), then
-   `tsp_gate` / `worldgeo_gate` / `sort_gate` / `palette_gate` on Rust output.
-6. Binary `FrameRecord` for the browser feed (replaces RRSQ JSON heads, 730 KB/frame) — after W2 so both passes share it.
+1. **W2 residual:** stages beyond 02/05/07/0D/0F/10 have no host-decoded pages (`R11`); `complete_prop` is exercised
+   only when a truncated list-5 prop meets an arc model (none in these clips — add a stage-16 0.3.40 clip to the
+   gate script: `…_59613970_…`).
+2. **Binary `FrameRecord`** for the browser feed (replaces the RRSQ JSON head, 730 KB/frame) — both passes now share
+   `Draw`/`FrameCtx`, so this is a second writer over the same in-memory frame.
+3. **Static deck VB + per-character index atlas** (review-render §3.3) — gate = pixel equality via the player.
+4. **L2/L3:** `v3gate.py --emitter rust` adapter; pixel readback of Rust vs Python seqs (`diff_seq.mjs`).
+5. Closed-form camera: settle the signed-zero convention and the `list7` residual against the CAPTURED CB
+   (`emu_gate.py camera 4445` semantics), then switch the emitter and re-run §3.
