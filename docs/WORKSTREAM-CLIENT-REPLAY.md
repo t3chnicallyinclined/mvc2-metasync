@@ -26,7 +26,7 @@ Serving ROM-derived assets from our infrastructure without a licensing decision 
 | Render state | blend/sampler/depth/cull/ps from PCW/ISP/TSP + group word (FUN_1408482a0); vertex colour R,G,B,A; bit 0 of x and v words cleared | 824/824 (blend 820/824) | seed 32; `PARTS-LIST0C-GHIDRA.md` §2 |
 | HUD projection | HUD lists use FUN_14061d5b0's block (angle 0x4000, V=I) | 171/177 gold list-11 draws | `camera_block.json` 'hud' |
 | Combo counter (list 0xC) | node → static part list → HUD-bank models; page 0xC92+count−1 | 24/24 CBWorld, 82/82 geometry/pages | `PARTS-LIST0C-GHIDRA.md`, seed 37 |
-| Flush order | category 1 (Z-write) first in submission order, then category 3 sorted by the walker depth key (`FUN_140843320`) | gold z sequence 2.4e-7 on 2/3 frames; one frame 118 vs 122 open | ordergate (uncommitted), seed 39 pending |
+| Flush order | cat 0/1 (Z-write) in submission order, then cat 3 qsorted DESC by the record key = w of the NL mesh centre through W·V·P (sprites: walker depth D + 0.001·record index), ties by sequence | `sort_gate.py`: 0 key rises on 4445/4505/7279; sprite z 133/133 and 96/96 at ≤2.4e-7 | `TRANSLUCENT-SORT-GHIDRA.md`, seed 39 |
 
 ## 2. Architecture
 

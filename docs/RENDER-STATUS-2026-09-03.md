@@ -24,8 +24,7 @@ Agent 0.3.39 (`rr-agent-v6.exe`, running): tape v5, nodes stride 54 (+angle/hots
 (`TAPE-V3-SPEC.md` §9.5, keys instead of object bytes) is the size lever; not built.
 
 ## Open tweaks (each has an owner agent + a numeric gate; none needs a capture)
-1. **Translucent ordering** — Steam flushes category 1 (Z-write) first, then category 3 qsorted by the record-centre
-   key (`FUN_140843320`, V×P×Screen); emitter still interleaves per list. Gate: reproduce gold draw order on 4 frames.
+1. ~~Translucent ordering~~ **CLOSED 2026-09-03**: cat 0/1 by submission, cat 3 qsorted DESC by the record key (`TRANSLUCENT-SORT-GHIDRA.md`, seed 39); `sort_gate.py` 0 key rises on 3 frames; emitter `order_draws` live (`--legacy-order` keeps the old path).
 2. **Mirror-match palette** — both Magnetos render with the same palette; the tape ships DatPal (cl+0x4C), not the
    per-slot bank the submit binds. Gate: rebuild captured palette pages byte-exact.
 3. **Hit sparks** — list 0xC per-fighter 3D parts (walker `FUN_140653a70`), dropped by the harvest filter
