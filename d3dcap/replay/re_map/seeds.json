@@ -1,0 +1,153 @@
+[
+ {
+  "steam": "0x140620960",
+  "sh4": "0x8c030858",
+  "note": "CONFIRMED both read: per-frame render dispatcher. DC: jsr 8c0310f2 (mode) -> mode1: 8c030d56 | mode0: 8c0308c2 walker, test G+0x98 blackout (mov.w 0x98), 8c030cc0 deck+list5, 8c030d12, 8c030d24, 8c030d36, 8c030dcc HUD; then G+0x2E==1 -> jmp 8c031470. Steam FUN_140620960: FUN_140619960 mode, FUN_140620f10, *(G+0x98)==0, blk+0x6D04!=8, camera/push/identity/colour/model0/pop, lists 5,6,7,8, FUN_140620ea0; g_offs 0x3CE6 (=G+0x2E).",
+  "inlined": [
+   {
+    "sh4": "0x8c030cc0",
+    "note": "deck draw block: STG_ID!=8 -> 8c02e1a4 camera, 8c120950(0) push, 8c121100 identity, 8c030cfc colour, 8c1235e0(model0), 8c120900(1) pop; then bsr list-5 trio == the inline block at 0x140620a4c.. in FUN_140620960"
+   },
+   {
+    "sh4": "0x8c030cfc",
+    "note": "loads deck vertex colour fr4/5/6 from 0x8c26a8a4+4/8/C -> Steam FUN_140849b00(blk+0x6CA8,0x6CAC,0x6CB0)"
+   },
+   {
+    "sh4": "0x8c030d12",
+    "note": "list 5 trio: 8c02e1a4 camera + 8c0301ce(5) + 8c030410(5) == FUN_14061d7e0; FUN_140620740(5); FUN_140620cd0(5)"
+   },
+   {
+    "sh4": "0x8c030d24",
+    "note": "list 6 trio (camera x1)"
+   },
+   {
+    "sh4": "0x8c030d36",
+    "note": "lists 7 and 8 with 8c02e246 camera x0.1 == FUN_14061d6a0 path"
+   },
+   {
+    "sh4": "0x8c030d56",
+    "note": "mode-1 path: 8c02e246 camera x0.1 + list 9"
+   }
+  ]
+ },
+ {
+  "steam": "0x140620f10",
+  "sh4": "0x8c0308c2",
+  "note": "CONFIRMED both read: sprite walker over the 16 draw lists. DC: handles 0x8c287de0 stride 0x180 (mov.w 0x0180), counts 0x8c2895e0, node+3 category==0 -> 8c03093c else 8c030af8. Steam: blk+0x2F4D0 stride 0x300, counts blk+0x324D0, node+3, +0x170 gate, both render bodies inlined (812.357 / 480 / 640 / 1000 / 0.1 / 0.001 constants present on both sides).",
+  "inlined": [
+   {
+    "sh4": "0x8c03093c",
+    "note": "Render Main Sprite: +0x12C draw gate == Steam +0x170; camera constant 812.357 (0x444b16de) at bank03.asm:1513 == blk+0x691C"
+   },
+   {
+    "sh4": "0x8c030af8",
+    "note": "effect-path renderer (category!=0), same constant set, stride 0x5A4 == Steam 0x738"
+   }
+  ]
+ },
+ {
+  "steam": "0x140620740",
+  "sh4": "0x8c0301ce",
+  "note": "CONFIRMED both read: list matrix walker. DC: heads table 0x8c287a5c[L] (== blk+0x2EDE8+L*8), per node bsr 8c0301f6, next = +0xC (== Steam +0x10). Steam FUN_140620740(L): same loop with the per-node matrix compose inlined.",
+  "inlined": [
+   {
+    "sh4": "0x8c0301f6",
+    "note": "per-node matrix compose (push, parent matrix, translate/billboard/rotate/scale, store +0xA8, pop)"
+   }
+  ]
+ },
+ {
+  "steam": "0x140620cd0",
+  "sh4": "0x8c030410",
+  "note": "CONFIRMED both read: list draw walker. DC: per node test +woff(0x12c) gate and +woff(obj) then optional +0x28 callback (8c0305ce) and 8c030452 draw; Steam FUN_140620cd0: +0x170 && +0xA0, optional +0x40 callback, draw body inlined.",
+  "inlined": [
+   {
+    "sh4": "0x8c030452",
+    "note": "per-node draw body (push, load +0xA8 matrix, scale, colour select, draw kind, pop)"
+   },
+   {
+    "sh4": "0x8c0305ce",
+    "note": "call node +0x28 callback (== Steam node +0x40 callback)"
+   }
+  ]
+ },
+ {
+  "steam": "0x140620ea0",
+  "sh4": "0x8c030dcc",
+  "note": "CONFIRMED both read: HUD (list 0xB) then list 0xC. DC: 8c02e334 camera + 8c0301ce(0xB) + 8c030410(0xB); *(G+0x14)==0x40 skip else 8c030d68 walks heads[12]=0x8c287a8c (== blk+0x2EE48) nodes with +0x12C gate and jsr 8c0f215e. Steam: FUN_14061d5b0, FUN_140620740(0xB), FUN_140620cd0(0xB), *(G+0x14)!=0x40 -> walk blk+0x2EE48 with +0x170 -> FUN_140653a70.",
+  "inlined": [
+   {
+    "sh4": "0x8c030d68",
+    "note": "list-12 walker: heads[12] 0x8c287a8c, +0x12C gate, jsr 8c0f215e per node"
+   }
+  ]
+ },
+ {
+  "steam": "0x14061e170",
+  "sh4": "0x8c044d8c",
+  "note": "CONFIRMED both read: pool + render-state init. DC: bsr 8c044dce (pool init) then 5 memsets (r6 = 0x0C, w, w, 0x18, 0x10) and two byte clears. Steam FUN_14061e170: pool init inline (256 x 0x280 from blk+0x6DD8, free head/tail blk+0x2EDD8/E0, 14 heads/tails/counts, 0xF6/0x100), then zero blk+0x6CC4/0x6CCC, memset(blk+0x6908,0x180), memset(blk+0x6A88,0x22C), zero 0x6CE4/0x6CEC, DAT_142edf543=0, DAT_142edf546=0.",
+  "inlined": [
+   {
+    "sh4": "0x8c044dce",
+    "note": "object-pool initializer: base 0x8c26aa54 stride 0x1D0 x256 (consts 0x1d000/0x1ce30), free head/tail 0x8c287a54/58, heads 0x8c287a5c, tails 0x8c287a94, counts 0x8c287acc, free counts 0x8c287ae8=0xF6 /aea=0x100 -- pointer-scaled onto blk+0x2EDD8.."
+   }
+  ]
+ },
+ {
+  "steam": "0x14061dbe0",
+  "sh4": "0x8c044f12",
+  "note": "CONFIRMED both read: node alloc = free-list pop + constructor-table dispatch. DC: 8c044f12 tests free count 0x8c287ae8>0 then 8c044f26: pop head (0x8c287a54, next=+0x8), dec both free counts, inc per-list count (table 0x8c045018), memset-like jsr, node+3=list, ctor table 0x8c045020[kind]. Steam FUN_14061dbe0: *(blk+0x2EEE4)>0 && *(0x2EEE6)!=0, pop blk+0x2EDD8, dec counts, inc blk+0x2EEC8[L], memset(node,0,0x280), node+3=L, PTR_caseD_4_140a6e5c8[kind].",
+  "inlined": [
+   {
+    "sh4": "0x8c044f26",
+    "note": "alloc body (free-list pop + ctor dispatch)"
+   }
+  ]
+ },
+ {
+  "steam": "0x14061df40",
+  "sh4": "0x8c0450c0",
+  "note": "CONFIRMED both read: node unlink + return to free list. DC: clears byte +0x12C (mov.w pool 0x012c), fixes prev/next (+0x8/+0xC) or heads/tails tables, dec per-list count, push on free list; 468 DC call sites. Steam FUN_14061df40: +0x170=0, prev/next +0x8/+0x10, blk+0x2EDE8/0x2EE58 tables, dec blk+0x2EEC8[L], free tail blk+0x2EDE0, inc blk+0x2EEE4/6."
+ },
+ {
+  "steam": "0x14060c370",
+  "sh4": "0x8c032be0",
+  "note": "CONFIRMED both read: bank loader. DC: switch on (r4-1) < 0x19 (25 cases, braf table at 8c032c3c), DC file addresses 0x0c420000 0x0c810000 0x0cc00000 0x0cd00000 0x0ce80000 ... in the pool; Steam FUN_14060c370: same case range (1..0x19), same DC addresses as immediates (0xc420000, 0xc810000, 0xcc00000, 0xcd00000, 0xce80000, 0xd82d000, 0xd85d000) passed to FUN_14060dcf0."
+ },
+ {
+  "steam": "0x1406129f0",
+  "sh4": "0x8c034bea",
+  "note": "CONFIRMED both read: sprite submit. DC 8c034bea: +0x144 sprite id == 0xFF(-1) -> return 0; tst 0x8000 -> 8c0344d4 (body) else 8c0348c8. Steam FUN_1406129f0: *(+0x188)==0xffffffff -> 0; (id>>15)&1==0 -> body path inline (0x7fff mask, 0x4000 flip, +0x124/0x128 screen, +0x130/0x134 scale, +0x154 facing, +0x178/0x17A) else conditional jump to FUN_140612f70.",
+  "inlined": [
+   {
+    "sh4": "0x8c0344d4",
+    "note": "per-frame BODY render (bit15 clear path), inlined as the main body of FUN_1406129f0"
+   }
+  ]
+ },
+ {
+  "steam": "0x14061d7e0",
+  "sh4": "0x8c02e1a4",
+  "note": "CONFIRMED both read: camera x1 (deck, lists 5/6). DC loc_8c02e1a4: eye 0x8c26a518+0xC/10/14 and look-at +0x54/58/5C copied unscaled to the stack, then 8c1204f0(3), 8c121100, 8c121710(0, +0x80), 8c1219b0(fov: +0x6C*32768/360+0.5 & 0xffff), 8c1204f0(2), 8c121100, 8c11ff90(eye, lookat, +0x84), 8c1204f0(1). Steam FUN_14061d7e0: blk+0x6914/18/1C, 0x695C/60/64, FUN_140846e90(3), FUN_140847ca0, FUN_140848200(0, blk+0x6988), FUN_140847f20(fov from blk+0x6974 same formula), FUN_140846e90(2), FUN_140847ca0, FUN_140846c80(.., blk+0x698C), FUN_140846e90(1). Camera block delta 0x8C263C10."
+ },
+ {
+  "steam": "0x14061d6a0",
+  "sh4": "0x8c02e246",
+  "note": "CONFIRMED both read: camera x0.1 (lists 7/8/9). DC: eye +0xC/10/14, look-at +0x54/58/5C scaled by 0x3dcccccd (0.1), fov +0x6C: fov*32768(0x47800000)/360(0x43b40000)+0.5 & 0xffff, near/far +0x80/+0x84; Steam FUN_14061d6a0 same sequence on blk+0x6914.. with the same constants."
+ },
+ {
+  "steam": "0x140847950",
+  "sh4": "0x8c120950",
+  "note": "CONFIRMED both read: NaomiLib matrix PUSH. DC: stack {i16 count,i16 max,ptr@+8} at 0x8C2D68E8, saves XMTRX (fschg/frchg 8 pairs) to ptr, ptr+=0x40, count++, optional load from r4. Steam FUN_140847950: ptr ctx+0x1f81b0, free-count ctx+0x1f81bc--, copies DAT_142ef0ab8 (current 4x4), optional load from param."
+ },
+ {
+  "steam": "0x1408478c0",
+  "sh4": "0x8c120900",
+  "note": "CONFIRMED both read: NaomiLib matrix POP(n). DC: n=max(n,1), count-=n clamped, ptr-=n*0x40, reload XMTRX. Steam FUN_1408478c0: loop n: ptr-=0x40, copy to current, free-count++."
+ },
+ {
+  "steam": "0x140619960",
+  "sh4": "0x8c0310f2",
+  "note": "CONFIRMED both read: render-mode getter. DC returns *(0x8c26a8e4) (0 if zero); Steam returns *(blk+0x6CE4). Establishes DC 0x8c26a8e4 <-> blk+0x6CE4 (delta 0x8C263C00)."
+ }
+]

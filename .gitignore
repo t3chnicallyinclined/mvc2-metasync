@@ -109,3 +109,6 @@ docs/BTCPAY-ECONOMY-STUDY.md
 replay-kit/blk_snapshot.bin
 replay-kit/blk_hot.npy
 d3dcap/replay/tcw_pages/
+d3dcap/replay/re_map/cache/
+d3dcap/replay/re_map/*.jsonl
+d3dcap/replay/re_map/__pycache__/
