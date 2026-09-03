@@ -85,6 +85,17 @@ agent  --receipt (snapshot + input words)-->  server (store)  -->  server-side e
   post-processed backbuffer (9-pass chain incl. a BORDER sampler WebGPU lacks). Recommendation: ship pre-bloom as
   v1; the post chain is a later, separately gated layer.
 
+## 3b. TWO TRACKS (Tris, 2026-09-03 04:40: "split this work: full replays first, then full headless; separate but they converge")
+
+| | **Track R — full replays** (playback tape -> browser) | **Track H — full headless** (game-in-the-loop) |
+|---|---|---|
+| Goal | every match on the live feed watchable on any device, pixel-exact pre-bloom | the frame function running under OUR control from a receipt: server farm first, then the BYOR thin client + our netcode |
+| Now | agent 0.3.45 running; emitter complete for every derived layer; stage-13/16 clips judged good | whole-frame emulation proven (50/50, 0 bytes); determinism audit running (DETERMINISM-CONTRACT.md); receipt gate tool pending one tape+dump match |
+| Next | (1) lane 1 raises `GS_MAX_BODY` (413 blocker) (2) W0 tape-vs-capture gate (3) release 0.3.45 to the beta channel (4) `rr-render` port W1..W2 (5) M-interim streaming + PWA route (6) residuals: torn frames, portraits, `pnodes` | (1) determinism contract + receipt gate on real data (2) G: one headless instance on this box replaying a receipt faster than real time (shim drives `FUN_140607d60`, injects seat words, emits) (3) G2 loader on the user's image without Steam/D3D (4) netcode experiments (5) G3 browser under BYOR |
+| Shared / convergence | the EMITTER + RENDERER (one `rr-render` crate), the asset pack/rippers, the tape codec, the gates (`sort_gate`, `tsp_gate`, `palette_gate`, `bg_gate`, receipt gate) | |
+| Convergence test | a match rendered from its playback tape == the same match regenerated from its receipt by the headless instance, draw list for draw list (the receipt gate extended to draws) | |
+| Owner | this session (agent + emitter + gates), lane 1 (server), design (PWA) | this session + senior-re-generalist (Ghidra/emulation), infra (containers) |
+
 ## 4. Workstreams (order corrected by both reviews)
 
 ### W0 — Tape-vs-capture gate (FIRST; M12/M10)
