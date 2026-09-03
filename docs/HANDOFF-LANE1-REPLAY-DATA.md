@@ -818,3 +818,11 @@ PY
 `bus.rs` (:132-157) · `tourney.rs` (:69-104, :1131, :1763) · `surreal.rs` (:41, :128-170) · `mirror.rs` ·
 `RetroReceipts-server/ops/r2-sync-gamestates.sh` · agent `reader.rs` (:402), `painter.rs` (:454) · PWA
 `loadouts.svelte.ts` (:26, :114), `vault.svelte.ts` (:71-89).
+
+## STEP 0 (do first, one line) — `LATEST_AGENT_VER` → `0.3.50`
+
+Agent **0.3.50** is released (GitHub `v0.3.50`, `rr-agent.exe` + `.sig`; `/opt/rr-server/update/agent-latest.json` flipped
+2026-09-04, backup `agent-latest.json.bak-0.3.31`; Linux binary follows from the Beelink build). The server's update-nag
+constant `LATEST_AGENT_VER` still says an older version — bump it to `0.3.50` and redeploy (`rr-server-lane.md`:
+"REMEMBER TO BUMP IT each agent release"). Fleet auto-updates on next game-close. The 8 MB body limit (STEP 1) is what
+makes the fleet's tapes actually arrive — until then every 0.3.4x tape parks for 6 h and retries.
