@@ -15,7 +15,7 @@ entry point. The receipt runner's plan is `WORKSTREAM-RECEIPT-RUNNER.md`.
 | emit | **rr-render** crate (Rust; native `emit_seq` and wasm `WebFeed`) turns tape rows + the user's arc assets into FrameRecords | 14.1 ms/frame native; byte-exact vs the Python oracle |
 | render | WebGPU player (`d3dcap/replay/*.mjs`), inside the PWA as `ReplayEmbed` | 60 fps in the LIVE tab; direct seeks hash-equal to sequential; internal resolution 2×–4× |
 | prove | Path B D3D11 capture shim + gates (L1 draws, L3 pixels, seek, capture) | 300 frames 0.011–0.018 % pixels differing vs the game; L3 60/60 byte-exact |
-| simulate | determinism contract + p-code emulation + **receipt gate** + **native runner (Gate 1)** | receipt: **300/300 frames exact**; native runner byte-exact vs the oracle at **~0.08 ms/tick** |
+| simulate | determinism contract + p-code emulation + **receipt gate** + **native runner (Gate 1)** | receipt 300/300; native runner ~0.08 ms/tick (Gate 1); harvest over runner memory == live tape, scene hashes 299/301 (Gate 2) |
 | knowledge | `re_kb` graph (SurrealDB), function map Steam↔SH4, 113 seed files | schema refuses "confirmed" without cited evidence |
 | product | PWA **LIVE** tab with in-page replay (`RetroReceipts-agent/pwa`) | built, gated (check/build/smoke/L3), deployed via the gated pipeline |
 
@@ -96,6 +96,13 @@ Read from the native x86-64 recompile in Ghidra and gated in a p-code emulator (
   0x1408db218; Fls* live in the UCRT function cache (0x142eefca0, rol/xor cookie); stub semantics are the contract (real Fls
   → RtlEnterCriticalSection); the tick writes one host-heap page of the dumping process (palette RAM expansion,
   `FUN_14004d400`) — zero-backed lazily; 86 ctx page-table dwords carry uninitialised stack (never read). Seed 114 applied.
+- **GATE 2 PASSED (2026-09-03 night, `docs/RECEIPT-RUNNER-GATE2.md`):** the agent's harvest moved verbatim into a library
+  (`agent/src/harvest.rs`, `MemSource` trait; live agent unchanged, tests 6/6) and run over the runner's memory
+  (`rr_runner.cpp --harvest-dump`: per tick the gs/exe pages + the changed DC-RAM pages, ≤9 pages/tick) → a v5 tape compared
+  with the live tape for 301 frames: rows, nodes, anodes, palrows, seat words all equal except two PROVEN live-side classes —
+  **A**: the live 0.3.44 object cache shipped stale animated-prop vertices (fixed in agent 0.3.50); **P**: torn mid-walk live
+  reads (frames 1978/2013). Render: browser scene hashes live vs runner **60/60** (no-world) and **299/301** hybrid, the two
+  residuals being exactly the class-P frames. ⇒ **a receipt reproduces the pixels**, modulo the live tape's own artefacts.
 - **Receipt size:** anchor 12.6 KB gz + 4 B/frame = ≈43 KB of inputs for a 3-minute match. Projection: 50–100× smaller
   than the geometry tape. The native runner that turns a receipt into a tape (and then pixels) is designed with gates
   0–5 in `WORKSTREAM-RECEIPT-RUNNER.md`; gate 0 passed, gates 1–5 not built. **Do not claim pixel-perfect from inputs
