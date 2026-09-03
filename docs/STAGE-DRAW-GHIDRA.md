@@ -194,7 +194,7 @@ Missing, and required for the deck to be pixel-exact:
 
 | field | bytes | why |
 |---|---|---|
-| `G+0x98` = **blk+0x3D50** (u8) | 1 | when non-zero the deck AND lists 5/6 are skipped (super blackout). Set each frame in `FUN_14061f030` from `DAT_142edf628+0x96`. |
+| `G+0x98` = **blk+0x3D50** (u8) | 1 | when non-zero the deck AND list 5 (props) are skipped (super blackout); list 6 still draws (s3 pseudo-code). Set each frame in `FUN_14061f030` from `DAT_142edf628+0x96`. |
 | `blk+0x6CE4` (i32 render mode) | 4 | deck drawn only in mode 0 (INFERRED constant 0 in a match — the tapes do contain list-5/6 nodes, which only mode 0 draws) |
 | `G+0x14` = **blk+0x3CCC** (u32) | 4 | `== 0x40` disables list 12 and the prop init `FUN_140620200`; default 0x20 (`FUN_14060af70`). UNKNOWN what 0x40 means. |
 | `blk+0x6CA8/0x6CAC/0x6CB0` (3 f32) | 12 | deck vertex colour; also multiplies nodes with flag 0x800 |

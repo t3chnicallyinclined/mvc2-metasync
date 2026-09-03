@@ -968,6 +968,11 @@ def main():
                 deck_col = tuple(float(x) for x in r[C['deck']]) if 'deck' in C and isinstance(r[C['deck']], (list, tuple)) else (1.0, 1.0, 1.0)
                 if not blackout:
                     emit_stage(cam, deck_col)
+            # FUN_140620960 (docs/STAGE-DRAW-GHIDRA.md s3): while G+0x98 (blk+0x3D50) != 0 the deck AND list 5
+            # (stage props) are skipped; list 6 and everything after still draw. Drawing the props over a
+            # missing deck was the "half the background is gone" super-blackout look.
+            if 'blackout' in C and int(float(r[C['blackout']])) and 5 in lists:
+                lists = tuple(L for L in lists if L != 5)
             for nd in rows_w:
                 if nd['list'] not in lists or nd['obj'] >= len(v5objs):
                     if nd['list'] in lists and nd['model']:
