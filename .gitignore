@@ -119,3 +119,5 @@ d3dcap/replay/fullmatch/*.seq
 d3dcap/replay/fullmatch/*.mp4
 d3dcap/replay/fullmatch/*.log
 d3dcap/replay/fullmatch/*.txt
+d3dcap/replay/capgate/
+d3dcap/replay/ordergate/

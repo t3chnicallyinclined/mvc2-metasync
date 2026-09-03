@@ -131,7 +131,7 @@ listed above; nothing ships on "looks right".
 3. Palette LUT per draw (RE-C1) — whether it can be a per-slot texture updated per frame or must be per node.
 4. Which pieces of the vendored tape renderer survive (sprite path) vs come from the `.seq` replayer.
 
-### RE-C1 result (palette LUT per draw, 2026-09-03) — `docs/PALETTE-SOURCE-GHIDRA.md`, seed `38_palette_source.surql`
+### RE-C1 result (palette LUT per draw, 2026-09-03) — `docs/PALETTE-SOURCE-GHIDRA.md`, seed `108_palette_source.surql`
 
 * **Answer to 10.3:** a per-SLOT texture set updated per frame, not per node. Every character draw binds the LUT of
   its texture-slot bank (`FUN_140845e20`, slot table `ctx+0x1e00a0+idx*0x18` +4); the bank is fixed at sheet
@@ -162,7 +162,7 @@ DESCENDING, ties by the submission sequence at slot+0 ASCENDING -- a total order
 `cfg+0x48 == 8` / r > 7000 -> 10000 branch is inactive per the gate). Sprite key = the walker depth `node+0x12C`
 (= zoom*0.1 + LayerZ[layer] `blk+0x6D08`) + 0.001 per record (`FUN_1406129f0`), taken BEFORE `FUN_1408432e0`
 turns it into the quad's vertex z = max(0, (P32 - D*P22)/D). Doc: `docs/TRANSLUCENT-SORT-GHIDRA.md`; seed
-`maplecast-flycast/tools/re_kb/39_translucent_sort.surql` (applied, 36 stmts, 0 failed, backup
+`maplecast-flycast/tools/re_kb/109_translucent_sort.surql` (applied, 36 stmts, 0 failed, backup
 `re_kb_data/_exports/re_kb_20260903-020911.surql`).
 
 **Gate (`d3dcap/replay/sort_gate.py`, stage-11 tape 59613506 + capgate packs/dumps):** 4445: 269 cat-3 draws,
@@ -184,7 +184,7 @@ Z-write ON; the 12,170 Z-write-ON draws inside the sorted phase are list-7/8 fla
 
 ### RE-C6 result (2026-09-03, senior-re-generalist) — whole-frame emulation read set → the formal minimum tape
 
-Full text: `docs/FRAME-READSET.md`; seed `maplecast-flycast/tools/re_kb/36_frame_readset.surql`; harness
+Full text: `docs/FRAME-READSET.md`; seed `maplecast-flycast/tools/re_kb/106_frame_readset.surql`; harness
 `d3dcap/replay/emu_gate.py frame` (+ `emu_frame.py`, EmuGate.java `trace/extstub/heap` commands). Input = the live
 `dump_live.py` images of run `20260903-000941` (offline match, clock 2239, roster 12A/34/12C/117/134/135, stage byte 11).
 

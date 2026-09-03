@@ -1,6 +1,6 @@
 # Steam MvC2 x86-64 <-> Dreamcast SH4 function correspondence map (2026-09-02)
 
-Programmatic map between the unpacked Steam executable (`C:\Users\trist\ghidra_projects\mvc_dump.bin`, Ghidra project `dumpproj`, read through the GhidraMCP HTTP bridge on :8080) and the marvelous2 SH4 disassembly (`C:\Users\trist\projects\_marv_re\build\bank*.asm`, `loc_8c......` == PC). Machine-readable: `docs/steam_sh4_map.csv`. Scripts: `d3dcap/replay/re_map/` (`ghidra_export.py`, `sh4_export.py`, `blkmap.py`, `match.py`, `seeds.json`, `report.py`). KB seed: `maplecast-flycast/tools/re_kb/30_steam_function_map.surql`.
+Programmatic map between the unpacked Steam executable (`C:\Users\trist\ghidra_projects\mvc_dump.bin`, Ghidra project `dumpproj`, read through the GhidraMCP HTTP bridge on :8080) and the marvelous2 SH4 disassembly (`C:\Users\trist\projects\_marv_re\build\bank*.asm`, `loc_8c......` == PC). Machine-readable: `docs/steam_sh4_map.csv`. Scripts: `d3dcap/replay/re_map/` (`ghidra_export.py`, `sh4_export.py`, `blkmap.py`, `match.py`, `seeds.json`, `report.py`). KB seed: `maplecast-flycast/tools/re_kb/101_steam_function_map.surql`.
 
 Every row is tagged **CONFIRMED** (both sides read by a human; `seeds.json`) or **INFERRED** (fingerprint / call-graph only; tiers high / medium / low). An INFERRED row is a hypothesis with its evidence and runner-up attached, not a fact.
 
@@ -987,7 +987,7 @@ Steam functions (game range) that touch blk 0x3CB8..0x6D10 (globals/camera), 0x2
 1. Any CONFIRMED pair: decompile the Steam side (`/decompile_function?address=`) and read the SH4 routine; the callee sequence and the blk/global set must correspond under `blkmap.py`. A mismatch in a seed invalidates every pair propagated from it (the CSV `evidence` column names the pair ids used).
 2. INFERRED `high` rows: the `runner_up` column gives the second-best candidate and its score; if reading shows the runner-up is the true counterpart, lower `MARGIN` is not the fix -- add the pair to `seeds.json` and re-run.
 3. The stage-struct deltas: sample `blk+0x6914..0x698C`, `0x6CA8`, `0x6CE4`, `0x6D04`, `0x6D08` live and compare with DC `0x8C26A524..`, `0x8C26A8A8`, `0x8C26A8E4`, `0x8C26A95C`, `0x8C26A974` in flycast on the same frame.
-4. Re-run end to end: `python ghidra_export.py fetch` (resumable), `python ghidra_export.py finger`, `python sh4_export.py`, `python match.py`, `python report.py`; then, from the maplecast-flycast repo root, `PYTHONIOENCODING=utf-8 python tools/re_kb/apply_seed.py tools/re_kb/30_steam_function_map.surql` (one statement per request; `rekb.sh @file` fails on this 5 MB file with 'length limit exceeded' and applies NOTHING).
+4. Re-run end to end: `python ghidra_export.py fetch` (resumable), `python ghidra_export.py finger`, `python sh4_export.py`, `python match.py`, `python report.py`; then, from the maplecast-flycast repo root, `PYTHONIOENCODING=utf-8 python tools/re_kb/apply_seed.py tools/re_kb/101_steam_function_map.surql` (one statement per request; `rekb.sh @file` fails on this 5 MB file with 'length limit exceeded' and applies NOTHING).
 
 ## 6. Precision spot-check of INFERRED rows (2026-09-02)
 

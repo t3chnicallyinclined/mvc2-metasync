@@ -7,7 +7,7 @@ same frame's capture holds. Tags: **CONFIRMED** = read on both sides / reproduce
 fingerprint or gate-consistent only; **UNKNOWN** = not located.
 
 Harness: `d3dcap/replay/emu_gate.py` (driver) + `d3dcap/replay/re_map/ghidra_emu/EmuGate.java` (Ghidra
-script). Seed: `maplecast-flycast/tools/re_kb/33_emu_gate.surql`. Work files (block dumps, job files, logs,
+script). Seed: `maplecast-flycast/tools/re_kb/104_emu_gate.surql`. Work files (block dumps, job files, logs,
 results) live in `%TEMP%\rrcap_emu\` — ROM-derived bytes never enter the repo.
 
 ## 0. Answer

@@ -6,7 +6,7 @@
 Reads   <run>/extract/frame_<K>.json (extract.py)
 Queries re_kb (http://127.0.0.1:8001, ns re db kb): steam_routine nodes + ->recompiles->routine pairs
 Writes  <run>/extract/readset_f<K>.md   the per-frame READ SET table (function, SH4 pair, blk offsets read/written)
-        <seed>                          maplecast-flycast/tools/re_kb/35_ttd_frame_readset.surql (idempotent UPSERT/RELATE)
+        <seed>                          maplecast-flycast/tools/re_kb/105_ttd_frame_readset.surql (idempotent UPSERT/RELATE)
 --apply takes the documented logical backup (tools/re_kb/README.md) then runs apply_seed.py on the seed.
 
 Seed content (all idempotent, explicit edge ids):
@@ -29,7 +29,7 @@ import urllib.request
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 MAPLE = os.path.abspath(os.path.join(HERE, "..", "..", "..", "maplecast-flycast"))
-SEED_DEFAULT = os.path.join(MAPLE, "tools", "re_kb", "35_ttd_frame_readset.surql")
+SEED_DEFAULT = os.path.join(MAPLE, "tools", "re_kb", "105_ttd_frame_readset.surql")
 URL = os.environ.get("REKB_URL", "http://127.0.0.1:8001/sql")
 AUTH = os.environ.get("REKB_AUTH", "root:root")
 

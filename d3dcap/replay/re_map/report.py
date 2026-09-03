@@ -3,7 +3,7 @@
 
     docs/steam_sh4_map.csv                      (steam_addr, sh4_pc, confidence, evidence, ...)
     docs/STEAM-SH4-FUNCTION-MAP.md              (method, coverage, anchors, render-relevant functions)
-    <maplecast-flycast>/tools/re_kb/30_steam_function_map.surql   (idempotent KB seed)
+    <maplecast-flycast>/tools/re_kb/101_steam_function_map.surql   (idempotent KB seed)
 
     python report.py
 """
@@ -14,7 +14,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 QUARTERS = os.path.abspath(os.path.join(HERE, "..", "..", ".."))
 DOCS = os.path.join(QUARTERS, "docs")
 KB_DIR = r"C:\Users\trist\projects\maplecast-flycast\tools\re_kb"
-SURQL = os.path.join(KB_DIR, "30_steam_function_map.surql")
+SURQL = os.path.join(KB_DIR, "101_steam_function_map.surql")
 GAME_LO, GAME_HI = 0x140600000, 0x1408e0000
 TODAY = "2026-09-02"
 
@@ -149,7 +149,7 @@ def main():
               "project `dumpproj`, read through the GhidraMCP HTTP bridge on :8080) and the marvelous2 SH4 disassembly "
               "(`C:\\Users\\trist\\projects\\_marv_re\\build\\bank*.asm`, `loc_8c......` == PC). Machine-readable: "
               "`docs/steam_sh4_map.csv`. Scripts: `d3dcap/replay/re_map/` (`ghidra_export.py`, `sh4_export.py`, `blkmap.py`, "
-              "`match.py`, `seeds.json`, `report.py`). KB seed: `maplecast-flycast/tools/re_kb/30_steam_function_map.surql`.\n")
+              "`match.py`, `seeds.json`, `report.py`). KB seed: `maplecast-flycast/tools/re_kb/101_steam_function_map.surql`.\n")
     md.append("Every row is tagged **CONFIRMED** (both sides read by a human; `seeds.json`) or **INFERRED** (fingerprint / "
               "call-graph only; tiers high / medium / low). An INFERRED row is a hypothesis with its evidence and runner-up "
               "attached, not a fact.\n")
@@ -230,7 +230,7 @@ def main():
               "DC `0x8C26A524..`, `0x8C26A8A8`, `0x8C26A8E4`, `0x8C26A95C`, `0x8C26A974` in flycast on the same frame.")
     md.append("4. Re-run end to end: `python ghidra_export.py fetch` (resumable), `python ghidra_export.py finger`, "
               "`python sh4_export.py`, `python match.py`, `python report.py`; then, from the maplecast-flycast repo root, "
-              "`PYTHONIOENCODING=utf-8 python tools/re_kb/apply_seed.py tools/re_kb/30_steam_function_map.surql` "
+              "`PYTHONIOENCODING=utf-8 python tools/re_kb/apply_seed.py tools/re_kb/101_steam_function_map.surql` "
               "(one statement per request; `rekb.sh @file` fails on this 5 MB file with 'length limit exceeded' and applies NOTHING).")
     md.append("\n## 6. Precision spot-check of INFERRED rows (2026-09-02)\n")
     md.append("Six `high` rows drawn at random (`random.seed(7)`) and read on both sides before sign-off:\n")

@@ -3,7 +3,7 @@
 RE METHOD (`docs/RE-METHOD.md`), steps 1-4 all applied: SH4 anchors `loc_8c035000` / `loc_8c035162` / `loc_8c034bea`
 (marvelous2 bank03) ported to the Steam binary by function matching, propagated along the call graph to the NaomiLib
 palette upload and the D3D LUT refresh, globals translated through the block map (`0x8c2659dc` staging -> `blk+0x1040`),
-every pair tagged and stored in seed `maplecast-flycast/tools/re_kb/38_palette_source.surql`.
+every pair tagged and stored in seed `maplecast-flycast/tools/re_kb/108_palette_source.surql`.
 Binary: `mvc_dump.bin` (GhidraMCP bridge :8080, `decompile_function?address=`, `xrefs_to?address=`). `blk` = `DAT_142edf560`,
 `G` = `DAT_142edf580`, `ctx` = `DAT_142ef0ab0` (NaomiLib host context), `dev` = `*(DAT_140acd3a8)` (the D3D device wrapper).
 Tags: **CONFIRMED** = both sides read / reproduced by a gate; **INFERRED** = derived, not read; **UNKNOWN** = not located.

@@ -9,7 +9,7 @@ UNKNOWN (not located). Nothing here was committed; no ROM-derived bytes are quot
 
 **Note on timing.** Three artefacts the draft calls "pending" landed while this review was written:
 `docs/TRANSLUCENT-SORT-GHIDRA.md` (02:10), `docs/PALETTE-SOURCE-GHIDRA.md` (02:13), seeds
-`38_palette_source.surql` / `39_translucent_sort.surql`, and agent **0.3.40** (`d9187dc`, `palrows`). The
+`108_palette_source.surql` / `109_translucent_sort.surql`, and agent **0.3.40** (`d9187dc`, `palrows`). The
 draft's §1 row 9, §5 RE-C1/RE-C2 and §10.3 are already out of date against them; the corrections below
 use the newer state. Seed numbers 38 and 39 now **collide** with the maplecast lane's
 `38_per_part_depth_zinvW.surql` / `39_camera_zoom_audit.surql` — rename before `apply_seed.py`

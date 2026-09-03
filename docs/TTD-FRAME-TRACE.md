@@ -135,7 +135,7 @@ python C:\Users\trist\projects\mvc-live-skins-quarters\d3dcap\ttd\join_kb.py --r
 
 Joins `frame_<k>.json` with `steam_routine ->recompiles-> routine` (re_kb :8001), writes
 `extract\readset_f<k>.md` (function | SH4 pair (conf) | role | calls | blk reads | blk writes | DC-RAM pages) and the seed
-`maplecast-flycast/tools/re_kb/35_ttd_frame_readset.surql`: `source:ttd_trace_<ts>`, `finding:ttd_f<k>_frame_<ts>`
+`maplecast-flycast/tools/re_kb/105_ttd_frame_readset.surql`: `source:ttd_trace_<ts>`, `finding:ttd_f<k>_frame_<ts>`
 (executed functions in first-call order), one `finding:ttd_readset_<FUN>` per function that touched blk/DC-RAM
 (`status='confirmed'` — dynamic evidence), `about`/`cites` edges with explicit ids, and
 `steam_routine.ttd_blk_reads/ttd_blk_writes/ttd_frames` (kept separate from the static crawl fields). The seed also

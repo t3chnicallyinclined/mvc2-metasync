@@ -6,7 +6,7 @@ SH4 side: marvelous2 `_marv_re/build/bank0f.asm`. `blk` = `DAT_142edf560`, `G` =
 claimed) or reproduced by the gate; **INFERRED** = derived, not read; **UNKNOWN** = not located.
 Tools: `d3dcap/replay/rip_parts.py` (bank models + static lists -> `tcw_pages/parts/`, gitignored),
 `d3dcap/replay/parts_gate.py` (the gate), `blkstate.pnodes()` (list-12 walker on a captured block).
-Seed: `maplecast-flycast/tools/re_kb/37_list0c_parts.surql`.
+Seed: `maplecast-flycast/tools/re_kb/107_list0c_parts.surql`.
 
 RE METHOD steps used: (1) `loc_8c030dcc` -> `FUN_140620ea0` was already CONFIRMED (seed 30); its callee
 `jsr 8c0f215e` / `FUN_140653a70` is the new pair, matched by structure and the unique float -6.0

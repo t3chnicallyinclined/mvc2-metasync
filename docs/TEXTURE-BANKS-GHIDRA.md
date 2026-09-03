@@ -4,7 +4,7 @@ Binary: `mvc_dump.bin` (unpacked Steam MvC2, base 0x140000000, Ghidra project `d
 `decompile_function?address=` / `xrefs_to?address=`). SH4 side: marvelous2 `build/bank*.asm`. `blk` = `DAT_142edf560`,
 `G` = `DAT_142edf580` = `blk+0x3CB8`, `ctx` = `DAT_142ef0ab0` (NaomiLib host context), `ctx[0]` = archive image,
 `ctx[1]` = host base of the 32 MB DC work-RAM image (DC `X` -> `ctx[1] + (X - 0x0C000000)`).
-Tags: **CONFIRMED** = decompiled/disassembled and read; **INFERRED** = derived, not read. Seed: `maplecast-flycast/tools/re_kb/31_texture_banks.surql`.
+Tags: **CONFIRMED** = decompiled/disassembled and read; **INFERRED** = derived, not read. Seed: `maplecast-flycast/tools/re_kb/102_texture_banks.surql`.
 Ripper + gate: `d3dcap/replay/rip_texbank.py`. Gold: `d3dcap/replay/tcw_pages/index.json` (captured D3D pages, sha256 over RGBA8).
 
 ## 0. Answer

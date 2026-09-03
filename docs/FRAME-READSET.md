@@ -10,7 +10,7 @@ function by body containment (`re_map/steam_funcs.jsonl`) with its SH4 pair from
 
 Harness: `d3dcap/replay/emu_gate.py frame` + `d3dcap/replay/emu_frame.py` + the `trace/functable/image/extstub/
 callother/heap/extalloc/extret` commands of `re_map/ghidra_emu/EmuGate.java`. Seed: `maplecast-flycast/tools/re_kb/
-36_frame_readset.surql`. Work files (traces, dumps) in `%TEMP%\rrcap_emu\` — ROM-derived bytes never enter the repo.
+106_frame_readset.surql`. Work files (traces, dumps) in `%TEMP%\rrcap_emu\` — ROM-derived bytes never enter the repo.
 Tags: **CONFIRMED** = read on both sides / reproduced by the gate; **INFERRED** = decompile- or gate-consistent only;
 **UNKNOWN** = not located.
 
