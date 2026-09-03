@@ -53,6 +53,9 @@ maps onto DC work RAM through the piecewise block map (`d3dcap/replay/re_map/blk
 | Sprite walker / submit read set (System B) | `docs/TAPE-V3-SPEC.md` §10 |
 | Texture banks: TCW = base + texIndex (0xC10 stage / 0xC50 effects / 0xC90 HUD), files = AFS entries inside game_50.arc, HOST decode (`rip_texbank.py`); 16/16 bank-derivable captured pages byte-exact; `rip_stage.py`'s texture decode is WRONG (transposed twiddle, 565/1555 expansion) | `docs/TEXTURE-BANKS-GHIDRA.md`, seed `31_texture_banks.surql` |
 | Render state law: blend/sampler/depth/cull/ps from PCW/ISP/TSP + polygon-group word (`FUN_1408482a0`), Steam strip winding, vertex colour multipliers; gate 824/824 (blend 820/824: `node+0x90` alpha mult not in tape) | `docs/TSP-RENDER-STATE-GHIDRA.md`, seed `32_tsp_render_state.surql`, `tsp_state.py` / `tsp_gate.py` |
+| HUD lists 0xB/0xD project through the HUD scene block (`FUN_14061d5b0`: angle 0x4000, V=I; gold CB 04E19F4C, 171/177 list-11 draws) | `d3dcap/replay/camera_block.json` 'hud' |
+| World/deck vertex colour is packed R,G,B,A (gold HUD bars ff0000ff / ffff00ff) | `tape_to_seq.py` world pass |
+| Translucent flush order: category 1 (Z-write) first in submission order, then category 3 qsorted by `FUN_140843320(record centre)` through V×P×Screen (derivation in flight) | `docs/TRANSLUCENT-SORT-GHIDRA.md` (pending) |
 | Emulation gate: camera routines and sprite walker reproduce captured bytes bit-exact (Ghidra p-code on captured `blk`); matrix stack storage = `blk+0..0x1000`; cell overrides need the DC-RAM image | `docs/EMU-GATE.md`, seed `33_emu_gate.surql`, harness `d3dcap/replay/emu_gate.py` |
 
 ## Agents bound to this method
