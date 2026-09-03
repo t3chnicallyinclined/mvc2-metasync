@@ -220,6 +220,12 @@ The entity list DAT_142edf628 = blk+0x324E0 (absolute fighter self-pointers) exp
 what every loader must preserve. Agent 0.3.47 records the battle-frame anchor per the carry list (blk + game_state
 page + exe page 0x142edf300..0x700 + ctx slot table, one clock edge); `receipt_gate.py` is the gate (selftest 20/20).
 
+#### → THE RECEIPT RUNNER is now its own workstream: `docs/WORKSTREAM-RECEIPT-RUNNER.md` (2026-09-03)
+Merged from RECEIPT-RUNNER-RE.md / -DCRAM.md / -RENDER.md. Settled: the frame writes NO per-frame state outside blk
+(12,939 B / 13 ranges over 237 frames, all regenerated scratch); DC-RAM rebuilds from the user's arc through the game's
+own loader (PL slot recipe 66/66 byte-exact); stage props animate from node shorts, no frame counter. Build order and
+gates live there; Track H items below are superseded by it.
+
 ### Workstream F — Receipt lane (server-side)
 Agent records snapshot + input words (0.3.24 anchor + `seat_in` exist; align to `game_state+0x218/+0x21C`);
 `emu_gate.py frame` replays a disputed match server-side; PL image loader table UNKNOWN → dump-once until derived.
