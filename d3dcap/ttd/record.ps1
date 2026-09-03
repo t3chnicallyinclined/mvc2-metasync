@@ -30,7 +30,11 @@ param(
     [switch]$NoDump,
     [switch]$Elevated,
     [int]$AttachTimeout = 120,
-    [int]$TargetPid = 0
+    [int]$TargetPid = 0,
+    [switch]$Launch,
+    [int]$RingMB = 8192,
+    [int]$AppId = 2634890,
+    [string]$Exe = 'C:\Program Files (x86)\Steam\steamapps\common\MARVEL vs. CAPCOM Fighting Collection\MarvelVsCapcomFightingCollection.exe'
 )
 $ErrorActionPreference = 'Stop'
 $here = $PSScriptRoot
@@ -60,12 +64,21 @@ function Say([string]$m) { $line = "[{0}] {1}" -f (Get-Date -Format 'HH:mm:ss.ff
 # ---------------------------------------------------------------- parent: elevate and wait
 if (-not $Elevated -and -not (Is-Admin)) {
     $g = if ($TargetPid) { Get-Process -Id $TargetPid -ErrorAction SilentlyContinue } else { Get-Process $Proc -ErrorAction SilentlyContinue | Select-Object -First 1 }
-    if (-not $g) { Say "[record] process '$Proc' is not running -- start the game, get into an OFFLINE match, then rerun"; exit 1 }
+    if ($Launch) {
+        if ($g) { Say "[record] -Launch: the game is already running (pid $($g.Id)) -- quit it first; TTD must start the exe itself"; exit 1 }
+        Say "[record] -Launch mode: TTD will start the exe itself (ring buffer $RingMB MB, module-only). Elevating (accept the UAC prompt) ..."
+    } elseif (-not $g) { Say "[record] process '$Proc' is not running -- start the game, get into an OFFLINE match, then rerun (or use -Launch)"; exit 1 }
+    if (-not $Launch -and $Proc -ne 'python' -and $Proc -ne 'notepad') {
+        $py0 = Find-Python
+        & $py0 (Join-Path $here 'preflight.py') --pid $g.Id --json (Join-Path $RunDir 'preflight.json') 2>&1 | ForEach-Object { Say $_ }
+        if ($LASTEXITCODE -ne 0) { Say "[record] PRE-FLIGHT FAILED -- fix the blocker above, then rerun. (Nothing was attached; the game is untouched.)"; exit 3 }
+    }
     Say "[record] target $Proc pid $($g.Id); elevating (accept the UAC prompt) ..."
     $args = @('-NoProfile','-ExecutionPolicy','Bypass','-File',"`"$PSCommandPath`"",'-Elevated','-Seconds',$Seconds,'-Proc',$Proc,'-RunDir',"`"$RunDir`"",'-AttachTimeout',$AttachTimeout)
     if ($AllModules) { $args += '-AllModules' }
     if ($NoDump) { $args += '-NoDump' }
     if ($TargetPid) { $args += @('-TargetPid', $TargetPid) }
+    if ($Launch) { $args += @('-Launch','-RingMB',$RingMB,'-AppId',$AppId) }
     $child = Start-Process -FilePath 'powershell.exe' -ArgumentList $args -Verb RunAs -PassThru
     $child.WaitForExit()
     Say "[record] elevated child exited with code $($child.ExitCode)"
@@ -83,6 +96,41 @@ try {
     $ttd = Find-Ttd
     $py  = Find-Python
     Say "[record] ttd = $ttd"
+    if ($Launch) {
+        # ---- launch path: TTD starts the exe (clean ntdll at TTD init; the exe's runtime layer hooks Nt* later, which TTD
+        #      records like any other code). -ring keeps only the last $RingMB MB, so minutes of menus at ~10x slowdown are fine.
+        $exeName = [IO.Path]::GetFileName($Exe); $gameDir = Split-Path $Exe -Parent
+        $env:SteamAppId = "$AppId"; $env:SteamGameId = "$AppId"      # same direct-launch recipe as d3dcap/launch_suspended.ps1
+        $ttdArgs = @('-accepteula','-noUI','-ring','-maxFile',$RingMB,'-out',('"' + $RunDir + '"'))
+        if (-not $AllModules) { $ttdArgs += @('-module', $exeName) }
+        $ttdArgs += @('-launch', ('"' + $Exe + '"'))
+        Say "[record] $ttd $($ttdArgs -join ' ')"
+        $so = Join-Path $RunDir 'ttd_stdout.txt'; $se = Join-Path $RunDir 'ttd_stderr.txt'
+        $rec = Start-Process -FilePath $ttd -ArgumentList $ttdArgs -WorkingDirectory $gameDir -PassThru -NoNewWindow -RedirectStandardOutput $so -RedirectStandardError $se
+        $t0 = Get-Date; $g = $null
+        while (-not $g -and ((Get-Date) - $t0).TotalSeconds -lt $AttachTimeout) { Start-Sleep -Milliseconds 500; $g = Get-Process $Proc -ErrorAction SilentlyContinue | Select-Object -First 1; if ($rec.HasExited) { break } }
+        if (-not $g) { throw "the game did not start under TTD within $AttachTimeout s (stderr: $(Get-Content $se -Raw -ErrorAction SilentlyContinue))" }
+        $procPid = $g.Id
+        Say "[record] game pid $procPid under TTD. Play into an OFFLINE match (Versus/Training). The game runs ~10x slower."
+        Write-Host ""
+        Write-Host "  >>> When you are FIGHTING in the offline match, press ENTER in this window to snapshot + stop the recording <<<" -ForegroundColor Yellow
+        Write-Host ""
+        [void](Read-Host)
+        if (-not $NoDump) {
+            Say "[record] snapshot (dump_live.py) ..."
+            & $py (Join-Path $here 'dump_live.py') --out (Join-Path $RunDir 'pre') --pid $procPid 2>&1 | ForEach-Object { Add-Content $log $_ }
+            $meta = Get-Content (Join-Path (Join-Path $RunDir 'pre') 'meta.json') -Raw | ConvertFrom-Json
+        }
+        Say "[record] stop"
+        & $ttd -accepteula -stop $procPid 2>&1 | ForEach-Object { Add-Content $log $_ }
+        if (-not $rec.WaitForExit(300000)) { Say "[record] WARNING: recorder did not exit in 300 s" }
+        Get-Content $so -ErrorAction SilentlyContinue | ForEach-Object { Add-Content $log ("  ttd> " + $_) }
+        Get-Content $se -ErrorAction SilentlyContinue | ForEach-Object { Add-Content $log ("  ttd! " + $_) }
+        $run = Get-ChildItem $RunDir -Filter '*.run' | Select-Object -First 1
+        if (-not $run) { throw "no .run produced (see $log)" }
+        Say ("[record] DONE {0} ({1:N0} MB) -- the game keeps running at full speed" -f $run.FullName, ($run.Length/1MB))
+        exit 0
+    }
     $g = if ($TargetPid) { Get-Process -Id $TargetPid -ErrorAction SilentlyContinue } else { Get-Process $Proc -ErrorAction SilentlyContinue | Select-Object -First 1 }
     if (-not $g) { throw "process '$Proc' is not running" }
     $procPid = $g.Id
@@ -98,6 +146,10 @@ try {
         if ($meta.clock_value -eq $meta.clock_value_after) { Say "[record] WARNING: frame clock did not advance during the snapshot -- are you in a running match (not paused / not a menu)?" }
     }
 
+    if (-not $NoDump) {
+        & $py (Join-Path $here 'preflight.py') --pid $procPid 2>&1 | ForEach-Object { Add-Content $log $_ }
+        if ($LASTEXITCODE -ne 0) { throw "pre-flight failed inside the elevated child (see record.log) -- not attaching" }
+    }
     $ttdArgs = @('-accepteula','-noUI','-out',"`"$RunDir`"")
     if (-not $AllModules) { $ttdArgs += @('-module', $exeName) }
     $ttdArgs += @('-attach', $procPid)

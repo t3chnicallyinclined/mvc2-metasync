@@ -5,7 +5,7 @@ Mimics the memory shape extract.js relies on:
   blk    = 0x4000-byte buffer; u32 "frame clock" at blk+0x3CC8 incremented once per 16 ms tick (like blk+0x3CC8)
   dcram  = 0x10000-byte buffer read every tick (like the DC-RAM host image)
   ctx    = 0x1000-byte buffer
-Each tick also calls into ntdll (time.sleep -> NtDelayExecution) so the Calls stage has a symbol target.
+Each tick also calls into ntdll (time.sleep -> NtCreateTimer2/NtSetTimerEx/NtWaitForMultipleObjects on 3.13) so the Calls stage has a symbol target.
 Writes <out>/synthetic_cfg.json for `extract.py --synthetic`.
 
   python synthetic_target.py --out <dir> [--ticks 400]
@@ -38,8 +38,8 @@ def main():
         "blk": hex(ctypes.addressof(blk)), "blk_size": hex(0x4000),
         "dcram": hex(ctypes.addressof(dcram)), "dcram_size": hex(0x10000),
         "ctx": hex(ctypes.addressof(ctx)), "ctx_size": hex(0x1000), "game_state": None,
-        "funcs_rva": [], "funcs_sym": ["ntdll!NtDelayExecution", "ntdll!NtWriteFile", "kernel32!Sleep", "kernel32!SleepEx"],
-        "probe_call_target": "ntdll!NtDelayExecution", "probe_call_target_is_rva": False,
+        "funcs_rva": [], "funcs_sym": ["ntdll!NtWaitForMultipleObjects", "ntdll!NtSetTimerEx", "ntdll!NtCreateTimer2", "ntdll!NtClose", "ntdll!NtWriteFile", "ntdll!NtDelayExecution"],   # Python 3.13 time.sleep = NtCreateTimer2/NtSetTimerEx/NtWaitForMultipleObjects (measured on the trace)
+        "probe_call_target": "ntdll!NtWaitForMultipleObjects", "probe_call_target_is_rva": False,
         "pid": os.getpid(), "live_base": "0x0",
     }
     json.dump(cfg, open(os.path.join(a.out, "synthetic_cfg.json"), "w"), indent=1)

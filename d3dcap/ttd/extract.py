@@ -160,7 +160,7 @@ def main():
     ap.add_argument("--first-frame", type=int, default=1, help="skip frame 0 (partial: starts at attach)")
     ap.add_argument("--boundary", default="clock", help="clock | walker | dispatcher | tick | advance_frame | rva:0x...")
     ap.add_argument("--all-funcs", action="store_true", help="track all 29678 functions, not just the game range")
-    ap.add_argument("--calls-chunk", type=int, default=200)
+    ap.add_argument("--calls-chunk", type=int, default=64)
     ap.add_argument("--dcram-detail", action="store_true", help="exact DC addresses instead of 4 KB pages")
     ap.add_argument("--dcram-mb", type=int, default=16)
     ap.add_argument("--no-dump", action="store_true")
@@ -207,7 +207,9 @@ def main():
             "ctx": meta["ctx"], "ctx_size": meta["ctx_size"], "game_state": meta["game_state"],
             "funcs_rva": names.game_funcs(a.all_funcs), "funcs_sym": [],
             "probe_call_target": hex(0x620F10), "probe_call_target_is_rva": True,
+            "anchors_rva": [0x620960, 0x620F10, 0x118950, 0x118F00],   # dispatcher, walker, sim tick, advance_frame cb
         }
+    cfg.setdefault("anchors_rva", [])
     cfg.update({"out": ext, "first_frame": a.first_frame, "frames": a.frames, "calls_chunk": a.calls_chunk,
                 "dcram_detail": a.dcram_detail, "dump": not a.no_dump, "do_calls": not a.no_calls, "max_events": a.max_events})
     cfg_p = os.path.join(ext, "cfg.json")
@@ -237,9 +239,11 @@ def main():
     frames = json.load(open(os.path.join(ext, "frames.json")))
     ann_cache = {}
 
-    def ann(rva_hex):
-        if names is None:
-            return {"fn": rva_hex, "name": rva_hex, "sh4": None, "sh4_conf": None, "role": None, "inlined": None}
+    def ann(rec):
+        """rec has rva (module-relative hex or None when the IP is outside the module), fn (abs hex), optional sym"""
+        rva_hex, fn_hex, sym = rec.get("rva"), rec.get("fn") or rec.get("ip"), rec.get("sym")
+        if names is None or not rva_hex:
+            return {"fn": fn_hex, "name": sym or fn_hex, "sh4": None, "sh4_conf": None, "role": None, "inlined": None}
         if rva_hex not in ann_cache:
             ann_cache[rva_hex] = names.annotate(int(rva_hex, 16))
         return ann_cache[rva_hex]
@@ -253,17 +257,17 @@ def main():
         calls.sort(key=lambda c: tuple(int(x, 16) for x in c["t"].split(":")))
         per = {}
         for c in calls:
-            c.update(ann(c["rva"]))
+            c.update(ann(c))
             per.setdefault(c["fn"], {"ncalls": 0, "blk_reads": 0, "blk_writes": 0, "dcram_reads": 0, **{x: c[x] for x in ("name", "sh4", "role")}})["ncalls"] += 1
         for m in blk:
-            m.update(ann(m["rva"]))
+            m.update(ann(m))
             p = per.setdefault(m["fn"], {"ncalls": 0, "blk_reads": 0, "blk_writes": 0, "dcram_reads": 0, **{x: m[x] for x in ("name", "sh4", "role")}})
             p["blk_reads" if m["rw"] == "r" else "blk_writes"] += m["n"]
             key = (m["fn"], m["off"], m["size"], m["rw"])
             r = readset.setdefault(key, {"count": 0, "frames": set(), "name": m["name"], "sh4": m["sh4"]})
             r["count"] += m["n"]; r["frames"].add(k)
         for d in dcr:
-            d.update(ann(d["rva"]))
+            d.update(ann(d))
             d["dc_lo"] = "0x%x" % (0x0C000000 + int(d["lo"], 16)); d["dc_hi"] = "0x%x" % (0x0C000000 + int(d["hi"], 16))
             per.setdefault(d["fn"], {"ncalls": 0, "blk_reads": 0, "blk_writes": 0, "dcram_reads": 0, **{x: d[x] for x in ("name", "sh4", "role")}})["dcram_reads"] += d["n"]
         boundary = frames["boundaries"][k] if k < len(frames["boundaries"]) else {}

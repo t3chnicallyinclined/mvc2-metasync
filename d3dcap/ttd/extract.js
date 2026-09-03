@@ -56,22 +56,31 @@ function propNames(o) {
     try { for (const k of Object.getOwnPropertyNames(o)) if (names.indexOf(k) < 0) names.push(k); } catch (e) {}
     return names;
 }
-function findModule(nameSub) {
-    const want = nameSub.toLowerCase();
+function modBase(path) { const n = String(path); const i = Math.max(n.lastIndexOf(String.fromCharCode(92)), n.lastIndexOf("/")); return n.substring(i + 1); }
+function findModule(name) {
+    // exact basename match first (python -> python.exe, NOT python3.DLL); substring fallback
+    const want = String(name).toLowerCase();
+    let sub = null;
     for (const m of host.currentProcess.Modules) {
-        const n = String(m.Name).toLowerCase();
-        if (n.indexOf(want) >= 0) return { name: String(m.Name), base: num(m.BaseAddress), size: num(m.Size) };
+        const b = modBase(m.Name).toLowerCase();
+        const stem = b.replace(/[.](exe|dll)$/, "");
+        const rec = { name: String(m.Name), base: num(m.BaseAddress), size: num(m.Size) };
+        if (b === want || stem === want) return rec;
+        if (!sub && b.indexOf(want) >= 0) sub = rec;
     }
-    return null;
+    return sub;
 }
-function callsQuery(targets) {
-    // targets: array of numbers (absolute addresses) or "mod!sym" strings
-    try { return host.currentSession.TTD.Calls(...targets); }
-    catch (e) {
-        log("Calls(spread) failed: " + e + " -> evaluateExpression fallback");
-        const expr = "@$cursession.TTD.Calls(" + targets.map(t => typeof t === "number" ? "0x" + t.toString(16) : '"' + t + '"').join(",") + ")";
-        return host.evaluateExpression(expr);
-    }
+function inMod(ip, mod) { return ip >= mod.base && ip < mod.base + mod.size; }
+function rvaOf(ip, mod) { return inMod(ip, mod) ? hex(ip - mod.base) : null; }
+function resolveSym(sym) {
+    // "mod!sym" -> absolute address via the symbol provider (exports suffice; no PDB needed). null if unknown.
+    const i = sym.indexOf("!");
+    if (i < 0) return null;
+    try { return num(host.getModuleSymbolAddress(sym.substring(0, i), sym.substring(i + 1))); } catch (e) { return null; }
+}
+function callsQuery(addrs) {
+    // addrs: array of absolute addresses (numbers). Always numeric (the game exe has no symbols); host.Int64 per arg.
+    return host.currentSession.TTD.Calls(...addrs.map(a => host.Int64(a)));
 }
 
 // --------------------------------------------------------------------------- stages
@@ -90,7 +99,7 @@ function stageProbe(cfg, out) {
     try {
         const tg = cfg.probe_call_target;
         if (tg !== undefined && tg !== null) {
-            const cs = callsQuery([tg]);
+            const cs = callsQuery([typeof tg === "string" ? resolveSym(tg) : tg]);
             for (const c of cs) { probe.call_event_props = propNames(c); probe.call_event_sample = { t: posStr(c.TimeStart), fn: hex(c.FunctionAddress), ret: hex(c.ReturnAddress), tid: num(c.ThreadId) }; break; }
         }
     } catch (e) { probe.call_probe_error = String(e); }
@@ -118,16 +127,20 @@ function stageBoundaries(cfg, out) {
 }
 
 function stageCalls(cfg, out, windows, mod) {
-    // targets: module-relative RVAs -> absolute, plus symbol strings
+    const SEP = String.fromCharCode(92);
+    const names = new Map();     // addr -> label for symbol targets
     const targets = [];
-    for (const r of (cfg.funcs_rva || [])) targets.push(mod.base + r);
-    for (const s of (cfg.funcs_sym || [])) targets.push(s);
-    const chunk = cfg.calls_chunk || 200;
-    const writers = windows.map(w => openWriter(out + "\\calls_f" + w.k + ".jsonl"));
+    for (const r of (cfg.anchors_rva || [])) targets.push(mod.base + r);           // per-frame gate anchors FIRST
+    for (const s of (cfg.funcs_sym || [])) { const a = resolveSym(s); if (a) { targets.push(a); names.set(a, s); log("symbol " + s + " = " + hex(a)); } else log("symbol not resolved: " + s); }
+    for (const r of (cfg.funcs_rva || [])) { const a = mod.base + r; if (targets.indexOf(a) < 0 || targets.length > 64) targets.push(a); }
+    const uniq = Array.from(new Set(targets));
+    log("calls: " + uniq.length + " numeric targets (" + (cfg.anchors_rva || []).length + " anchors, " + names.size + " symbols)");
+    const chunk = cfg.calls_chunk || 64;
+    const writers = windows.map(w => openWriter(out + SEP + "calls_f" + w.k + ".jsonl"));
     const counts = windows.map(() => 0);
     let total = 0;
-    for (let i = 0; i < targets.length; i += chunk) {
-        const part = targets.slice(i, i + chunk);
+    for (let i = 0; i < uniq.length; i += chunk) {
+        const part = uniq.slice(i, i + chunk);
         let calls;
         try { calls = callsQuery(part); } catch (e) { log("Calls chunk " + i + " failed: " + e); continue; }
         for (const c of calls) {
@@ -139,12 +152,12 @@ function stageCalls(cfg, out, windows, mod) {
                 try { ret = num(c.ReturnAddress); } catch (e) {}
                 try { tid = num(c.ThreadId); } catch (e) {}
                 try { te = posStr(c.TimeEnd); } catch (e) {}
-                writers[wi].WriteLine(JSON.stringify({ t: posStr(c.TimeStart), te: te, fn: hex(fa), rva: hex(fa - mod.base), ret: hex(ret), ret_rva: hex(ret - mod.base), tid: tid }));
+                writers[wi].WriteLine(JSON.stringify({ t: posStr(c.TimeStart), te: te, fn: hex(fa), rva: rvaOf(fa, mod), sym: names.get(fa) || null, ret: hex(ret), ret_rva: rvaOf(ret, mod), tid: tid }));
                 counts[wi]++; total++;
                 break;
             }
         }
-        log("calls: chunk " + (i / chunk + 1) + "/" + Math.ceil(targets.length / chunk) + " done, in-window so far " + total);
+        log("calls: chunk " + (Math.floor(i / chunk) + 1) + "/" + Math.ceil(uniq.length / chunk) + " done, in-window so far " + total);
     }
     writers.forEach(w => w.Close());
     return counts;
@@ -170,7 +183,7 @@ function stageMemory(cfg, out, windows, mod, lo, hi, mode, tag, detail) {
             const m = agg[wi];
             let rec = m.get(key);
             if (!rec) {
-                rec = { ip: ip, rva: ip - mod.base, addr: addr, lo: addr, hi: addr + size, size: size, rw: rw, n: 0, first: posStr(e.TimeStart), value: null };
+                rec = { ip: ip, rva: rvaOf(ip, mod), addr: addr, lo: addr, hi: addr + size, size: size, rw: rw, n: 0, first: posStr(e.TimeStart), value: null };
                 if (tag === "blk" && size <= 8) { try { rec.value = hex(e.Value); } catch (x) {} }
                 m.set(key, rec);
             }
@@ -186,8 +199,8 @@ function stageMemory(cfg, out, windows, mod, lo, hi, mode, tag, detail) {
     for (let wi = 0; wi < windows.length; wi++) {
         const w = openWriter(out + "\\" + tag + "_f" + windows[wi].k + ".jsonl");
         for (const rec of agg[wi].values()) {
-            if (tag === "blk") w.WriteLine(JSON.stringify({ off: hex(rec.addr - lo), size: rec.size, rw: rec.rw, ip: hex(rec.ip), rva: hex(rec.rva), n: rec.n, first: rec.first, value: rec.value }));
-            else w.WriteLine(JSON.stringify({ ip: hex(rec.ip), rva: hex(rec.rva), lo: hex(rec.lo - lo), hi: hex(rec.hi - lo), page: hex((rec.lo - lo) >>> 12 << 12), size: rec.size, rw: rec.rw, n: rec.n, first: rec.first }));
+            if (tag === "blk") w.WriteLine(JSON.stringify({ off: hex(rec.addr - lo), size: rec.size, rw: rec.rw, ip: hex(rec.ip), rva: rec.rva, n: rec.n, first: rec.first, value: rec.value }));
+            else w.WriteLine(JSON.stringify({ ip: hex(rec.ip), rva: rec.rva, lo: hex(rec.lo - lo), hi: hex(rec.hi - lo), page: hex((rec.lo - lo) >>> 12 << 12), size: rec.size, rw: rec.rw, n: rec.n, first: rec.first }));
         }
         w.Close();
     }
@@ -236,6 +249,7 @@ function run(cfgPath) {
     const cfg = JSON.parse(readText(cfgPath));
     const out = cfg.out;
     const H = (s) => (s === null || s === undefined) ? 0 : (typeof s === "number" ? s : parseInt(s, 16));
+    if (typeof cfg.probe_call_target === "string" && cfg.probe_call_target.indexOf("!") >= 0) { cfg.probe_call_target_sym = cfg.probe_call_target; cfg.probe_call_target_is_rva = false; }
     for (const k of ["clock_addr", "blk", "blk_size", "dcram", "dcram_size", "ctx", "ctx_size", "game_state", "probe_call_target"]) cfg[k] = H(cfg[k]);
     cfg.clock_size = cfg.clock_size || 4;
     LOG = openWriter(out + "\\extract_log.txt");
@@ -245,7 +259,7 @@ function run(cfgPath) {
         if (!mod) throw new Error("module '" + cfg.module + "' not in trace");
         log("module " + mod.name + " base " + hex(mod.base) + " size " + hex(mod.size));
         if (cfg.ghidra_base) log("aslr delta vs ghidra base " + hex(cfg.ghidra_base) + " = " + hex(mod.base - H(cfg.ghidra_base)));
-        cfg.probe_call_target = cfg.probe_call_target ? (cfg.probe_call_target_is_rva ? mod.base + cfg.probe_call_target : cfg.probe_call_target) : null;
+        cfg.probe_call_target = cfg.probe_call_target_is_rva ? (cfg.probe_call_target ? mod.base + cfg.probe_call_target : null) : (cfg.probe_call_target_sym || null);
         stageProbe(cfg, out);
         const b = stageBoundaries(cfg, out);
         // frames k = [b[k], b[k+1]); window = first_frame .. first_frame+frames-1 (needs b[k+1])
