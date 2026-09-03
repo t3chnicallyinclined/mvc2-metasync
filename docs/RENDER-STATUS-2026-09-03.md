@@ -45,3 +45,6 @@ Agent 0.3.40 (`rr-agent-v7.exe`, running): tape v5, nodes stride 54 (+angle/hots
 ## Gates & tools
 `tape_audit.py` (A–H per tape) · `tsp_gate.py` · `worldgeo_gate.py` · `emu_gate.py` · `rip_texbank.py --gate` ·
 `v3gate.py`/`rotgate.py`/`emitter_gate.py` (sprites) · player http://localhost:8099/player.html?seq=<seq>.
+
+## Plan of record (2026-09-03, after expert review)
+`docs/WORKSTREAM-CLIENT-REPLAY.md` v2: the server streams the tape, the browser renders; receipt form (snapshot + 2 input words/frame, server-side emulation) vs playback tape; D0 decided (ship the asset pack to the test cohort — users own the game); M-interim decided (phone = server-side emit streamed over Redis/NATS pub/sub, keyed frames, WebGPU replayer only); order W0 tape-vs-capture gate → W1 sprites first → W2 world/state → W3 D3D descs via a Create*State hook → W4 pack → W5 v6 wire → W6 delivery; F receipt lane. Reviews: `WORKSTREAM-CLIENT-REPLAY.review-re.md`, `.review-render.md`.
