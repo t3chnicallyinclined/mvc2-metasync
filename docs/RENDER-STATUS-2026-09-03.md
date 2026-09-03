@@ -25,10 +25,15 @@ Agent 0.3.39 (`rr-agent-v6.exe`, running): tape v5, nodes stride 54 (+angle/hots
 
 ## Open tweaks (each has an owner agent + a numeric gate; none needs a capture)
 1. ~~Translucent ordering~~ **CLOSED 2026-09-03**: cat 0/1 by submission, cat 3 qsorted DESC by the record key (`TRANSLUCENT-SORT-GHIDRA.md`, seed 39); `sort_gate.py` 0 key rises on 3 frames; emitter `order_draws` live (`--legacy-order` keeps the old path).
-2. **Mirror-match palette** — both Magnetos render with the same palette; the tape ships DatPal (cl+0x4C), not the
-   per-slot bank the submit binds. Gate: rebuild captured palette pages byte-exact.
-3. **Hit sparks** — list 0xC per-fighter 3D parts (walker `FUN_140653a70`), dropped by the harvest filter
-   (`obj||model`); geometry in the 0xC90 bank POL. Gate: reproduce the 25 gold view-space draws of frame 4445.
+2. **Mirror-match palette — DERIVED 2026-09-03** (`PALETTE-SOURCE-GHIDRA.md`, seed 38): the bound LUT = the engine's
+   STAGING LINES `blk+0x1040 + bank*0x38` (bank = slot base {0x10..0x38} + record row), filled from
+   `DatPal + (node+0x39 variant)*0x100`; the tape's `pal` is costume 0 row 0. Gate `palette_gate.py` 494/518 LUT pages
+   byte-exact (24 = a 1-frame LUT lag). Tape delta: `palrows` = one 0x540-B read at blk+0x13C0 per frame (agent 0.3.40,
+   pending); consumer done (`tape_to_seq.py --pal-lag`).
+3. **Hit sparks** — list 0xC turned out to be the COMBO COUNTER (`PARTS-LIST0C-GHIDRA.md`, gated 24/24, 82/82; harvest
+   delta = 44-B `pnodes`). Sparks are System-B objects (cat 3, sids 1002..1006 in the OWNER's sprite set); they drew
+   with the wrong character's rip because the bank key `& 0xFFFF` collapsed all fighters (fixed 56617e6). Verify on
+   the re-rendered stage-13 clip.
 4. **Portraits** — TCW 0xC99..0xCA8 patched at runtime from character DATs (INFERRED); capture-derived for now.
 5. Whole-frame read set from the p-code emulator on the mid-match images (`d3dcap/ttd/runs/20260903-000941/pre`).
 6. Scripted camera (blk+0x6908 == 1) rendering from look/fov/yoff/roll — fields carried, renderer not yet.
