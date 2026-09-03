@@ -57,6 +57,7 @@ maps onto DC work RAM through the piecewise block map (`d3dcap/replay/re_map/blk
 | World/deck vertex colour is packed R,G,B,A (gold HUD bars ff0000ff / ffff00ff) | `tape_to_seq.py` world pass |
 | Translucent flush order: category 1 (Z-write) first in submission order, then category 3 qsorted by `FUN_140843320(record centre)` through V×P×Screen (derivation in flight) | `docs/TRANSLUCENT-SORT-GHIDRA.md` (pending) |
 | Emulation gate: camera routines and sprite walker reproduce captured bytes bit-exact (Ghidra p-code on captured `blk`); matrix stack storage = `blk+0..0x1000`; cell overrides need the DC-RAM image | `docs/EMU-GATE.md`, seed `33_emu_gate.surql`, harness `d3dcap/replay/emu_gate.py` |
+| List 0xC = the COMBO COUNTER / rating / round text (not hit sparks): `FUN_140653a70` <-> `loc_8C0F215E`; node -> exe-static part list (`+0x110`) -> HUD-bank model (`PTR_DAT_142edf598[idx]`, AFS 835), page = `0xC92 + count - 1` via the header patch; CBWorld = composed T/S chain, V = I, no CPU vertex transform; consumer clears bit 0 of x and v; harvest drops these nodes by construction -> 44-B `pnodes` record; gate 5 frames: CBWorld 24/24, vertices 82/82, pages 82/82 | `docs/PARTS-LIST0C-GHIDRA.md`, seed `37_list0c_parts.surql`, `d3dcap/replay/parts_gate.py`, `rip_parts.py`, `blkstate.pnodes` |
 
 ## Agents bound to this method
 

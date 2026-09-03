@@ -309,6 +309,41 @@ def anodes(blk, base, lists=range(16), drawn_only=True, limit=256):
     return out
 
 
+# ── LIST 0xC: the per-fighter COMBO COUNTER / rating text (Ghidra FUN_140653a70, 2026-09-03) ────────
+# docs/PARTS-LIST0C-GHIDRA.md. These nodes have +0xA0 == 0 and +0xE8 == 0 (no object): the renderer
+# input is a STATIC part list in the exe (+0x110, second line +0x118), the node position (+0x50), the
+# second-line x offset (+0x80) and the formatted digit indices (+0x228..0x237, i8, negative = blank).
+# +0xA8 is written by the walker from +0x50 at draw time, so in a post-walk dump it is one frame STALE;
+# +0x50 is what this frame's FUN_140653a70 will use (gated: parts_gate.py, frame 4445).
+P_LIST1, P_LIST2, P_X2, P_DIGITS, P_SLOT, P_STATE, P_COUNT = 0x110, 0x118, 0x80, 0x228, 0x02, 0x34, 0x172
+
+
+def pnodes(blk, base, drawn_only=False, limit=64):
+    """Every list-0xC node: off, drawn(+0x170), slot(+2), state(+0x34), count(i16 +0x172),
+    list1/list2 (absolute exe pointers, 0 = none), pos(+0x50), x2(+0x80), digits(16 x i8 @+0x228)."""
+    out = []
+    p = struct.unpack_from('<Q', blk, ALIST_HEADS + 12 * 8)[0]
+    n = 0
+    while p and n < limit:
+        off = p - base
+        if not (0 <= off and off + 0x280 <= BLK_SZ):
+            break
+        drawn = blk[off + A_DRAWN]
+        if drawn or not drawn_only:
+            out.append(dict(
+                list=12, idx=n, off=off, drawn=drawn, slot=blk[off + P_SLOT], state=blk[off + P_STATE],
+                count=struct.unpack_from('<h', blk, off + P_COUNT)[0],
+                list1=struct.unpack_from('<Q', blk, off + P_LIST1)[0],
+                list2=struct.unpack_from('<Q', blk, off + P_LIST2)[0],
+                pos=struct.unpack_from('<fff', blk, off + A_POS),
+                x2=struct.unpack_from('<f', blk, off + P_X2)[0],
+                digits=list(struct.unpack_from('<16b', blk, off + P_DIGITS)),
+                matrix=struct.unpack_from('<16f', blk, off + A_MATRIX)))
+        n += 1
+        p = struct.unpack_from('<Q', blk, off + A_NEXT)[0]
+    return out
+
+
 def load_alist(frame, cap=CAP):
     """The world-space OBJECTS the shim dumped in-process right after the walk (alist_<frame>.bin):
     {node_off: dict(list, obj_ptr, model_ptr, records=[dict(pcw, isp, tsp, tcw, colour, verts)])}.
@@ -372,6 +407,10 @@ def main():
             print('list %2d i%-3d off 0x%05X flags %08X obj %s model %s pos (%.1f,%.1f,%.1f) scale (%.2f,%.2f,%.2f) col (%.2f,%.2f,%.2f) T (%.2f,%.2f,%.2f)' % (
                 nd['list'], nd['idx'], nd['off'], nd['flags'], 'Y' if nd['obj'] else '-', 'Y' if nd['model'] else '-',
                 *nd['pos'], *nd['scale'], *nd['colour'], nd['matrix'][12], nd['matrix'][13], nd['matrix'][14]))
+        for nd in pnodes(blk, base):
+            print('list 12 i%-3d off 0x%05X drawn %d slot %d state %d count %d list1 0x%X list2 0x%X pos (%.4f,%.2f,%.2f) x2 %.3f digits %s' % (
+                nd['idx'], nd['off'], nd['drawn'], nd['slot'], nd['state'], nd['count'], nd['list1'], nd['list2'],
+                *nd['pos'], nd['x2'], nd['digits']))
         return 0
 
     if a.range:
