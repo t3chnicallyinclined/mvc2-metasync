@@ -95,6 +95,7 @@ except Exception:
 WORLD_TEMPLATE = os.path.join(HERE, 'capgate', 'frame_4445.pack')
 import copy
 import tsp_state as TS      # PCW/ISP/TSP -> D3D state, read from Steam's FUN_1408482a0 (gate: tsp_gate.py)
+import bg_rule as BG        # frame background colour, read from FUN_1406101b0 / FUN_140843eb0 (gate: bg_gate.py)
 
 CAMERA_BLOCK = os.path.join(HERE, 'camera_block.json')
 TCW_PAGES = os.path.join(HERE, 'tcw_pages')
@@ -403,6 +404,25 @@ class WorldTemplate:
         for d in man['draws']:
             if d.get('vsVariant') == 'vs_world':
                 self.by_state.setdefault(TS.state_key(TS.captured(d)), {k: d[k] for k in self.KEYS})
+        # ── THE FRAME PREAMBLE (docs/FRAME-BACKGROUND-GHIDRA.md, gate bg_gate.py 3/3 packs byte-exact).
+        # The scene RT is never cleared by ClearRenderTargetView: every captured frame starts with three
+        # full-screen quads at z = 1 -- (i) the host's clear quad (FUN_14033c5c0(dev, 0x3f, black) at the
+        # ring executor's entry: stride 28, blend off, DepthFunc ALWAYS, depth write, stencil REPLACE 0),
+        # (ii) the engine's background quad (FUN_140843eb0, format 0x4000 -> the executor's 40-B layout,
+        # texId 0xffff = the 1x1 white page, colour = bg_rule from blk+0x6CB4.. via FUN_1406101b0),
+        # (iii) the depth+stencil clear at the first pass begin (FUN_14033c5c0(dev, 0x30): ps null, colour
+        # mask 0). Their D3D state is copied from the capture; the vertices are synthesised (bg_gate.py
+        # shows the executor's bytes are reproduced exactly).
+        self.preamble, self.preamble_cb = [], []
+        pre = man['draws'][:3]
+        if (len(pre) == 3 and pre[0]['stride'] == 28 and pre[1]['stride'] == 40 and pre[2]['stride'] == 28
+                and pre[2].get('ps') is None and pre[1]['tex'][0]
+                and man['textures'][pre[1]['tex'][0]]['w'] == 1 and man['textures'][pre[1]['tex'][0]]['h'] == 1):
+            for d in pre:
+                self.preamble.append({k: d.get(k) for k in self.KEYS + ('vscbHash', 'pscbHash')})
+                cbs = man['constantBuffers']
+                self.preamble_cb.append({h: bytes(B(cbs[h])) for h in (d.get('vscbHash') or []) + (d.get('pscbHash') or [])
+                                         if h and h in cbs})
         self.pages = {}
         idx = os.path.join(TCW_PAGES, 'index.json')
         if os.path.exists(idx):
@@ -591,6 +611,10 @@ def main():
                          "Steam's two phases (Z-write categories in submission order, then category 3 sorted "
                          'by the FUN_140843320 key; docs/TRANSLUCENT-SORT-GHIDRA.md)')
     ap.add_argument('--world-template', default=WORLD_TEMPLATE)
+    ap.add_argument('--no-preamble', action='store_true',
+                    help='skip the three frame-preamble quads (host clear, FUN_140843eb0 background quad, '
+                         'depth-only clear) and rely on the ClearRenderTargetView -- diagnostic only; the '
+                         'background is then black on every frame (docs/FRAME-BACKGROUND-GHIDRA.md)')
     a = ap.parse_args()
 
     raw = open(a.tape, 'rb').read()
@@ -763,9 +787,41 @@ def main():
     held, last_nodes = Counter(), None   # rows whose draw list was HELD from the previous row
     rotated_general = Counter()   # angle -> parts drawn through the general (ungated) rotation path
     world_state_total = Counter() # world draws by how WorldTemplate.select served their D3D state (tsp_state)
+    bg_stats = Counter()          # frame preamble: where the background colour came from (bg_rule.from_row)
 
     for r in rows:
         verts, idxs, draws = bytearray(), [], []
+
+        # ── FRAME PREAMBLE: the frame is cleared by DRAWS, not by a clear (review-re M2). Three full-screen
+        # quads at z = 1 open every captured frame; the middle one carries the engine's background colour
+        # (FUN_1406101b0: stage words blk+0x6CB8.. x the deck multiplier, or the fade/blackout colour). The
+        # tape (0.3.42) ships the 24 input bytes; older tapes fall back to the per-stage table in bg_rule.
+        # Vertex bytes and state are the executor's own layout, gated byte-exact on 3 packs (bg_gate.py).
+        if wt is not None and wt.preamble and not a.no_preamble:
+            bg = BG.from_row(r, C, tape.get('stage_id'), bg_stats)
+            if bg is None:
+                bg_stats['no colour (mode outside 0..3 / no table entry) -> black'] += 1
+                bg = (0, 0, 0)
+            bcols = BG.vertex_colours(bg)
+            q28 = b''.join(struct.pack('<4f', x, y, 1.0, 0.0) + bytes(12) for x, y in ((-1, 1), (1, 1), (-1, -1), (1, -1)))
+            q40 = b''.join(struct.pack('<4f', x, y, 1.0, 0.0) + struct.pack('<2f', 0.0, 1.0) + bytes(c) + bytes(4)
+                           + struct.pack('<2f', 0.0, 0.0)
+                           for (x, y), c in zip(((-1, 1), (-1, -1), (1, 1), (1, -1)), bcols))
+            if 'bg_white' not in textures:            # texId 0xffff = the executor's 1x1 white placeholder page
+                textures['bg_white'] = {'w': 1, 'h': 1, 'fmt': 28, **intern(bytes([255, 255, 255, 255]))}
+            voffs = (0, len(q28), len(q28) + len(q40))
+            verts.extend(q28); verts.extend(q40); verts.extend(q28)
+            verts.extend(bytes((-len(verts)) % STRIDE))   # keep len(verts)//STRIDE exact for every later draw
+            for k, (d0, vo) in enumerate(zip(wt.preamble, voffs)):
+                for h, b in wt.preamble_cb[k].items():
+                    cb_recs.setdefault(h, {**intern(b)})
+                fi = len(idxs)
+                idxs.extend((0, 1, 2, 2, 1, 3))           # the capture's index order for all three quads
+                d = dict(d0)
+                d.update({'i': len(draws), 'firstIndex': fi, 'indexCount': 6, 'stride': d0['stride'], 'voff': vo,
+                          'tex': ['bg_white' if k >= 1 else None, None]})
+                d['_cat'], d['_key'], d['_sub'] = 0, None, (-1, k)    # Z-write phase, ahead of every scene draw
+                draws.append(d)
 
         # ── ONE ordered list of bodies AND objects ───────────────────────────────────────────────
         # ⭐ `layer` is the ordering field, and it is carried on BOTH: the six fighter slots have
@@ -1355,6 +1411,10 @@ def main():
               % {('0x%04X' % k): v for k, v in rotated_general.items()})
     if complete_prop.stats:
         print('  stage props completed from the arc (tape records -> arc meshes): %s' % dict(sorted(complete_prop.stats.items())))
+    if bg_stats:
+        print('  frame preamble / background colour (bg_rule, FUN_1406101b0): %s' % dict(bg_stats))
+    elif wt is not None and not a.no_preamble:
+        print('  ⚠ no frame preamble: the world template pack does not start with the three clear quads')
     print('\n%d frames, %d draws (%.1f/frame), %d distinct textures'
           % (len(heads), drawn_total, drawn_total / max(1, len(heads)), len(textures)))
     if world_state_total:
