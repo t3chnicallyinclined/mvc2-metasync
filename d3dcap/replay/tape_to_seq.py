@@ -780,7 +780,7 @@ def main():
                                  min(255, int(c[2] * deck_col[2])), c[3])
                             verts.extend(struct.pack('<4f', x, y, z, 0.0))
                             verts.extend(struct.pack('<2f', 0.0, 0.0))
-                            verts.extend(bytes((int(c[2]), int(c[1]), int(c[0]), int(c[3]))))
+                            verts.extend(bytes((int(c[0]), int(c[1]), int(c[2]), int(c[3]))))   # R,G,B,A (see world pass)
                             verts.extend(bytes((0, 0, 0, 0)))
                             verts.extend(struct.pack('<2f', u, v))
                             nv += 1
@@ -904,9 +904,12 @@ def main():
                     # 0.3.39: bit-5 nodes multiply the record alpha by node+0x90 (tape 'alpha'; 1.0 on
                     # older tapes) -- the render-state gate's only blend residual (4/824)
                     amult = min(1.0, float(nd.get('alpha', 1.0))) if (nd['flags'] & 0x20) else 1.0
-                    cbytes = bytes((min(255, max(0, int(col[3] * 255 * cm[2]))),
+                    # VB colour is R8G8B8A8 in R,G,B,A byte order: gold HUD-block draws carry ff0000ff (red
+                    # damage) and ffff00ff (yellow bar) -- under B,G,R,A those would be blue/cyan, which is
+                    # exactly what the first stage-13 render showed. Record floats: alpha @0x2C, R,G,B @0x30.
+                    cbytes = bytes((min(255, max(0, int(col[1] * 255 * cm[0]))),
                                     min(255, max(0, int(col[2] * 255 * cm[1]))),
-                                    min(255, max(0, int(col[1] * 255 * cm[0]))),
+                                    min(255, max(0, int(col[3] * 255 * cm[2]))),
                                     min(255, max(0, int(col[0] * 255 * amult)))))
                     for gflags, gverts in rec['groups']:          # one polygon GROUP = one D3D draw
                         if not gverts:
