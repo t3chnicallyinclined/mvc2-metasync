@@ -176,8 +176,18 @@ Only the first box differs by host:
   SH4 -> x86-64), driven by the same loader shape; the frame is ~460k instructions = well under a millisecond in
   WASM, so performance is not the obstacle. The obstacle is distribution: translated game code on the client is
   the game, so G3 is a LICENSED product with Capcom, not a BYOR trick. Technically it is the natural end of G2.
-Order: G (this quarter's proof: one headless instance replaying a receipt faster than real time) -> G2 (loader,
-drops Steam/D3D) -> netcode experiments on G2 -> G3 only with a licence.
+**BYOR resolves the distribution problem (Tris, 2026-09-03: "for users only; use their arc files/assets to run the
+thin client").** Nothing of the game ships from us: the user's own install supplies both the assets (`game_50.arc`
+-> the rippers, D1) and the CODE. The retail exe is packed and unpacks only under Steam, so the desktop agent --
+already reading the live process -- exports the user's own unpacked image once (the same bytes as `mvc_dump.bin`)
+and caches it for that user; the thin client / browser then applies OUR translation RECIPE (function boundaries,
+import stubs, patch points, the read set) to the user's bytes at load time. We distribute the recipe and the
+emitter/renderer, exactly as flycast distributes an emulator and the user supplies the ROM. Constraints that stay:
+the image is per Steam build (keyed by PE timestamp+size, the agent's `build_id`), the user must own the game and
+have run it once with the agent, and online play through our netcode is our service, not Capcom's.
+Order: G (proof: one headless instance replaying a receipt faster than real time) -> G2 (loader on the user's
+image, no Steam/D3D at runtime) -> netcode experiments on G2 -> G3 (browser: the recipe applied to the user's
+image in WASM).
 
 ### Workstream F — Receipt lane (server-side)
 Agent records snapshot + input words (0.3.24 anchor + `seat_in` exist; align to `game_state+0x218/+0x21C`);
