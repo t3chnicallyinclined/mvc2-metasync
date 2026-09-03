@@ -137,6 +137,7 @@ def main():
         line(True, 'E4 blackout gate / deck colour carried (0.3.39)', 'blackout rows %d; deck sample %s' % (bo, rows[len(rows) // 2][C['deck']] if 'deck' in C else 'ABSENT'))
     else:
         line(True, 'E3 camera state column', 'ABSENT (pre-0.3.39 tape: fight camera assumed)')
+    line(True, 'C8 palette staging rows (0.3.40 palrows)', 'present: %d frames' % int(t.get('palrows_frames', 0)) if t.get('palrows') else 'ABSENT (pre-0.3.40: non-default costumes render as costume 0)')
     line(stride >= 50, 'C4 rotation angle + hotspot carried (v4)', 'stride %d, rotated nodes %d, angles %s' % (stride, sum(angles.values()), {hex(k): v for k, v in angles.most_common(5)}))
     zero_gfx = sum(1 for n in objs if n['gfx1'] == 0)
     line(zero_gfx == 0, 'C5 objects carry a GFX1 bank', 'zero gfx1 %d' % zero_gfx)

@@ -16,8 +16,8 @@ still derived-but-ungated, and the open tweaks. Method: `docs/RE-METHOD.md` (loc
 | HUD projection | HUD scene block = `FUN_14061d5b0` (angle 0x4000, V=I), bytes from gold CB 04E19F4C | 171/177 gold list-11 draws bind it |
 | Vertex colour | record alpha @0x2C, RGB @0x30 × node/deck multipliers, packed R,G,B,A | gold HUD bars ff0000ff / ffff00ff |
 
-Agent 0.3.39 (`rr-agent-v6.exe`, running): tape v5, nodes stride 54 (+angle/hotspot/owner_off), anodes stride 100
-(+alpha), rows +cam_state/look/fov/yoff/roll/deck/blackout. Consumers: `tape_to_seq.py`, `tape_audit.py`.
+Agent 0.3.40 (`rr-agent-v7.exe`, running): tape v5, nodes stride 54 (+angle/hotspot/owner_off), anodes stride 100
+(+alpha), rows +cam_state/look/fov/yoff/roll/deck/blackout, +`palrows` (0.3.40). Consumers: `tape_to_seq.py`, `tape_audit.py`.
 
 **Tape size (0.3.39):** stage 13 match 6,272 frames (1.7 min) = 3.16 MB gz; stage 5 match 4,904 frames = 4.26 MB gz
 → **1.8–3.1 MB per minute**, 70–90% of it the world-node stream (`anodes` 3–4 MB b64 per match). The v6 wire
@@ -28,8 +28,7 @@ Agent 0.3.39 (`rr-agent-v6.exe`, running): tape v5, nodes stride 54 (+angle/hots
 2. **Mirror-match palette — DERIVED 2026-09-03** (`PALETTE-SOURCE-GHIDRA.md`, seed 38): the bound LUT = the engine's
    STAGING LINES `blk+0x1040 + bank*0x38` (bank = slot base {0x10..0x38} + record row), filled from
    `DatPal + (node+0x39 variant)*0x100`; the tape's `pal` is costume 0 row 0. Gate `palette_gate.py` 494/518 LUT pages
-   byte-exact (24 = a 1-frame LUT lag). Tape delta: `palrows` = one 0x540-B read at blk+0x13C0 per frame (agent 0.3.40,
-   pending); consumer done (`tape_to_seq.py --pal-lag`).
+   byte-exact (24 = a 1-frame LUT lag). Tape delta: `palrows` = one 0x540-B read at blk+0x13C0 per frame — **agent 0.3.40 built + running** (`rr-agent-v7.exe`); consumer done (`tape_to_seq.py --pal-lag`); audit C8.
 3. **Hit sparks** — list 0xC turned out to be the COMBO COUNTER (`PARTS-LIST0C-GHIDRA.md`, gated 24/24, 82/82; harvest
    delta = 44-B `pnodes`). Sparks are System-B objects (cat 3, sids 1002..1006 in the OWNER's sprite set); they drew
    with the wrong character's rip because the bank key `& 0xFFFF` collapsed all fighters (fixed 56617e6). Verify on
