@@ -27,6 +27,8 @@
 <header>
   <h1>PATH B — SEQUENCE PLAYBACK</h1>
   <label>seq <input id="seq" type="text" value="" size="20"></label>
+  <label>tape <input id="tape" type="text" value="" size="24" placeholder="packs/<match>/tape.json.gz"></label>
+  <label>pack <input id="pack" type="text" value="" size="16" placeholder="packs/<match>"></label>
   <button id="load">Load</button>
   <button id="play" disabled>▶ Play</button>
   <button id="prev" disabled>◀ step</button>
@@ -54,6 +56,7 @@
 
 <script type="module">
 import { SequencePlayer } from './player.mjs';
+import { TapePlayer } from './tape-player.mjs';
 
 const $ = (id) => document.getElementById(id);
 const log = (m, cls = '') => {
@@ -82,6 +85,8 @@ let player = null, playing = false, raf = 0;
   // ?seq=<file> picks the sequence; &auto=1 presses Load (used by capture_video.mjs)
   const q = new URLSearchParams(location.search);
   if (q.get('seq')) $('seq').value = q.get('seq');
+  if (q.get('tape')) $('tape').value = q.get('tape');
+  if (q.get('pack')) $('pack').value = q.get('pack');
   if (q.get('auto')) $('load').click();
 })();
 window.__rr = { ready: false };   // capture_video.mjs hook: { ready, count, first, show }
@@ -106,13 +111,28 @@ $('load').onclick = async () => {
     stop();
     $('log').textContent = '';
     gpu ??= await boot();
-    const url = $('seq').value.trim();
-    log(`loading ${url} …`);
-    player = await new SequencePlayer(gpu.device, gpu.format).load(url, (got, total) => {
-      $('readout').textContent = total
+    const q = new URLSearchParams(location.search);
+    const progress = (got, total, what) => {
+      $('readout').textContent = (total
         ? `${(100 * got / total).toFixed(0)}%  (${(got / 1048576).toFixed(1)} MB)`
-        : `${(got / 1048576).toFixed(1)} MB`;
-    });
+        : `${(got / 1048576).toFixed(1)} MB`) + (what ? ` ${what}` : '');
+    };
+    if ($('tape').value.trim()) {
+      // TAPE mode: the wasm emitter in a worker renders the tape directly -- no .seq anywhere
+      const tapeUrl = $('tape').value.trim(), packUrl = $('pack').value.trim();
+      log(`loading tape ${tapeUrl} with pack ${packUrl} …`);
+      player = await new TapePlayer(gpu.device, gpu.format).load(tapeUrl, packUrl, {
+        start: Number(q.get('start') || 0), count: q.get('count') ? Number(q.get('count')) : Infinity, onProgress: progress,
+      });
+      const inf = player.info;
+      log(`tape: ${inf.frames} rows (agent ${inf.agent}, tape v${inf.tape_ver}, stage ${inf.stage_id}, world ${inf.world}); ` +
+          `playing ${player.count} from row ${player.first}; wasm open ${player.openMs.toFixed(0)} ms`, 'ok');
+      for (const l of inf.log || []) log('  ' + l);
+    } else {
+      const url = $('seq').value.trim();
+      log(`loading ${url} …`);
+      player = await new SequencePlayer(gpu.device, gpu.format).load(url, progress);
+    }
     const m = player.seq.meta;
     log(`${player.count} frames (${m.first}..${m.first + m.count - 1}), ` +
         `${(player.seq.bytes / 1048576).toFixed(1)} MB, ` +
@@ -133,15 +153,23 @@ $('load').onclick = async () => {
     $('pos').max = player.count - 1;
     $('pos').value = 0;
     for (const id of ['play', 'prev', 'next', 'pos']) $(id).disabled = false;
-    show(0);
-    window.__rr = { ready: true, count: player.count, first: m.first, show };
+    await show(0);
+    window.__rr = { ready: true, count: player.count, first: m.first, show,
+                    // L3 gate hooks: raw scene-RT bytes -> sha-256 hex; worker timing (tape mode)
+                    readback: async () => {
+                      const px = await player.readback();
+                      const h = await crypto.subtle.digest('SHA-256', px);
+                      return { sha: [...new Uint8Array(h)].map((b) => b.toString(16).padStart(2, '0')).join(''), bytes: px.byteLength };
+                    },
+                    stats: () => (player.stats ? player.stats() : null) };
     log('every frame is RE-RENDERED from Steam\'s own draw calls — this is not a video.');
   } catch (e) {
     log(String(e.message || e), 'err');
   }
 };
 
-function show(i) {
+async function show(i) {
+  if (player.ready) i = await player.ready(i);   // tape mode: the worker must have decoded the frame
   const r = player.draw(i, gpu.ctx.getCurrentTexture().createView());
   $('pos').value = player.index;
   $('readout').innerHTML =
@@ -187,7 +215,7 @@ $('play').onclick = () => {
         if (!$('loop').classList.contains('on')) { stop(); return; }
         next %= player.count;
       }
-      show(next);
+      show(next).catch(() => {});
       shown++;
     }
     if (now - fpsAt >= 1000) {

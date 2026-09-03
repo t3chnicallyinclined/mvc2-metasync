@@ -111,6 +111,12 @@ export class SequencePlayer {
         await this.replayer.attach(this.seq.frames[0], this.shared);
 
         const vp = this.seq.frames[0].head.viewport ?? [0, 0, this.replayer.width, this.replayer.height];
+        this._initBlit(vp);
+        return this;
+    }
+
+    /** The blit pipeline + crop for a viewport (shared with TapePlayer, which feeds frames from a worker). */
+    _initBlit(vp) {
         this.viewport = vp;
         const mod = this.device.createShaderModule({ code: BLIT_WGSL });
         this.blitPipeline = this.device.createRenderPipeline({
@@ -127,7 +133,12 @@ export class SequencePlayer {
             vp[2] / this.replayer.width, vp[3] / this.replayer.height,
         ]));
         this.blitSampler = this.device.createSampler({ magFilter: 'nearest', minFilter: 'nearest' });
-        return this;
+    }
+
+    /** Raw BGRA bytes of the last rendered scene target (copyTextureToBuffer, never the canvas). */
+    async readback() {
+        if (!this.blitSrc) throw new Error('nothing rendered yet');
+        return this.replayer.readback(this.blitSrc);
     }
 
     /**
