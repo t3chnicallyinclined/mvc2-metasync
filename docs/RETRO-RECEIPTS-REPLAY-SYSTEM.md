@@ -15,7 +15,7 @@ entry point. The receipt runner's plan is `WORKSTREAM-RECEIPT-RUNNER.md`.
 | emit | **rr-render** crate (Rust; native `emit_seq` and wasm `WebFeed`) turns tape rows + the user's arc assets into FrameRecords | 14.1 ms/frame native; byte-exact vs the Python oracle |
 | render | WebGPU player (`d3dcap/replay/*.mjs`), inside the PWA as `ReplayEmbed` | 60 fps in the LIVE tab; direct seeks hash-equal to sequential; internal resolution 2×–4× |
 | prove | Path B D3D11 capture shim + gates (L1 draws, L3 pixels, seek, capture) | 300 frames 0.011–0.018 % pixels differing vs the game; L3 60/60 byte-exact |
-| simulate | determinism contract + whole-frame p-code emulation + **receipt gate** | first real receipt: **300/300 frames exact** from anchor + inputs (offline match) |
+| simulate | determinism contract + p-code emulation + **receipt gate** + **native runner (Gate 1)** | receipt: **300/300 frames exact**; native runner byte-exact vs the oracle at **~0.08 ms/tick** |
 | knowledge | `re_kb` graph (SurrealDB), function map Steam↔SH4, 113 seed files | schema refuses "confirmed" without cited evidence |
 | product | PWA **LIVE** tab with in-page replay (`RetroReceipts-agent/pwa`) | built, gated (check/build/smoke/L3), deployed via the gated pipeline |
 
@@ -89,6 +89,13 @@ Read from the native x86-64 recompile in Ghidra and gated in a p-code emulator (
   `anchor_to_run.py` + `pl_rebuild.py` + `receipt_gate.py --frames 300 --input-shift 1` → **clock 300/300, x 300/300,
   y 300/300, health 300/300.** Row N's inputs are the ones that produced frame N. A post-match dump has PL slot 1
   overwritten by the results screen, so character images come from the arc, never from a post-match dump.
+- **GATE 1 PASSED (native runner, 2026-09-03 evening, `docs/RECEIPT-RUNNER-GATE1.md`):** `d3dcap/receipt/runner/rr_runner.cpp` maps
+  the user's own image at 0x140000000 with a Δ=0 arena, restores blk/ctx/dcram/gs, replaces 5 IAT + 2 UCRT-cache entries
+  and traps 252 others, forces the seat map and ticks `FUN_140118950` natively: **idle 20/20, receipt inputs 60/60 and
+  300/300 blk byte-exact vs the p-code oracle; ~0.08 ms per tick** (budget 16.67). Findings: `TlsSetValue` not Fls at IAT
+  0x1408db218; Fls* live in the UCRT function cache (0x142eefca0, rol/xor cookie); stub semantics are the contract (real Fls
+  → RtlEnterCriticalSection); the tick writes one host-heap page of the dumping process (palette RAM expansion,
+  `FUN_14004d400`) — zero-backed lazily; 86 ctx page-table dwords carry uninitialised stack (never read). Seed 114 applied.
 - **Receipt size:** anchor 12.6 KB gz + 4 B/frame = ≈43 KB of inputs for a 3-minute match. Projection: 50–100× smaller
   than the geometry tape. The native runner that turns a receipt into a tape (and then pixels) is designed with gates
   0–5 in `WORKSTREAM-RECEIPT-RUNNER.md`; gate 0 passed, gates 1–5 not built. **Do not claim pixel-perfect from inputs
