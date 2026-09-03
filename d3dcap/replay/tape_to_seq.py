@@ -93,18 +93,34 @@ except Exception:
 # Steam's CBWorld; the polygon list at +0xA0 IS Steam's vertex buffer; the scene block is a fitted
 # function of the render camera blk+0x6914 (exact to 2e-5 on every walker-time frame).
 WORLD_TEMPLATE = os.path.join(HERE, 'capgate', 'frame_4445.pack')
+import copy
+import tsp_state as TS      # PCW/ISP/TSP -> D3D state, read from Steam's FUN_1408482a0 (gate: tsp_gate.py)
+
 CAMERA_BLOCK = os.path.join(HERE, 'camera_block.json')
 TCW_PAGES = os.path.join(HERE, 'tcw_pages')
 STAGE_DIR = 'C:/Users/trist/projects/maplecast-flycast/atlas/stages'   # ModNao-port rips: STGxx.json + STGxx_tNN.png
 
 
 def nl_triangles(pay, has_colored=False):
-    """Expand a NaomiLib mesh payload (polygon groups) into a flat TRIANGLE LIST of
-    (x, y, z, nx, ny, nz, u, v) vertices, in the winding Steam draws them.
-    Group header 8 B: u32 flags (bit0 = cull back, bit3 = 'triple' = independent triangles),
-    u32 count (x3 for triple). Vertex: 0x20 direct (pos@0, normal@0xC, colour BGRA@0x10 when
-    coloured, uv@0x18) or 0x08 reference ((u32@0 >> 16) in 0x5FF0..0x5FFF; i32 @+4 = byte offset
-    from the reference to the referenced vertex, +8). A zero u32 ends the mesh."""
+    """Flat TRIANGLE LIST of every group of a NaomiLib mesh payload (see nl_groups)."""
+    return [v for _flags, vs in nl_groups(pay, has_colored) for v in vs]
+
+
+def nl_groups(pay, has_colored=False):
+    """Expand a NaomiLib mesh payload (polygon groups) into [(group flags, TRIANGLE LIST of
+    (x, y, z, nx, ny, nz, u, v) vertices)], one entry per group, in the winding Steam draws them.
+    Group header 8 B: u32 flags (bits 0-1 = the D3D cull word Steam sends as ring command 9 --
+    1 NONE, 2 FRONT, 3 BACK, tsp_state.codes; bit3 = 'triple' = independent triangles; bit 6 =
+    submit as a strip, not expanded), u32 count (x3 for triple). Vertex: 0x20 direct (pos@0,
+    normal@0xC, colour BGRA@0x10 when coloured, uv@0x18) or 0x08 reference ((u32@0 >> 16) in
+    0x5FF0..0x5FFF; i32 @+4 = byte offset from the reference to the referenced vertex, +8). A zero
+    u32 ends the mesh.
+    WINDING is Steam's own CPU strip expansion in FUN_1408482a0 (strip loop after the vertex copy):
+    even i -> (v[i], v[i+1], v[i+2]), odd i -> (v[i+2], v[i+1], v[i]); triple groups verbatim.
+    Measured (tsp_gate.py, stage-11 tape vs 4 capgate packs): 442 of 454 matched draws reproduce
+    the captured triangles with this rule (the old bit0-dependent rule: 133). The 12 others are
+    bit-6 (0x72/0xF2) 5-vertex strips whose captured VB order is (0,2,1,4,3); their consumer is
+    not identified and they are left in record order. One group = one D3D draw (its cull word)."""
     out = []
     n = len(pay)
     sa = 0
@@ -113,7 +129,6 @@ def nl_triangles(pay, has_colored=False):
         if flags == 0 and vcount == 0:
             break
         triple = bool((flags >> 3) & 1)
-        cull_back = bool(flags & 1)
         sa += 8
         vs = []
         ended = False
@@ -137,16 +152,17 @@ def nl_triangles(pay, has_colored=False):
                 vs.append(struct.unpack_from('<8f', pay, ca))
             else:
                 vs.append((0.0,) * 8)
+        tris = []
         if triple:
             for i in range(2, len(vs), 3):
-                out += ([vs[i - 1], vs[i - 2], vs[i]] if not cull_back else [vs[i - 2], vs[i - 1], vs[i]])
+                tris += [vs[i - 2], vs[i - 1], vs[i]]                    # FUN_1408482a0: lists copied verbatim
         else:
             for i in range(max(0, len(vs) - 2)):
-                even = (i % 2 == 0)
-                if (even and not cull_back) or (not even and cull_back):
-                    out += [vs[i + 1], vs[i], vs[i + 2]]
+                if i % 2 == 0:
+                    tris += [vs[i], vs[i + 1], vs[i + 2]]                # even: in order
                 else:
-                    out += [vs[i], vs[i + 1], vs[i + 2]]
+                    tris += [vs[i + 2], vs[i + 1], vs[i]]                # odd: reversed (0x1408485xx)
+        out.append((flags, tris))
         if ended:
             break
     return out
@@ -199,7 +215,11 @@ def decode_anodes(tape):
                 # same records and its D3D draws are indexed TRIANGLE LISTS (gold: indexCount 6/9/42 =
                 # 4/5/16-vertex strips expanded). nl_triangles() does that expansion (format facts:
                 # rip_stage.py scan_model, ModNao scanModel.ts / getVertexAddressingMode.ts).
-                verts = nl_triangles(pay, struct.unpack_from('<i', hdr, 0x24)[0] == -3)
+                groups = nl_groups(pay, struct.unpack_from('<i', hdr, 0x24)[0] == -3)
+                verts = [v for _f, vs in groups for v in vs]
+                # PCW/ISP/TSP @0/4/8 verbatim: Steam derives blend, sampler, depth preset and the
+                # pixel-shader variant from them (tsp_state.codes, docs/TSP-RENDER-STATE-GHIDRA.md)
+                pcw_w, isp_w, tsp_w = struct.unpack_from('<3I', hdr, 0)
                 tcw = struct.unpack_from('<I', hdr, 0x0C)[0]
                 # a SYNTHETIC tape (states_to_tape) stashes its page key in the header's spare words;
                 # a real object has floats there -- accept only a clean 'sha_<16 hex>' or 8-hex key
@@ -207,7 +227,8 @@ def decode_anodes(tape):
                 ok = stash.isascii() and ((stash.startswith(b'sha_') and len(stash) == 20 and stash[4:].isalnum())
                                           or (len(stash) == 8 and stash.isalnum()))
                 key = stash.decode('ascii') if ok else '%08X' % tcw
-                recs.append(dict(tcw=tcw, key=key,
+                recs.append(dict(tcw=tcw, key=key, pcw=pcw_w, isp=isp_w, tsp=tsp_w, groups=groups,
+                                 texnum=struct.unpack_from('<i', hdr, 0x20)[0],
                                  colour=struct.unpack_from('<4f', hdr, 0x2C), verts=verts))
                 q += 0x50 + max(0, size)
             objs.append(recs)
@@ -233,6 +254,9 @@ scene_block.model = json.load(open(CAMERA_BLOCK)) if os.path.exists(CAMERA_BLOCK
 
 class WorldTemplate:
     """Pipeline state + PS constants lifted from real world-space draws of a captured frame."""
+    KEYS = ('vs', 'ps', 'il', 'vsVariant', 'psVariant', 'psFog', 'samp', 'blend',
+            'bfactor', 'smask', 'depth', 'raster', 'vp', 'scissor', 'stride')
+
     def __init__(self, path):
         man, B = load_pack_rrpk(path)
         self.inputLayouts = man['inputLayouts']
@@ -244,16 +268,44 @@ class WorldTemplate:
             v = d.get('psVariant')
             if v in self.draw:
                 continue
-            self.draw[v] = {k: d[k] for k in ('vs', 'ps', 'il', 'vsVariant', 'psVariant', 'psFog', 'samp', 'blend',
-                                              'bfactor', 'smask', 'depth', 'raster', 'vp', 'scissor', 'stride')}
+            self.draw[v] = {k: d[k] for k in self.KEYS}
             cbs = man['constantBuffers']
             self.pscb[v] = [bytes(B(cbs[h])) if (h and cbs.get(h) and cbs[h]['len'] != 432 and cbs[h]['len'] != 48) else None
                             for h in (d.get('pscbHash') or [])]
+        # every distinct captured (ps, sampler, blend, depth, cull) of the world draws, so a state
+        # PREDICTED from a record's TA header (tsp_state.predict) is served with the capture's own
+        # D3D state objects -- stencil ops, ms flags and all -- never a hand-made desc
+        self.by_state = {}
+        for d in man['draws']:
+            if d.get('vsVariant') == 'vs_world':
+                self.by_state.setdefault(TS.state_key(TS.captured(d)), {k: d[k] for k in self.KEYS})
         self.pages = {}
         idx = os.path.join(TCW_PAGES, 'index.json')
         if os.path.exists(idx):
             for k, v in json.load(open(idx)).items():
                 self.pages[k] = v
+
+    def select(self, pred, stats):
+        """Template draw dict for a predicted state (tsp_state.predict): the captured draw whose
+        state equals it exactly; else the ps-variant fallback with the predicted fields patched in
+        (a None field = unknown/unmapped code = keep the fallback's value). `stats` counts which."""
+        ps = pred.get('ps') if pred.get('ps') in self.draw else next(iter(self.draw))
+        full = all(pred.get(f) is not None for f in TS.FIELDS)
+        hit = self.by_state.get(TS.state_key(dict(pred, ps=ps))) if full else None
+        if hit is not None:
+            stats['exact captured state'] += 1
+            return dict(hit), ps
+        d = copy.deepcopy(self.draw[ps])
+        if pred.get('samp') and d.get('samp') and d['samp'][0]:
+            d['samp'][0].update(filter=pred['samp'][0], u=pred['samp'][1], v=pred['samp'][2], w=pred['samp'][2])
+        if pred.get('blend') and d.get('blend'):
+            d['blend'].update(src=pred['blend'][0], dst=pred['blend'][1])
+        if pred.get('depth') and d.get('depth'):
+            d['depth'].update(write=pred['depth'][0], sten=pred['depth'][1])
+        if pred.get('cull') and d.get('raster'):
+            d['raster']['cull'] = pred['cull']
+        stats['patched fallback' if full else 'partial (unmapped code or no group)'] += 1
+        return d, ps
 
 
 def load_pack_rrpk(path):
@@ -471,16 +523,37 @@ def main():
         else:
             wt = WorldTemplate(a.world_template)
             stage_rip = None
+            stage_preload = {}
             stage_geo = []          # arc deck geometry for the current frame (see emit_stage)
             stage_announced = []
             sid_ = tape.get('stage_id')
             if sid_ is not None and os.path.exists(os.path.join(STAGE_DIR, 'STG%02X.json' % int(sid_))):
                 stage_rip = json.load(open(os.path.join(STAGE_DIR, 'STG%02X.json' % int(sid_))))
                 print('  stage %02X: %d arc textures available (TCW 0xC10 + index)' % (int(sid_), len(stage_rip['textures'])))
+                # Prefer pages ripped with the HOST decode (rip_texbank.py --bank stage --stage XX --out
+                # tcw_pages/stage_XX): rip_stage.py's PNGs use a transposed twiddle + wrong 565/1555
+                # expansion (docs/TEXTURE-BANKS-GHIDRA.md, falsification arm 0/13). Same TCW keys.
+                sdir = os.path.join(TCW_PAGES, 'stage_%02X' % int(sid_))
+                sidx = os.path.join(sdir, 'index.json')
+                if os.path.exists(sidx):
+                    npre = 0
+                    stage_preload = {}
+                    sj = json.load(open(sidx))
+                    for skey, sv in (sj.get('pages') or {k: v for k, v in sj.items() if k != 'meta'}).items():
+                        if not isinstance(sv, dict) or 'file' not in sv:
+                            continue
+                        fn = os.path.join(sdir, sv['file'])
+                        if os.path.exists(fn):
+                            im = Image.open(fn).convert('RGBA')
+                            stage_preload[skey] = dict(w=im.width, h=im.height, fmt=28, data=np.array(im).tobytes())
+                            npre += 1
+                    print('  stage %02X: %d host-decoded pages from %s' % (int(sid_), npre, sdir))
             elif sid_ is not None:
                 print('  stage %s: no arc rip found in %s' % (sid_, STAGE_DIR))
             # pages shipped inside a synthetic tape (offline test) take precedence over the TCW library
             tape_pages = {}
+            for _k, _v in (stage_preload or {}).items():   # host-decoded stage pages take precedence
+                tape_pages.setdefault(_k, _v)
             for k, v in (tape.get('pages') or {}).items():
                 tape_pages[k] = dict(w=v['w'], h=v['h'], fmt=v['fmt'], data=gzip.decompress(base64.b64decode(v['data'])))
             print('  TAPE v5: %d frames of world-space nodes, %d objects, %d pages in tape, %d in library'
@@ -527,6 +600,7 @@ def main():
     missing, drawn_total = Counter(), 0
     held, last_nodes = Counter(), None   # rows whose draw list was HELD from the previous row
     rotated_general = Counter()   # angle -> parts drawn through the general (ungated) rotation path
+    world_state_total = Counter() # world draws by how WorldTemplate.select served their D3D state (tsp_state)
 
     for r in rows:
         verts, idxs, draws = bytearray(), [], []
@@ -653,6 +727,8 @@ def main():
             items.sort(key=lambda t: ((-t[0] if a.layer_desc else t[0]), KIND[t[6]]))
 
         world_missing = Counter()
+        world_state = Counter()             # how each world draw's D3D state was served (WorldTemplate.select)
+        last_cull = [None]                  # ring cull state carried across draws (FUN_140849ac0 path)
         def emit_stage(cam):
             """The loaded stage's 3D deck from the ARC RIP (STGxx.json model 0), not from a capture.
             Model 0 of every stage is the world-placed deck+skydome at an IDENTITY world matrix
@@ -701,7 +777,10 @@ def main():
                             nv += 1
                     fi = len(idxs)
                     idxs.extend(range(first, first + nv))
-                    stage_geo.append(dict(fi=fi, nv=nv, tkey=tkey, opaque=bool(mesh.get('isOpaque', True))))
+                    stage_geo.append(dict(fi=fi, nv=nv, tkey=tkey, opaque=bool(mesh.get('isOpaque', True)),
+                                          # the mesh's own TA header words, when the rip carries them
+                                          # (rip_stage.py: baseParams = PCW @0, texInstr = ISP @4, tsp @8)
+                                          hdr=(mesh.get('baseParams'), mesh.get('texInstr'), mesh.get('tsp'))))
                 if not stage_announced:
                     stage_announced.append(1)
                     print('  stage %02X: %d model-0 meshes from the arc, %d vertices (per frame)' % (
@@ -712,15 +791,23 @@ def main():
             cb_recs.setdefault(hw, {**intern(ident)})
             cb_recs.setdefault(hs, {**intern(scb)})
             for g in stage_geo:
-                ps_variant = 'opaque' if g['opaque'] else 'texalpha'
-                if ps_variant not in wt.draw:
-                    ps_variant = next(iter(wt.draw))
+                if g['hdr'][2] is not None:
+                    # state from the mesh's PCW/ISP/TSP exactly as for a tape record (kind 2 =
+                    # FUN_140849c10 deck draw). The rip flattens the polygon groups, so the per-group
+                    # cull word is unavailable here: cull = None keeps the template's raster (fallback).
+                    pred = TS.predict(g['hdr'][0], g['hdr'][1], g['hdr'][2], 0, kind=2)
+                    pred['cull'] = None
+                    d, ps_variant = wt.select(pred, world_state)
+                else:
+                    ps_variant = 'opaque' if g['opaque'] else 'texalpha'     # old rip: ModNao isOpaque rule
+                    if ps_variant not in wt.draw:
+                        ps_variant = next(iter(wt.draw))
+                    d = dict(wt.draw[ps_variant])
                 pscb = [(sha8(b) if b else None) for b in wt.pscb.get(ps_variant, [])]
                 for b in wt.pscb.get(ps_variant, []):
                     if b:
                         cb_recs.setdefault(sha8(b), {**intern(b)})
                 pscb = [(pscb[0] if pscb else None), hs, (pscb[2] if len(pscb) > 2 else None), None]
-                d = dict(wt.draw[ps_variant])
                 d.update({'i': len(draws), 'firstIndex': g['fi'], 'indexCount': g['nv'], 'stride': STRIDE, 'voff': 0,
                           'tex': [g['tkey'], None], 'vscbHash': [hw, hs, None, None], 'pscbHash': pscb})
                 draws.append(d)
@@ -774,32 +861,59 @@ def main():
                     tkey = 'world_%s' % key
                     if tkey not in textures:
                         textures[tkey] = {'w': page['w'], 'h': page['h'], 'fmt': page['fmt'], **intern(page['data'])}
-                    ps_variant = 'texalpha' if (nd['flags'] & 0x20) or nd['list'] in (7, 8, 9) else 'opaque'
-                    if ps_variant not in wt.draw:
-                        ps_variant = next(iter(wt.draw))
-                    tdraw_w = wt.draw[ps_variant]
-                    col = rec['colour']          # (alpha @0x2C, R, G, B @0x30..) per the NL mesh header
-                    cbytes = bytes((int(max(0, min(1, col[3])) * 255), int(max(0, min(1, col[2])) * 255),
-                                    int(max(0, min(1, col[1])) * 255), int(max(0, min(1, col[0])) * 255)))
-                    first = len(verts) // STRIDE
-                    for (x, y, z, nx, ny, nz, u, v) in rec['verts']:
-                        verts.extend(struct.pack('<4f', x, y, z, 0.0))
-                        verts.extend(struct.pack('<2f', nx, ny))
-                        verts.extend(cbytes)
-                        verts.extend(bytes((0, 0, 0, 0)))
-                        verts.extend(struct.pack('<2f', u, v))
-                    nv = len(rec['verts'])
-                    fi = len(idxs)
-                    idxs.extend(range(first, first + nv))
-                    pscb = [(sha8(b) if b else None) for b in wt.pscb.get(ps_variant, [])]
-                    for b in wt.pscb.get(ps_variant, []):
-                        if b:
-                            cb_recs.setdefault(sha8(b), {**intern(b)})
-                    pscb = [(pscb[0] if pscb else None), hs, (pscb[2] if len(pscb) > 2 else None), None]
-                    d = dict(tdraw_w)
-                    d.update({'i': len(draws), 'firstIndex': fi, 'indexCount': nv, 'stride': STRIDE, 'voff': 0,
-                              'tex': [tkey, None], 'vscbHash': [hw, hs, None, None], 'pscbHash': pscb})
-                    draws.append(d)
+                    # ── render state from the record's OWN TA header, not a flag heuristic. Steam's
+                    # consumer FUN_1408482a0 reads PCW/ISP/TSP (blend = TSP src/dst alpha instr,
+                    # sampler = TSP filter/clamp/flip bits, depth preset = PCW list type + ISP bit 26,
+                    # ps variant = TSP bit 19 ignore-tex-alpha); the node flags pick the draw KIND in
+                    # FUN_140620cd0 (docs/TSP-RENDER-STATE-GHIDRA.md; tsp_state.codes). Gate on 4
+                    # capgate packs vs the stage-11 tape: sampler/depth/cull/ps 776/776, blend 772/776.
+                    #   bit 5  -> FUN_140849c30/be0(obj, node+0x90): kind 3 with an ALPHA MULTIPLIER
+                    #             the tape does not carry (1.0 assumed; when it is < 1.0 Steam forces
+                    #             normal blending via ctx+0x1f8274 = 0x45 -- the 4 gate misses)
+                    #   bit 13 -> FUN_140849ac0: kind 2 with param 2 = no cull command (ring state
+                    #             keeps the previous draw's cull)
+                    #   lists 0xB/0xD -> FUN_1408499e0: kind 0 (HUD perspective), same state rules
+                    kind = 3 if (nd['flags'] & 0x20) else (0 if nd['list'] in (11, 13) else 2)
+                    # ── vertex colour0 = record colour (alpha @0x2C, RGB @0x30) x node colour: bits
+                    # 10/11 of the flags select 1.0 / node+0x94 / blk+0x6CA8 / the product
+                    # (FUN_140620cd0 -> FUN_140849b00 -> ctx+0x1f825c..64), then FUN_1408482a0 packs
+                    # (int)(c * 255 * mult) clamped to 255 as ARGB (bytes B,G,R,A). blk+0x6CA8.. is
+                    # not in the tape (1.0 assumed). Gate: 647/776 exact with all multipliers 1.0; the
+                    # rest are node multipliers (127 = 0.5 etc.).
+                    col = rec['colour']
+                    cm = tuple(nd['colour']) if (nd['flags'] & 0x400) else (1.0, 1.0, 1.0)
+                    cbytes = bytes((min(255, max(0, int(col[3] * 255 * cm[2]))),
+                                    min(255, max(0, int(col[2] * 255 * cm[1]))),
+                                    min(255, max(0, int(col[1] * 255 * cm[0]))),
+                                    min(255, max(0, int(col[0] * 255)))))
+                    for gflags, gverts in rec['groups']:          # one polygon GROUP = one D3D draw
+                        if not gverts:
+                            continue
+                        pred = TS.predict(rec['pcw'], rec['isp'], rec['tsp'], gflags, kind=kind)
+                        if nd['flags'] & 0x2000:
+                            pred['cull'] = last_cull[0]           # kind-2/param-2 path sends no cull word
+                        elif pred['cull'] is not None:
+                            last_cull[0] = pred['cull']
+                        tdraw_w, ps_variant = wt.select(pred, world_state)
+                        first = len(verts) // STRIDE
+                        for (x, y, z, nx, ny, nz, u, v) in gverts:
+                            verts.extend(struct.pack('<4f', x, y, z, 0.0))
+                            verts.extend(struct.pack('<2f', nx, ny))
+                            verts.extend(cbytes)
+                            verts.extend(bytes((0, 0, 0, 0)))
+                            verts.extend(struct.pack('<2f', u, v))
+                        nv = len(gverts)
+                        fi = len(idxs)
+                        idxs.extend(range(first, first + nv))
+                        pscb = [(sha8(b) if b else None) for b in wt.pscb.get(ps_variant, [])]
+                        for b in wt.pscb.get(ps_variant, []):
+                            if b:
+                                cb_recs.setdefault(sha8(b), {**intern(b)})
+                        pscb = [(pscb[0] if pscb else None), hs, (pscb[2] if len(pscb) > 2 else None), None]
+                        d = dict(tdraw_w)
+                        d.update({'i': len(draws), 'firstIndex': fi, 'indexCount': nv, 'stride': STRIDE, 'voff': 0,
+                                  'tex': [tkey, None], 'vscbHash': [hw, hs, None, None], 'pscbHash': pscb})
+                        draws.append(d)
         emit_world((5, 6, 12, 13))          # stage: behind the sprites
         for lay, at, sid, tsx, tsy, mir, kind, cos, extra in items:
             if at is None:
@@ -941,6 +1055,8 @@ def main():
         emit_world((11,))                   # the HUD last
         for k, v in world_missing.items():
             missing['world: ' + k] += v
+        for k, v in world_state.items():
+            world_state_total[k] += v
         drawn_total += len(draws)
         heads.append({
             'frame': int(r[C['frame']]) if 'frame' in C else len(heads),
@@ -975,6 +1091,8 @@ def main():
               % {('0x%04X' % k): v for k, v in rotated_general.items()})
     print('\n%d frames, %d draws (%.1f/frame), %d distinct textures'
           % (len(heads), drawn_total, drawn_total / max(1, len(heads)), len(textures)))
+    if world_state_total:
+        print('  world draws, D3D state from the record header (tsp_state): %s' % dict(world_state_total))
     if missing:
         print('  %d draws skipped -- no assembly record:' % sum(missing.values()))
         for k, v in missing.most_common(8):
