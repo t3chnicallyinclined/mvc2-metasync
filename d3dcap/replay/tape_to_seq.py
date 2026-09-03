@@ -929,6 +929,13 @@ def main():
                         if os.path.exists(fn):
                             im = Image.open(fn).convert('RGBA')
                             page = tape_pages[key] = dict(w=im.width, h=im.height, fmt=28, data=np.array(im).tobytes())
+                    if page is None and ti == 255:
+                        # UNTEXTURED mesh (NL texIndex 255): drawn with vertex colour only. STG10 mesh 0 is the
+                        # SKY -- a 6-tri box x +-53k, z -103k..-42k with a blue-grey -> pink gradient in the
+                        # vertex colours; skipping it left the sky black. A 1x1 white page through the same
+                        # modulate shader == vertex colour, so no new pipeline variant is needed.
+                        key = 'FLAT_WHITE'
+                        page = tape_pages.get(key) or tape_pages.setdefault(key, dict(w=1, h=1, fmt=28, data=b'ÿÿÿÿ'))
                     if page is None:
                         world_missing['stage mesh %d: no texture %d' % (mi, ti)] += 1
                         continue
