@@ -163,6 +163,6 @@ foreach ($pat in @('state_*.json', 'blk_*.bin', 'alist_*.bin', 'tcw_log.json', '
 Say "[keep] states, blocks, world-object dumps and the log copied to $keep" Green
 # and the texture library, joined from THIS session's own captures (no poller needed)
 & python (Join-Path $here 'replay\tcw_build.py') --log $tcwLog
-Say "[gate] per step:  python $(Join-Path $here replay3gate.py) $(Join-Path $here replay\capgate)rame_<f>.pack --rot180 --rot-general" Green
+Say "[gate] per step:  python $(Join-Path $here 'replay\v3gate.py') $(Join-Path $here 'replay\capgate')\frame_<f>.pack --rot180 --rot-general" Green
 Say "[next] python $(Join-Path $here 'replay\serve.py')   then   http://localhost:8099/player.html" Green
 Say "[gate] python $(Join-Path $here 'replay\v3gate.py') $capDir\..\  -- see replay\v3gate.py for the per-step gate" Green
