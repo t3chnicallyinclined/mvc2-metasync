@@ -756,9 +756,79 @@ static bool g_walkHooked = false;
 static volatile LONG g_walkDumped = 0;      // one snapshot per captured frame
 static const char* g_dumpAt = "open";
 static void dumpBlk(unsigned frame);        // defined with the state dump below
+static uint8_t* g_blkBuf = nullptr;         // the state block as last dumped (dumpBlk); read by dumpAObjs too
+#define RR_BLK_PTR 0x142EDF560ULL
+#define RR_BLK_SZ  0x33B18u
+// ── THE WORLD-SPACE OBJECTS, DUMPED IN-PROCESS ─────────────────────────────────────────────────
+// Everything the sprite pass needs is inside the state block. The world-space class (shadows,
+// markers, glows, hail, HUD, stage props) is NOT: each System-A node (lists at blk+0x2EDE8+L*8,
+// next = +0x10, drawn = +0x170) points at a DC Tile-Accelerator polygon list at +0xA0 that lives
+// on the heap -- 0x18 header, then records of a 0x50 header (PCW, ISP, TSP, TCW = the texture's
+// identity, payload size at +0x4C) and 32-byte vertices. An external poller can miss a transient
+// effect between two samples; here, right after the walk that drew them, every drawn node's
+// object is copied byte for byte. alist_<frame>.bin:
+//   [u32 count] then per node: u8 list, u8 pad[3], u32 nodeOff, u64 objPtr, u64 modelPtr,
+//                              u32 objLen, objLen bytes (0x18 header + records)
+static uint8_t* g_aobjBuf = nullptr;
+static void dumpAObjs(unsigned frame) {
+    if (!g_blkBuf) return;
+    uintptr_t blk = 0;
+    if (!safeRead((const void*)RR_RVA(RR_BLK_PTR), &blk, sizeof(blk)) || !blk) return;
+    if (!g_aobjBuf) g_aobjBuf = (uint8_t*)malloc(1 << 20);
+    if (!g_aobjBuf) return;
+    size_t o = 4;
+    uint32_t count = 0;
+    for (int L = 5; L <= 13; ++L) {
+        uintptr_t p = 0;
+        memcpy(&p, g_blkBuf + 0x2EDE8 + L * 8, 8);
+        int n = 0;
+        while (p && n < 200 && o + 0x40 + 0x1000 < (1u << 20)) {
+            uintptr_t off = p - blk;
+            if (off >= RR_BLK_SZ - 0x180) break;
+            const uint8_t* nd = g_blkBuf + off;
+            uintptr_t obj = 0, model = 0;
+            memcpy(&obj, nd + 0xA0, 8); memcpy(&model, nd + 0xE8, 8);
+            if (nd[0x170] && (obj || model)) {
+                uint8_t* rec = g_aobjBuf + o;
+                rec[0] = (uint8_t)L; rec[1] = rec[2] = rec[3] = 0;
+                uint32_t off32 = (uint32_t)off; memcpy(rec + 4, &off32, 4);
+                uint64_t o64 = obj, m64 = model; memcpy(rec + 8, &o64, 8); memcpy(rec + 16, &m64, 8);
+                uint32_t len = 0;
+                uint8_t* dst = rec + 28;
+                if (obj) {
+                    if (safeRead((const void*)obj, dst, 0x18)) {
+                        len = 0x18;
+                        uintptr_t q = obj + 0x18;
+                        for (int k = 0; k < 8; ++k) {
+                            if (!safeRead((const void*)q, dst + len, 0x50)) break;
+                            int32_t pcw = 0; memcpy(&pcw, dst + len, 4);
+                            if (pcw >= 0) break;
+                            int32_t size = 0; memcpy(&size, dst + len + 0x4C, 4);
+                            if (size < 0 || size > 0x1000 || len + 0x50 + (uint32_t)size > 0x1400) break;
+                            len += 0x50;
+                            if (size && !safeRead((const void*)(q + 0x50), dst + len, (size_t)size)) break;
+                            len += (uint32_t)size;
+                            q += 0x50 + (uintptr_t)size;
+                        }
+                    }
+                }
+                memcpy(rec + 24, &len, 4);
+                o += 28 + len;
+                ++count;
+            }
+            memcpy(&p, nd + 0x10, 8);
+            ++n;
+        }
+    }
+    memcpy(g_aobjBuf, &count, 4);
+    char path[MAX_PATH];
+    _snprintf_s(path, sizeof(path), _TRUNCATE, "%s\alist_%u.bin", g_dir, frame);
+    writeAsyncCopy(path, g_aobjBuf, o);
+}
+
 static void hkWalk(void) {
     if (oWalk) oWalk();
-    if (g_capturing && !InterlockedExchange(&g_walkDumped, 1)) { g_dumpAt = "walk"; dumpBlk(g_frame); }
+    if (g_capturing && !InterlockedExchange(&g_walkDumped, 1)) { g_dumpAt = "walk"; dumpBlk(g_frame); dumpAObjs(g_frame); }
 }
 
 static void installDrawHooks(ID3D11DeviceContext* ctx) {
@@ -1522,10 +1592,10 @@ static void probeSample() {
 // exactly where the sim state that BUILT frame N's draw list is current. Reading at Present instead
 // would sample the state one frame late -- the same off-by-one that made the constant-buffer
 // snapshots stale.
-#define RR_BLK_PTR 0x140AC6EF0ULL
-#define RR_BLK_SZ  0x33B18u
+// RR_BLK_PTR / RR_BLK_SZ are defined with the walker hook above (0x142EDF560 = DAT_142edf560, the
+// pointer the walker itself dereferences; 0x140AC6EF0 was the rollback registration copy).
 
-static uint8_t* g_blkBuf = nullptr;      // this frame's blk
+// g_blkBuf (this frame's blk) is defined with the walker hook above
 static uint8_t* g_blkPrev = nullptr;     // the previous CAPTURED frame's blk
 static uint8_t* g_blkDelta = nullptr;    // scratch for the encoded runs
 static bool     g_blkHavePrev = false;

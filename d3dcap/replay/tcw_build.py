@@ -30,11 +30,16 @@ def main():
     ap.add_argument('--packs', nargs='*', help='explicit .pack files')
     ap.add_argument('--out', default=os.path.join(os.path.dirname(os.path.abspath(__file__)), 'tcw_pages'))
     a = ap.parse_args()
-    log = json.load(open(a.log))
     by_cb = {}
-    for mhex, rec in log['matrices'].items():
-        by_cb[cbworld_of_matrix_hex(mhex)] = rec
-    print('log: %d matrices, %d objects' % (len(log['matrices']), len(log['objects'])))
+    if os.path.exists(a.log):
+        log = json.load(open(a.log))
+        for mhex, rec in log['matrices'].items():
+            by_cb[cbworld_of_matrix_hex(mhex)] = rec
+        print('log: %d matrices, %d objects' % (len(log['matrices']), len(log['objects'])))
+    # the shim's own per-frame object dumps (alist_<f>.bin) are exact and need no poller: join them
+    # through the block's nodes -> matrix -> CBWorld
+    import blkstate as BS
+    alist_frames = 0
     packs = a.packs or sorted(glob.glob(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'capgate', 'frame_*.pack')))
     if a.frames:
         packs = [p for p in packs if a.frames[0] <= int(os.path.basename(p)[6:-5]) <= a.frames[1]]
@@ -45,6 +50,19 @@ def main():
     for pk in packs:
         man, B = EG.load_pack(pk)
         cbs = man['constantBuffers']
+        fr = int(os.path.basename(pk)[6:-5])
+        al = BS.load_alist(fr)
+        if al:
+            try:
+                meta, blk = BS.load_frame(fr)
+                base = int(meta['base']) if meta.get('base') else BS.find_base(blk)[0]
+                for nd in BS.anodes(blk, base):
+                    ob = al.get(nd['off'])
+                    if ob and ob['records']:
+                        by_cb[BS.cbworld(nd['matrix'])] = dict(list=nd['list'], tcw='%08X' % ob['records'][0]['tcw'], obj='alist')
+                alist_frames += 1
+            except SystemExit:
+                pass
         for d in man['draws']:
             if d.get('vsVariant') != 'vs_world' or not d['tex'][0]:
                 continue
@@ -73,7 +91,7 @@ def main():
                                 obj=node['obj'], frame=int(os.path.basename(pk)[6:-5]))
                 print('  + TCW %s  %dx%d fmt %d  list %d  (frame %s)' % (key, t['w'], t['h'], t['fmt'], node['list'], lib[key]['frame']))
     json.dump(lib, open(idx_path, 'w'), indent=1)
-    print('%d draw hits; library now %d pages -> %s' % (hits, len(lib), idx_path))
+    print('%d draw hits (%d frames with in-process object dumps); library now %d pages -> %s' % (hits, alist_frames, len(lib), idx_path))
 
 
 if __name__ == '__main__':

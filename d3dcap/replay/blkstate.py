@@ -309,6 +309,45 @@ def anodes(blk, base, lists=range(16), drawn_only=True, limit=256):
     return out
 
 
+def load_alist(frame, cap=CAP):
+    """The world-space OBJECTS the shim dumped in-process right after the walk (alist_<frame>.bin):
+    {node_off: dict(list, obj_ptr, model_ptr, records=[dict(pcw, isp, tsp, tcw, colour, verts)])}.
+    Records are the node's DC-TA polygon list: 0x50 header + 32-byte vertices x y z nx ny nz u v.
+    Absent for captures made before 2026-09-03 (use tcw_logger.py's log for those)."""
+    path = os.path.join(cap, 'alist_%d.bin' % frame)
+    if not os.path.exists(path):
+        return None
+    b = open(path, 'rb').read()
+    if len(b) < 4:
+        return {}
+    count = struct.unpack_from('<I', b, 0)[0]
+    o, out = 4, {}
+    for _ in range(count):
+        if o + 28 > len(b):
+            break
+        L = b[o]
+        off, objp, modelp, ln = struct.unpack_from('<IQQI', b, o + 4)
+        body = b[o + 28:o + 28 + ln]
+        o += 28 + ln
+        recs = []
+        q = 0x18
+        while q + 0x50 <= len(body):
+            pcw = struct.unpack_from('<i', body, q)[0]
+            if pcw >= 0:
+                break
+            size = struct.unpack_from('<i', body, q + 0x4C)[0]
+            hdr = body[q:q + 0x50]
+            pay = body[q + 0x50:q + 0x50 + max(0, size)]
+            recs.append(dict(pcw=struct.unpack_from('<I', hdr, 0)[0], isp=struct.unpack_from('<I', hdr, 4)[0],
+                             tsp=struct.unpack_from('<I', hdr, 8)[0], tcw=struct.unpack_from('<I', hdr, 12)[0],
+                             colour=struct.unpack_from('<4f', hdr, 0x2C),
+                             verts=[struct.unpack_from('<8f', pay, v) for v in range(8, len(pay) - 31, 32)],
+                             raw=body[q:q + 0x50 + max(0, size)]))
+            q += 0x50 + max(0, size)
+        out[off] = dict(list=L, obj=objp, model=modelp, records=recs, raw=body)
+    return out
+
+
 def cbworld(matrix16):
     """The 48-byte row-major 3x4 Steam binds as CBWorld, from the node's column-major 4x4."""
     m = matrix16

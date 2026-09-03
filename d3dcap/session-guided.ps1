@@ -150,5 +150,19 @@ $results | Format-Table -AutoSize | Out-String | ForEach-Object { Say $_ }
 $results | ConvertTo-Json | Set-Content -Encoding utf8 (Join-Path $capDir 'steps.json')
 if ($tcw -and -not $tcw.HasExited) { Stop-Process -Id $tcw.Id -Force -ErrorAction SilentlyContinue; Start-Sleep -Seconds 1 }
 if (Test-Path $tcwLog) { Say "[tcw] log saved: $tcwLog" Green }
+# Everything a later gate needs, kept OUTSIDE the wipeable capture dir, timestamps intact (the delta
+# chain is ordered by mtime): state sidecars + blocks, the in-process world-object dumps, the log.
+$keep = Join-Path $here 'replay\capgate\state'
+New-Item -ItemType Directory -Force $keep | Out-Null
+foreach ($pat in @('state_*.json', 'blk_*.bin', 'alist_*.bin', 'tcw_log.json', 'steps.json')) {
+    Get-ChildItem (Join-Path $capDir $pat) -ErrorAction SilentlyContinue | ForEach-Object {
+        $dst = Join-Path $keep $_.Name
+        if (-not (Test-Path $dst) -or ((Get-Item $dst).Length -ne $_.Length)) { Copy-Item $_.FullName $dst -Force; (Get-Item $dst).LastWriteTime = $_.LastWriteTime }
+    }
+}
+Say "[keep] states, blocks, world-object dumps and the log copied to $keep" Green
+# and the texture library, joined from THIS session's own captures (no poller needed)
+& python (Join-Path $here 'replay	cw_build.py') --log $tcwLog
+Say "[gate] per step:  python $(Join-Path $here 'replay3gate.py') $(Join-Path $here 'replay\capgate')rame_<f>.pack --rot180 --rot-general" Green
 Say "[next] python $(Join-Path $here 'replay\serve.py')   then   http://localhost:8099/player.html" Green
 Say "[gate] python $(Join-Path $here 'replay\v3gate.py') $capDir\..\  -- see replay\v3gate.py for the per-step gate" Green
