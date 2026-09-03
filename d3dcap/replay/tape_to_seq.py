@@ -139,9 +139,14 @@ def decode_anodes(tape):
                 hdr = body[q:q + 0x50]
                 pay = body[q + 0x50:q + 0x50 + max(0, size)]
                 verts = [struct.unpack_from('<8f', pay, v) for v in range(8, len(pay) - 31, 32)]
-                key = hdr[0x10:0x30].rstrip(b'\x00').decode('ascii', 'ignore')   # synthetic tapes stash the page key here
                 tcw = struct.unpack_from('<I', hdr, 0x0C)[0]
-                recs.append(dict(tcw=tcw, key=key if key.startswith('sha_') or key else '%08X' % tcw,
+                # a SYNTHETIC tape (states_to_tape) stashes its page key in the header's spare words;
+                # a real object has floats there -- accept only a clean 'sha_<16 hex>' or 8-hex key
+                stash = hdr[0x10:0x30].rstrip(b'\x00')
+                ok = stash.isascii() and ((stash.startswith(b'sha_') and len(stash) == 20 and stash[4:].isalnum())
+                                          or (len(stash) == 8 and stash.isalnum()))
+                key = stash.decode('ascii') if ok else '%08X' % tcw
+                recs.append(dict(tcw=tcw, key=key,
                                  colour=struct.unpack_from('<4f', hdr, 0x2C), verts=verts))
                 q += 0x50 + max(0, size)
             objs.append(recs)
