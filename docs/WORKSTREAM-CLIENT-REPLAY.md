@@ -210,6 +210,16 @@ picks), the `0x142edf300` page and the ctx slot table; (3) the player sets the p
 lets the TARGET process run its own match init (so its heap entities are valid), then applies the battle-frame
 anchor and feeds `seat_in`. Gate unchanged: fighters px/py/hp per frame vs the tape rows.
 
+#### Determinism contract (2026-09-03 06:40, DETERMINISM-CONTRACT.md, seed 111) — Track H's foundation
+CONFIRMED on the live images: the RNG is 2 bytes at blk+0x32BD4 (inside the GGPO region, never reseeded per frame;
+the DC LCG is dead code on Steam); the tick's only inputs are the two pad words; no time/ticks/QPC/rand/thread-id on
+the tick path (6 UCRT imports, all sprintf); FMA vs non-FMA is BIT-EXACT (no game code uses FMA or x87; native oracle
+over 155k points and all 65,536 camera angles); 12 B of uninitialised stack with no effect; single thread; 20 ticks
+reproduce the live clock exactly; PL image rule 0x0C420000 + pos*0x150000 = AFS 209+cid (pos order 0,2,4,1,3,5).
+The entity list DAT_142edf628 = blk+0x324E0 (absolute fighter self-pointers) explains the G crash. Contract C1-C9 =
+what every loader must preserve. Agent 0.3.47 records the battle-frame anchor per the carry list (blk + game_state
+page + exe page 0x142edf300..0x700 + ctx slot table, one clock edge); `receipt_gate.py` is the gate (selftest 20/20).
+
 ### Workstream F — Receipt lane (server-side)
 Agent records snapshot + input words (0.3.24 anchor + `seat_in` exist; align to `game_state+0x218/+0x21C`);
 `emu_gate.py frame` replays a disputed match server-side; PL image loader table UNKNOWN → dump-once until derived.
