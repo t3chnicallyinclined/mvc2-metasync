@@ -935,7 +935,7 @@ def main():
                         # vertex colours; skipping it left the sky black. A 1x1 white page through the same
                         # modulate shader == vertex colour, so no new pipeline variant is needed.
                         key = 'FLAT_WHITE'
-                        page = tape_pages.get(key) or tape_pages.setdefault(key, dict(w=1, h=1, fmt=28, data=b'ÿÿÿÿ'))
+                        page = tape_pages.get(key) or tape_pages.setdefault(key, dict(w=1, h=1, fmt=28, data=bytes([255, 255, 255, 255])))
                     if page is None:
                         world_missing['stage mesh %d: no texture %d' % (mi, ti)] += 1
                         continue
