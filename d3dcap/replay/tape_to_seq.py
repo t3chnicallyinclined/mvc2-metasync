@@ -95,6 +95,7 @@ except Exception:
 WORLD_TEMPLATE = os.path.join(HERE, 'capgate', 'frame_4445.pack')
 CAMERA_BLOCK = os.path.join(HERE, 'camera_block.json')
 TCW_PAGES = os.path.join(HERE, 'tcw_pages')
+STAGE_DIR = 'C:/Users/trist/projects/maplecast-flycast/atlas/stages'   # ModNao-port rips: STGxx.json + STGxx_tNN.png
 
 
 def decode_anodes(tape):
@@ -360,6 +361,7 @@ def main():
     # B3-0, nibble*17). Verified: all 5 resolved rows of tape 59612530 match an atlas LUT row
     # byte-for-byte.
     v3nodes, v3pals = {}, []
+    bank_slot, unknown_slots = {}, []     # filled after the nodes decode
     if tape.get('nodes'):
         nb = gzip.decompress(base64.b64decode(tape['nodes']))
         # v4 (agent 0.3.34+): 50 B = the 44 B v3 record + u16 angle (H+0x148, 0x10000 = 360 deg),
@@ -387,6 +389,11 @@ def main():
                 w = struct.unpack_from('<H', pb, i * 32 + j * 2)[0]
                 pal[j] = ((w >> 8) & 15) * 17, ((w >> 4) & 15) * 17, (w & 15) * 17, ((w >> 12) & 15) * 17
             v3pals.append(pal)
+        for _fr, _rows in v3nodes.items():
+            for _n in _rows:
+                if _n['kind'] == 0 and _n['gfx1']:
+                    bank_slot[_n['gfx1'] & 0xFFFF] = _n['slot']
+        unknown_slots = [s_ for s_ in range(6) if s_ not in set(bank_slot.values())]
         print('  TAPE v%d: %d frames of ordered nodes, %d palettes, stride %d' % (
             4 if stride >= 50 else 3, len(v3nodes), len(v3pals), stride))
     cols = [s.strip() for s in tape['schema'].strip('[]').split(',')]
@@ -399,6 +406,13 @@ def main():
             print('  ⚠ world-space stream present but no camera_block.json / template pack -- skipping it')
         else:
             wt = WorldTemplate(a.world_template)
+            stage_rip = None
+            sid_ = tape.get('stage_id')
+            if sid_ is not None and os.path.exists(os.path.join(STAGE_DIR, 'STG%02X.json' % int(sid_))):
+                stage_rip = json.load(open(os.path.join(STAGE_DIR, 'STG%02X.json' % int(sid_))))
+                print('  stage %02X: %d arc textures available (TCW 0xC10 + index)' % (int(sid_), len(stage_rip['textures'])))
+            elif sid_ is not None:
+                print('  stage %s: no arc rip found in %s' % (sid_, STAGE_DIR))
             # pages shipped inside a synthetic tape (offline test) take precedence over the TCW library
             tape_pages = {}
             for k, v in (tape.get('pages') or {}).items():
@@ -489,14 +503,18 @@ def main():
                 else:
                     owner = nd['owner']
                     if owner > 5:
-                        # an OWNERLESS pool object (owner 0xFF: global supers, some projectiles) still
-                        # carries its GFX1 bank pointer, and every effect inherits its character's
-                        # GFX1 by struct copy -- so the bank names the character. Resolve through the
-                        # fighters of this frame (kind 0 nodes carry theirs).
-                        for f in v3nodes.get(fr_clock, ()):
-                            if f['kind'] == 0 and f['gfx1'] and f['gfx1'] == nd['gfx1']:
-                                owner = f['slot']
-                                break
+                        # an OWNERLESS pool object (owner 0xFF: spawned by another object, assist
+                        # attacks, global supers) still carries its GFX1 bank, and every effect inherits
+                        # its character's bank by struct copy -- the bank names the character. Bank
+                        # identity is the low 16 bits (0x381714 == 0x1714 + a flag byte). Resolve
+                        # through the slot->bank map of the whole tape, and when the bank is seen on no
+                        # fighter node (a parked fighter carries gfx1 == 0) by ELIMINATION if exactly one
+                        # slot has no known bank. First v5 tape: 13% of objects were this class.
+                        b = nd['gfx1'] & 0xFFFF
+                        if b in bank_slot:
+                            owner = bank_slot[b]
+                        elif len(unknown_slots) == 1:
+                            owner = unknown_slots[0]
                     if owner > 5:
                         missing['object with owner %d (unowned, gfx1 %08X unmatched)' % (nd['owner'], nd['gfx1'])] += 1
                         continue
@@ -596,6 +614,18 @@ def main():
                             im = Image.open(fn)
                             data = np.array(im.convert('RGBA')).tobytes() if pv['fmt'] != 61 else np.array(im)[:, :, 0].tobytes()
                             page = tape_pages[key] = dict(w=pv['w'], h=pv['h'], fmt=pv['fmt'], data=data)
+                    if page is None and stage_rip is not None and key.isalnum() and len(key) == 8:
+                        # STAGE TEXTURES COME FROM THE ARC RIP: TCW = 0xC10 + texture index of the
+                        # loaded stage's TEX list (learned on the stage-5 tape 59613255: its list-6
+                        # objects' vertices match the STG05 meshes exactly and 0xC11..0xC1A map to
+                        # texIndex 1..10). stage_id from the tape (blk+0x6D04, agent >= 0.3.36).
+                        ti = int(key, 16) - 0xC10
+                        if 0 <= ti < len(stage_rip['textures']):
+                            tx = stage_rip['textures'][ti]
+                            fn = os.path.join(STAGE_DIR, tx['file'])
+                            if os.path.exists(fn):
+                                im = Image.open(fn).convert('RGBA')
+                                page = tape_pages[key] = dict(w=im.width, h=im.height, fmt=28, data=np.array(im).tobytes())
                     if page is None:
                         world_missing['no page for %s' % key] += 1
                         continue
