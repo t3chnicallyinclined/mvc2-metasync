@@ -129,6 +129,8 @@ $('load').onclick = async () => {
       log(`loading tape ${tapeUrl} with pack ${packUrl} …`);
       player = await new TapePlayer(gpu.device, gpu.format, dopts).load(tapeUrl, packUrl, {
         start: Number(q.get('start') || 0), count: q.get('count') ? Number(q.get('count')) : Infinity, onProgress: progress,
+        // &opts=<json>: EmitOpts for the wasm feed (e.g. {"no_world":true}); gate_tapes.mjs A/B variants (GATE 2)
+        opts: JSON.parse(q.get('opts') || '{}'),
       });
       const inf = player.info;
       log(`tape: ${inf.frames} rows (agent ${inf.agent}, tape v${inf.tape_ver}, stage ${inf.stage_id}, world ${inf.world}); ` +

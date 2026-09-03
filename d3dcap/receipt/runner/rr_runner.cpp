@@ -313,8 +313,42 @@ static void selfChecks() {
 }
 
 // ---- the tick loop (own thread: 16 MiB stack; single thread, contract C9) -------------------------------------------------
-struct Job { int ticks; std::vector<uint32_t> w0, w1; std::string out; int dumpEvery; bool dumpEnd; std::vector<double> ms; };
+struct Job { int ticks; std::vector<uint32_t> w0, w1; std::string out; int dumpEvery; bool dumpEnd; std::vector<double> ms;
+             bool harvest = false; std::vector<uint8_t> dcShadow; uint64_t dcDeltaPages = 0, dcDeltaBytes = 0; std::string dcDeltaSummary; };
 static Job J;
+// ---- GATE 2 harvest dump (docs/RECEIPT-RUNNER-GATE2.md): everything the agent's harvest reads, per tick -----------------
+// The harvest (RetroReceipts-agent agent/src/harvest.rs, RENDER s2.2 field->region table) reads blk, the game_state page
+// (seat words G+0x218, seat map, localPlayerNum, rollback counter), the exe page 0x142edf300..0x700 (entity/set-score
+// pointer DAT_142edf628) and DC-RAM through pointers (palettes at *(H+0x1B8), polygon-list objects at *(node+0xA0)).
+// blk is dumped per tick already; this adds the two pages per tick and the DC-RAM pages that CHANGED since the previous
+// tick (4 KiB granularity, memcmp against a shadow copy) -- measured, because RECEIPT-RUNNER-RE s1.1 measured the write
+// set on the training stage only and a real stage animates props in place (RE s1.2 LAB_14064cb20). The tape emitter
+// replays the deltas in order to hold the exact DC-RAM image of tick k.
+//   gs_tNNN.bin     0x1000 B @ 0x140ac6d40          exe_tNNN.bin  0x400 B @ 0x142edf300
+//   dcram_tNNN.dlt  records {u32 dc_off_from_dcram_base, u32 len=4096, 4096 B} for every page that differs from tick NNN-1
+//   t000 = the state after the loader/self-checks, before the first tick (the anchor as the runner holds it).
+static const uint64_t EXE_PAGE_ADDR = 0x142edf300ull, EXE_PAGE_LEN = 0x400ull, DC_PAGE = 0x1000ull;
+static void harvestDump(int k) {
+    char p[MAX_PATH];
+    sprintf_s(p, "%s\\gs_t%03d.bin", J.out.c_str(), k); dumpRange(p, GS_ADDR, 0x1000);
+    sprintf_s(p, "%s\\exe_t%03d.bin", J.out.c_str(), k); dumpRange(p, EXE_PAGE_ADDR, EXE_PAGE_LEN);
+    if (k == 0) { J.dcShadow.assign((const uint8_t*)(uintptr_t)M.dcram, (const uint8_t*)(uintptr_t)(M.dcram + M.dcram_size)); return; }
+    sprintf_s(p, "%s\\dcram_t%03d.dlt", J.out.c_str(), k);
+    FILE* f = nullptr; if (fopen_s(&f, p, "wb") || !f) die(2, "cannot write %s", p);
+    const uint8_t* live = (const uint8_t*)(uintptr_t)M.dcram; uint64_t pages = 0; std::string ranges; uint64_t rs = ~0ull, re = 0;
+    for (uint64_t off = 0; off < M.dcram_size; off += DC_PAGE) {
+        if (memcmp(live + off, J.dcShadow.data() + off, (size_t)DC_PAGE) == 0) { if (rs != ~0ull) { ranges += " " + hx(M.dc_base + rs) + "-" + hx(M.dc_base + re); rs = ~0ull; } continue; }
+        uint32_t o32 = (uint32_t)off, l32 = (uint32_t)DC_PAGE;
+        fwrite(&o32, 4, 1, f); fwrite(&l32, 4, 1, f); fwrite(live + off, 1, (size_t)DC_PAGE, f);
+        memcpy(J.dcShadow.data() + off, live + off, (size_t)DC_PAGE); ++pages;
+        if (rs == ~0ull) rs = off; re = off + DC_PAGE;
+    }
+    if (rs != ~0ull) ranges += " " + hx(M.dc_base + rs) + "-" + hx(M.dc_base + re);
+    fclose(f);
+    J.dcDeltaPages += pages; J.dcDeltaBytes += pages * DC_PAGE;
+    if (k <= 3 || pages > 64) logf_("  harvest tick %3d: %llu DC-RAM pages changed (DC%s)", k, pages, ranges.c_str());
+    if (J.dcDeltaSummary.size() < 4000) J.dcDeltaSummary += (J.dcDeltaSummary.empty() ? "" : ";") + std::to_string(k) + ":" + std::to_string(pages);
+}
 typedef void (*TickFn)(void*, uint32_t*, uint32_t);
 static DWORD WINAPI tickThread(LPVOID) {
     unsigned csr = _mm_getcsr();
@@ -323,6 +357,7 @@ static DWORD WINAPI tickThread(LPVOID) {
     TickFn tick = (TickFn)(uintptr_t)FRAME_TICK;
     alignas(16) uint32_t inputs[4];
     uint32_t clock0 = RD32(M.blk + CLOCK_OFF);
+    if (J.harvest) { char p[MAX_PATH]; sprintf_s(p, "%s\\blk_t000.bin", J.out.c_str()); dumpRange(p, M.blk, M.blk_size); harvestDump(0); }
     for (int k = 0; k < J.ticks; ++k) {
         g_tick = k + 1;
         inputs[0] = J.w0[k] & 0xFFFFFF; inputs[1] = J.w1[k] & 0xFFFFFF; inputs[2] = 0; inputs[3] = 0;
@@ -335,6 +370,7 @@ static DWORD WINAPI tickThread(LPVOID) {
         if ((J.dumpEvery > 0 && ((k + 1) % J.dumpEvery) == 0) || k + 1 == J.ticks) {
             char p[MAX_PATH]; sprintf_s(p, "%s\\blk_t%03d.bin", J.out.c_str(), k + 1); dumpRange(p, M.blk, M.blk_size);
         }
+        if (J.harvest) harvestDump(k + 1);
         if (k < 3 || (k + 1) % 50 == 0 || k + 1 == J.ticks)
             logf_("  tick %3d: clock %u  in {%06x,%06x}  %.3f ms  rng %02x%02x  ext[alloc %llu free %llu flsget %llu flsset %llu gle %llu sle %llu]",
                   k + 1, clk, inputs[0], inputs[1], ms, *(uint8_t*)(uintptr_t)(M.blk + 0x32BD4), *(uint8_t*)(uintptr_t)(M.blk + 0x32BD5),
@@ -370,7 +406,7 @@ int main(int argc, char** argv) {
         if (a == "--pre") pre = next(); else if (a == "--out") out = next(); else if (a == "--ticks") ticks = atoi(next().c_str());
         else if (a == "--inputs") inputs = next(); else if (a == "--gs") gsFile = next() == "file"; else if (a == "--crt") g_crtReal = next() == "real";
         else if (a == "--fma") fma = atoi(next().c_str()); else if (a == "--prot") rwx = next() == "rwx"; else if (a == "--dump-every") dumpEvery = atoi(next().c_str());
-        else if (a == "--no-dump-end") dumpEnd = false; else if (a == "--force") force = true; else if (a == "--lazy") g_lazyOn = next() != "off"; else usage();
+        else if (a == "--no-dump-end") dumpEnd = false; else if (a == "--force") force = true; else if (a == "--lazy") g_lazyOn = next() != "off"; else if (a == "--harvest-dump") J.harvest = true; else usage();
     }
     if (pre.empty() || out.empty()) usage();
     CreateDirectoryA(out.c_str(), nullptr);
@@ -522,11 +558,14 @@ int main(int argc, char** argv) {
     }
     FILE* fs = nullptr; fopen_s(&fs, (out + "\\summary.json").c_str(), "wb");
     if (fs) {
-        fprintf(fs, "{\"ticks\":%d,\"clock_start\":%llu,\"clock_end\":%u,\"gs\":\"%s\",\"crt\":\"%s\",\"fma\":%d,\"prot\":\"%s\",\"ext\":{\"RtlAllocateHeap\":%llu,\"alloc_bytes\":%llu,\"RtlReAllocateHeap\":%llu,\"HeapFree\":%llu,\"GetLastError\":%llu,\"SetLastError\":%llu,\"FlsGetValue\":%llu,\"FlsSetValue\":%llu},\"lazy_pages\":[%s],\"ms\":[",
+        fprintf(fs, "{\"harvest_dump\":%s,\"dcram_delta_pages\":%llu,\"dcram_delta_bytes\":%llu,\"dcram_delta_per_tick\":\"%s\",\"dc_base\":\"0x%llx\",\"gs_addr\":\"0x%llx\",\"exe_page_addr\":\"0x%llx\",",
+                J.harvest ? "true" : "false", J.dcDeltaPages, J.dcDeltaBytes, J.dcDeltaSummary.c_str(), M.dc_base, GS_ADDR, EXE_PAGE_ADDR);
+        fprintf(fs, "\"ticks\":%d,\"clock_start\":%llu,\"clock_end\":%u,\"gs\":\"%s\",\"crt\":\"%s\",\"fma\":%d,\"prot\":\"%s\",\"ext\":{\"RtlAllocateHeap\":%llu,\"alloc_bytes\":%llu,\"RtlReAllocateHeap\":%llu,\"HeapFree\":%llu,\"GetLastError\":%llu,\"SetLastError\":%llu,\"FlsGetValue\":%llu,\"FlsSetValue\":%llu},\"lazy_pages\":[%s],\"ms\":[",
                 ticks, M.clock_value, RD32(M.blk + CLOCK_OFF), gsFile ? "file" : "exe", g_crtReal ? "real" : "stub", fma, rwx ? "rwx" : "sections", g_cnt[0], g_allocBytes, g_cnt[1], g_cnt[2], g_cnt[3], g_cnt[4], g_cnt[5], g_cnt[6], lazyJson.c_str());
         for (size_t i = 0; i < J.ms.size(); ++i) fprintf(fs, "%s%.4f", i ? "," : "", J.ms[i]);
         fprintf(fs, "]}\n"); fclose(fs);
     }
+    if (J.harvest) logf_("HARVEST DUMP: %llu DC-RAM pages (%llu B) changed over %d ticks (per-tick in summary.json)", J.dcDeltaPages, J.dcDeltaBytes, ticks);
     logf_("DONE: %d ticks, clock %llu -> %u, dumps in %s", ticks, M.clock_value, RD32(M.blk + CLOCK_OFF), out.c_str());
     return 0;
 }
