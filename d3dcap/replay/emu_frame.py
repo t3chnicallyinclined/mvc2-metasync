@@ -44,8 +44,14 @@ HEAP_BASE, HEAP_SIZE = 0x32000000, 0x1000000
 # UCRT import slots (call [rip+slot] sites read in the live image with capstone, 2026-09-03): the sim tick calls the
 # game's sprintf wrapper FUN_14003a4c0 -> __stdio_common_vsprintf -> __acrt_getptd_noexit, which needs a working
 # allocator; with every import stubbed to 0 the CRT recursed forever (_calloc_base -> __doserrno -> getptd -> calloc).
+# CORRECTION 2026-09-03 (receipt runner Gate 1, same-boot export resolution of the dumped IAT values): slot 0x1408db218 is
+# kernel32!TlsSetValue, not FlsSetValue -- the extret on it never fires. The tick's Fls* calls go through the UCRT lazy
+# resolver FUN_140820798 (cache 0x142eefca0 + id*8, id 5 FlsGetValue / 6 FlsSetValue, encoded rol(p, cookie&0x3f)^cookie);
+# under `extstub on` both return RAX=0, so FlsSetValue "fails" and the CRT frees its fresh ptd every call (the 4x HeapFree).
+# The remaining two IAT calls are GetLastError *0x1408db2d8 and SetLastError *0x1408db510 (both RAX=0 under extstub).
+# The native runner (d3dcap/receipt/runner) mirrors exactly these semantics and is byte-exact vs this harness (Gate 1).
 CRT_SLOTS = {'RtlAllocateHeap': (0x1408db240, 'extalloc', 'R8'), 'RtlReAllocateHeap': (0x1408db140, 'extalloc', 'R9'),
-             'HeapFree': (0x1408db238, 'extret', '1'), 'FlsSetValue': (0x1408db218, 'extret', '1')}
+             'HeapFree': (0x1408db238, 'extret', '1'), 'TlsSetValue_(was_misnamed_FlsSetValue)': (0x1408db218, 'extret', '1')}
 TRACE_DT = np.dtype([('kind', 'u1'), ('pc', '<u8'), ('addr', '<u8'), ('size', '<u4')])
 KIND = {0: 'read', 1: 'write', 2: 'call', 3: 'extcall', 4: 'callother', 5: 'mark'}
 REGION_NAMES = ['exe', 'blk', 'blk2', 'ctx', 'dcram', 'stack', 'inputs', 'nullpage', 'other']
@@ -242,12 +248,12 @@ class Labeler:
         for g in kb_globals or []:
             so, addr = g.get('steam_off'), g.get('addr')
             name = g['id'].split(':', 1)[1]
-            if so and so.startswith('0x') and not so.startswith('ctx'):
+            if isinstance(so, str) and so.startswith('0x') and not so.startswith('ctx'):
                 try:
                     self.globals_by_steam[int(so, 16)] = name
                 except ValueError:
                     pass
-            if addr and addr.startswith('0x8C') or (addr and addr.startswith('0x8c')):
+            if isinstance(addr, str) and addr.lower().startswith('0x8c'):     # re_kb `addr` may be an int (non-DC globals)
                 try:
                     self.globals_by_dc[int(addr, 16)] = name
                 except ValueError:

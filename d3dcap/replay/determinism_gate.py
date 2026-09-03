@@ -108,7 +108,7 @@ def cmd_multitick(a):
     ftab, *_ = F.functable(G.WORK)
     inputs, seats, entry = F.tick_inputs(R)
     N = a.ticks
-    tag = 'multitick_%d' % N
+    tag = a.tag or ('multitick_%d' % N)
     lines, trace, outs = F.frame_job(R, 'tick', tag, G.WORK, 60000000, inputs, ftab)
     lines = [l for l in lines if not l.startswith('trace ')]
     i = [k for k, l in enumerate(lines) if l.startswith('run ')][0]
@@ -116,7 +116,11 @@ def cmd_multitick(a):
     for k in range(1, N):
         p = os.path.join(G.WORK, '%s.blk_t%02d.bin' % (tag, k))
         per.append(p)
-        extra += ['dump %x %x %s' % (R['blk'], R['blk_size'], p), 'run %x' % F.FRAME_TICK]
+        # re-set the argument registers before EVERY run: EmuGate `run` only sets RIP/RSP, so runs 2..N previously called the
+        # tick with whatever RCX/RDX/R8 the previous run left (the GGPO counter DAT_142d10b90 ended at 1 after 20 runs; the
+        # inputs were read from wherever RDX pointed -- zero sparse memory, i.e. idle by accident). Found by the native runner
+        # gate 2026-09-03 (blk dumps were still byte-identical: the counter is wrapper-only, contract C2).
+        extra += ['dump %x %x %s' % (R['blk'], R['blk_size'], p), 'reg RCX %x' % F.GGPO_STATE, 'reg RDX %x' % F.INPUT_SCRATCH, 'reg R8 0', 'run %x' % F.FRAME_TICK]
     lines = lines[:i + 1] + extra + lines[i + 1:]
     r = G.run_job(lines, tag)
     print(r['status']); print('\n'.join(r['runs']))
@@ -140,7 +144,7 @@ def cmd_multitick(a):
         pp = np.frombuffer(pre, np.uint8) != np.frombuffer(post, np.uint8)
         print('pre->post diff %d B: touched by the %d ticks %d, never touched %d; changed by ticks but equal in pre/post %d' % (
             int(pp.sum()), N, int((pp & ever).sum()), int((pp & ~ever).sum()), int((ever & ~pp).sum())))
-    json.dump(dict(tag=tag, status=r['status'], runs=r['runs'], dumps=per), open(os.path.join(G.WORK, 'multitick_%d.json' % N), 'w'), indent=0)
+    json.dump(dict(tag=tag, status=r['status'], runs=r['runs'], dumps=per), open(os.path.join(G.WORK, tag + '.json'), 'w'), indent=0)
     return 0
 
 
@@ -243,7 +247,7 @@ def main():
     ap = argparse.ArgumentParser()
     sub = ap.add_subparsers(dest='cmd', required=True)
     p = sub.add_parser('perturb'); p.add_argument('--run', default=DEFAULT_RUN); p.add_argument('names', nargs='*'); p.add_argument('--json')
-    m = sub.add_parser('multitick'); m.add_argument('--run', default=DEFAULT_RUN); m.add_argument('--ticks', type=int, default=20)
+    m = sub.add_parser('multitick'); m.add_argument('--run', default=DEFAULT_RUN); m.add_argument('--ticks', type=int, default=20); m.add_argument('--tag', default=None, help='work-file tag (default multitick_<N>; use a run-specific tag so runs do not clobber each other)')
     n = sub.add_parser('native'); n.add_argument('--run', default=DEFAULT_RUN); n.add_argument('--json')
     d = sub.add_parser('dispatch'); d.add_argument('--run', default=DEFAULT_RUN); d.add_argument('--child'); d.add_argument('--flag', type=int, default=0)
     a = ap.parse_args()

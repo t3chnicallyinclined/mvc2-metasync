@@ -121,3 +121,8 @@ d3dcap/replay/fullmatch/*.log
 d3dcap/replay/fullmatch/*.txt
 d3dcap/replay/capgate/
 d3dcap/replay/ordergate/
+
+# receipt runner build products (the source is kept; the exe/obj are not) and its outputs live in %TEMP%rcap_runner
+/d3dcap/receipt/runner/*.exe
+/d3dcap/receipt/runner/*.obj
+/d3dcap/receipt/runner/*.pdb
