@@ -304,3 +304,24 @@ TCW library proves.
 The TCW of a transient effect (hail, glow, marker) can only be read while it is on screen. One
 guided capture session with the agent (or the live reader) logging `(matrix, TCW)` per node beside
 the shim gives the library for every effect exercised. The static set (HUD, stage) is already in.
+
+### 9.5 v6 — keys, not bytes  *(measured on the first v5 tape, 2026-09-03)*
+The v5 stream interns each polygon list by content and ships it once per tape. The first real tape
+shows what those objects are: **static assets**. Of 7,704 interned objects for 457k node-uses,
+every TCW but one has at most ~50 distinct contents reused tens of thousands of times (stage props,
+HUD sheets, hail quads, markers). The single "per-frame" class, TCW `0xC19` (7,128 variants), is
+one fixed 4-vertex quad whose only varying content is its **UV cell** (7×4 discrete choices — an
+animation frame into the sheet) and the record header's **colour floats + TSP word** (a fade).
+
+So the wire needs no geometry and no pixels at all:
+
+| per node, per frame | bytes |
+|---|---|
+| list, flags, 4×4 matrix, node colour | 84 |
+| `TCW` + asset hash (the shape) | 12 |
+| UV cell (u0,v0,u1,v1), record colour (4 f32), TSP | 36 |
+
+Objects and pages come from an **asset library** built from captures (`alist_<f>.bin` +
+`tcw_build.py`) and completed by a one-time agent upload of any hash the server has not seen —
+the same model as skins. Textures were never on the wire (the TCW is the key). v5 stays valid: a
+v6 reader treats an interned object as "asset present"; a v5 reader ignores the new fields.
