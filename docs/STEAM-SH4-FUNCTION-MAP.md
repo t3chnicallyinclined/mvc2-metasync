@@ -1,6 +1,6 @@
 # Steam MvC2 x86-64 <-> Dreamcast SH4 function correspondence map (2026-09-02)
 
-Programmatic map between the unpacked Steam executable (`C:\Users\trist\ghidra_projects\mvc_dump.bin`, Ghidra project `dumpproj`, read through the GhidraMCP HTTP bridge on :8080) and the marvelous2 SH4 disassembly (`C:\Users\trist\projects\_marv_re\build\bank*.asm`, `loc_8c......` == PC). Machine-readable: `docs/steam_sh4_map.csv`. Scripts: `d3dcap/replay/re_map/` (`ghidra_export.py`, `sh4_export.py`, `blkmap.py`, `match.py`, `seeds.json`, `report.py`). KB seed: `maplecast-flycast/tools/re_kb/23_steam_function_map.surql`.
+Programmatic map between the unpacked Steam executable (`C:\Users\trist\ghidra_projects\mvc_dump.bin`, Ghidra project `dumpproj`, read through the GhidraMCP HTTP bridge on :8080) and the marvelous2 SH4 disassembly (`C:\Users\trist\projects\_marv_re\build\bank*.asm`, `loc_8c......` == PC). Machine-readable: `docs/steam_sh4_map.csv`. Scripts: `d3dcap/replay/re_map/` (`ghidra_export.py`, `sh4_export.py`, `blkmap.py`, `match.py`, `seeds.json`, `report.py`). KB seed: `maplecast-flycast/tools/re_kb/30_steam_function_map.surql`.
 
 Every row is tagged **CONFIRMED** (both sides read by a human; `seeds.json`) or **INFERRED** (fingerprint / call-graph only; tiers high / medium / low). An INFERRED row is a hypothesis with its evidence and runner-up attached, not a fact.
 
@@ -24,9 +24,9 @@ Every row is tagged **CONFIRMED** (both sides read by a human; `seeds.json`) or 
 | SH4 routines (marvelous2 banks) | 9607 |
 | ... of which carry any exact-constant / blk / DC-address / string token | 1676 |
 | **Steam functions with a primary SH4 counterpart** | **453** (game range: 444) |
-| ... by tier (primary rows) | confirmed 15, high 209, medium 132, low 97 |
-| all map rows incl. `inlined` (one Steam function can hold several SH4 routines) | 510 (confirmed 29, high 209, medium 141, low 131) |
-| rows by method | fingerprint 111, fingerprint+callgraph 327, inlined 43, seed 15, seed-inlined 14 |
+| ... by tier (primary rows) | confirmed 21, high 204, medium 131, low 97 |
+| all map rows incl. `inlined` (one Steam function can hold several SH4 routines) | 510 (confirmed 35, high 204, medium 140, low 131) |
+| rows by method | fingerprint 106, fingerprint+callgraph 326, inlined 43, kb-seed+constants 1, kb-seed+decompile 5, seed 15, seed-inlined 14 |
 | SH4 routines placed (matched or inlined) | 510 |
 
 Honest reading: the map is dense around the render / object-pool / loader / NaomiLib core (where the anchors are) and sparse in character move code, whose SH4 side lives partly in the S_PLxx overlays (not in `bank*.asm`) and whose Steam side is largely swallowed by the `caseD_0` blob. Coverage there needs more seeds, not more heuristics.
@@ -39,6 +39,7 @@ Honest reading: the map is dense around the render / object-pool / loader / Naom
 | `FUN_1406129f0` | `loc_8c034bea` (bank03) | sprite submit: body path (sprite id bit15 clear) -> TA/D3D quads | CONFIRMED both read: sprite submit. DC 8c034bea: +0x144 sprite id == 0xFF(-1) -> return 0; tst 0x8000 -> 8c0344d4 (body) else 8c0348c8. Steam FUN_1406129f0: *(+0x188)==0xffffffff -> 0; (id>>15)&1==0 -> body path inline (0x7fff mask, 0x4000 flip, +0x124/0x128 screen, +0x130/0x134 scale, +0x154 facing, +0x178/0x17A) else conditional jump to FUN_140612f70. |
 | `FUN_1406129f0` | `loc_8c0344d4` (bank03) | inlined into FUN_1406129f0 | per-frame BODY render (bit15 clear path), inlined as the main body of FUN_1406129f0 |
 | `FUN_140619960` | `loc_8c0310f2` (bank03) | render-mode getter (*(blk+0x6CE4)) | CONFIRMED both read: render-mode getter. DC returns *(0x8c26a8e4) (0 if zero); Steam returns *(blk+0x6CE4). Establishes DC 0x8c26a8e4 <-> blk+0x6CE4 (delta 0x8C263C00). |
+| `FUN_14061c6e0` | `loc_8c02e014` (bank02) | confirmed by another lane (KB) | KB (seed+constants): unique constant set {0x0F4A, 0x422c0000 (43.0), 0xbed1eb85 (-0.41), 0x42be0000 (95), 0x43a00000 (320)} in the pool at 8c02e014..; Steam FUN_14061c6e0 writes the same to blk+0x6914..0x6988 (WORLD-CAMERA-GHIDRA.md s5) / matcher: b:6978(11.0) b:6912(11.0) b:6974(10.8) b:6988(10.5) sw:35#2#0(9.9) k:31#10(9.9) k:30#8(9.9) b:6911(9.8) |
 | `FUN_14061d6a0` | `loc_8c02e246` (bank02) | camera setup x0.1 for lists 7/8/9 | CONFIRMED both read: camera x0.1 (lists 7/8/9). DC: eye +0xC/10/14, look-at +0x54/58/5C scaled by 0x3dcccccd (0.1), fov +0x6C: fov*32768(0x47800000)/360(0x43b40000)+0.5 & 0xffff, near/far +0x80/+0x84; Steam FUN_14061d6a0 same sequence on blk+0x6914.. with the same constants. |
 | `FUN_14061d7e0` | `loc_8c02e1a4` (bank02) | camera setup x1 (world units) from blk+0x6914..0x698C | CONFIRMED both read: camera x1 (deck, lists 5/6). DC loc_8c02e1a4: eye 0x8c26a518+0xC/10/14 and look-at +0x54/58/5C copied unscaled to the stack, then 8c1204f0(3), 8c121100, 8c121710(0, +0x80), 8c1219b0(fov: +0x6C*32768/360+0.5 & 0xffff), 8c1204f0(2), 8c121100, 8c11ff90(eye, lookat, +0x84), 8c1204f0(1). Steam FUN_14061d7e0: blk+0x6914/18/1C, 0x695C/60/64, FUN_140846e90(3), FUN_140847ca0, FUN_140848200(0, blk+0x6988), FUN_140847f20(fov from blk+0x6974 same formula), FUN_140846e90(2), FUN_140847ca0, FUN_140846c80(.., blk+0x698C), FUN_140846e90(1). Camera block delta 0x8C263C10. |
 | `FUN_14061dbe0` | `loc_8c044f12` (bank04) | node alloc: free-list pop + constructor-table dispatch (kind 1 = append at tail) | CONFIRMED both read: node alloc = free-list pop + constructor-table dispatch. DC: 8c044f12 tests free count 0x8c287ae8>0 then 8c044f26: pop head (0x8c287a54, next=+0x8), dec both free counts, inc per-list count (table 0x8c045018), memset-like jsr, node+3=list, ctor table 0x8c045020[kind]. Steam FUN_14061dbe0: *(blk+0x2EEE4)>0 && *(0x2EEE6)!=0, pop blk+0x2EDD8, dec counts, inc blk+0x2EEC8[L], memset(node,0,0x280), node+3=L, PTR_caseD_4_140a6e5c8[kind]. |
@@ -62,8 +63,13 @@ Honest reading: the map is dense around the render / object-pool / loader / Naom
 | `FUN_140620f10` | `loc_8c0308c2` (bank03) | sprite walker over the 16 draw lists (System B); inlines Render Main Sprite + effect path | CONFIRMED both read: sprite walker over the 16 draw lists. DC: handles 0x8c287de0 stride 0x180 (mov.w 0x0180), counts 0x8c2895e0, node+3 category==0 -> 8c03093c else 8c030af8. Steam: blk+0x2F4D0 stride 0x300, counts blk+0x324D0, node+3, +0x170 gate, both render bodies inlined (812.357 / 480 / 640 / 1000 / 0.1 / 0.001 constants present on both sides). |
 | `FUN_140620f10` | `loc_8c03093c` (bank03) | inlined into FUN_140620f10 | Render Main Sprite: +0x12C draw gate == Steam +0x170; camera constant 812.357 (0x444b16de) at bank03.asm:1513 == blk+0x691C |
 | `FUN_140620f10` | `loc_8c030af8` (bank03) | inlined into FUN_140620f10 | effect-path renderer (category!=0), same constant set, stride 0x5A4 == Steam 0x738 |
+| `FUN_140846c80` | `loc_8c11ff90` (bank11) | confirmed by another lane (KB) | KB (seed+decompile): same args (eye, target, u16 roll) and call slot; SH4 computes target-eye, normalises, translates by -eye via 8C1210C0 (WORLD-CAMERA-GHIDRA.md s1/2.2) / matcher: sw:11#0#4(9.9) sw:10#0#4(9.9) k:11#4(9.9) k:10#4(9.9) kl:11#-1(7.9) kl:10#-1(7.9) ko:11(4.1) ko:10(4.1) |
+| `FUN_140846e90` | `loc_8c1204f0` (bank12) | confirmed by another lane (KB) | KB (seed+decompile): same call slot/args in loc_8c02e1a4 vs FUN_14061d7e0; SH4 saves XMTRX to slot, sets mode byte 0x8C2D68E4, reloads via 8C1201E0; Steam moves DAT_142ef0ab8 to ctx+0x1f80ac+m*0x40 (WORLD-CAMERA-GHIDRA.md s1) / matcher: sw:11#0#0(9.9) sw:10#0#0(9.9) k:11#0(9.9) k:10#0(9.9) kl:11#-5(7.9) kl:10#-5(7.9) ko:11(4.1) ko:10(4.1) |
 | `FUN_1408478c0` | `loc_8c120900` (bank12) | NaomiLib matrix stack POP(n) | CONFIRMED both read: NaomiLib matrix POP(n). DC: n=max(n,1), count-=n clamped, ptr-=n*0x40, reload XMTRX. Steam FUN_1408478c0: loop n: ptr-=0x40, copy to current, free-count++. |
 | `FUN_140847950` | `loc_8c120950` (bank12) | NaomiLib matrix stack PUSH (optional load) | CONFIRMED both read: NaomiLib matrix PUSH. DC: stack {i16 count,i16 max,ptr@+8} at 0x8C2D68E8, saves XMTRX (fschg/frchg 8 pairs) to ptr, ptr+=0x40, count++, optional load from r4. Steam FUN_140847950: ptr ctx+0x1f81b0, free-count ctx+0x1f81bc--, copies DAT_142ef0ab8 (current 4x4), optional load from param. |
+| `FUN_140847ca0` | `loc_8c121100` (bank12) | confirmed by another lane (KB) | KB (seed+decompile): both write the identity (WORLD-CAMERA-GHIDRA.md s1) / matcher: sw:11#0#1(9.9) sw:10#0#1(9.9) k:11#1(9.9) k:10#1(9.9) kl:11#-4(7.9) kl:10#-4(7.9) ko:11(4.1) ko:10(4.1) |
+| `FUN_140847f20` | `loc_8c1219b0` (bank12) | confirmed by another lane (KB) | KB (seed+decompile): same 4 args (angle u16, aspect, near, far) and call slot; Steam closed form read; SH4 body uses sin/atan/cos helpers 8C11EB20/8C11E170/8C11E2E0 and ftrv loader 8C120540 (not reduced) (WORLD-CAMERA-GHIDRA.md s1/2.1) / matcher: sw:11#0#3(9.9) sw:10#0#3(9.9) k:11#3(9.9) k:10#3(9.9) kl:11#-2(7.9) kl:10#-2(7.9) ko:11(4.1) ko:10(4.1) |
+| `FUN_140848200` | `loc_8c121710` (bank12) | confirmed by another lane (KB) | KB (seed+decompile): SH4 stores fabs(fr4),fabs(fr5) to 0x8C16BD80/84 (consumed by 8C1219B0); Steam stores to ctx+0x1f8240/44 (consumed by FUN_140847f20); same call slot (WORLD-CAMERA-GHIDRA.md s1) / matcher: sw:11#0#2(9.9) sw:10#0#2(9.9) k:11#2(9.9) k:10#2(9.9) kl:11#-3(7.9) kl:10#-3(7.9) ko:11(4.1) ko:10(4.1) |
 
 ### Block-map corrections found by this crawl (all from pairs above)
 
@@ -196,7 +202,7 @@ Steam functions (game range) that touch blk 0x3CB8..0x6D10 (globals/camera), 0x2
 | `FUN_14061b8e0` | globals/camera 0x3CB8..0x6D10 | 0x6914 0x6918 0x691c 0x695c 0x6960 0x6964 0x698c 0x69d8 0x69dc 0x69e0 | UNMATCHED | - |
 | `FUN_14061c0a0` | globals/camera 0x3CB8..0x6D10 | 0x690f 0x6910 0x6911 0x6914 0x6918 0x691c 0x695c 0x6960 0x6964 0x69b4 | UNMATCHED | - |
 | `FUN_14061c660` | globals/camera 0x3CB8..0x6D10 | 0x69a0 0x69a4 | UNMATCHED | - |
-| `FUN_14061c6e0` | globals/camera 0x3CB8..0x6D10 | 0x6908 0x690f 0x6910 0x6911 0x6912 0x6914 0x6918 0x691c 0x695c 0x6960 | `loc_8c02e014` | medium |
+| `FUN_14061c6e0` | globals/camera 0x3CB8..0x6D10 | 0x6908 0x690f 0x6910 0x6911 0x6912 0x6914 0x6918 0x691c 0x695c 0x6960 | `loc_8c02e014` (inlined) | confirmed |
 | `FUN_14061ca70` | globals/camera 0x3CB8..0x6D10; draw list handles/counts 0x2F4D0..0x324F8 | 0x6908 0x6909 0x690a 0x690c 0x690d 0x690e 0x690f 0x6910 0x6911 0x6912 | `loc_8c02e3c8`; `loc_8c02e4ac` (inlined); `loc_8c02fa88` (inlined); `loc_8c02fde0` (inlined); `loc_8c0300ba` (inlined) | low |
 | `caseD_0` | globals/camera 0x3CB8..0x6D10 | 0x690f | UNMATCHED | - |
 | `FUN_14061caf0` | globals/camera 0x3CB8..0x6D10 | 0x6908 0x690f 0x6910 0x6911 0x6912 0x6914 0x6918 0x691c 0x695c 0x6960 | UNMATCHED | - |
@@ -981,7 +987,7 @@ Steam functions (game range) that touch blk 0x3CB8..0x6D10 (globals/camera), 0x2
 1. Any CONFIRMED pair: decompile the Steam side (`/decompile_function?address=`) and read the SH4 routine; the callee sequence and the blk/global set must correspond under `blkmap.py`. A mismatch in a seed invalidates every pair propagated from it (the CSV `evidence` column names the pair ids used).
 2. INFERRED `high` rows: the `runner_up` column gives the second-best candidate and its score; if reading shows the runner-up is the true counterpart, lower `MARGIN` is not the fix -- add the pair to `seeds.json` and re-run.
 3. The stage-struct deltas: sample `blk+0x6914..0x698C`, `0x6CA8`, `0x6CE4`, `0x6D04`, `0x6D08` live and compare with DC `0x8C26A524..`, `0x8C26A8A8`, `0x8C26A8E4`, `0x8C26A95C`, `0x8C26A974` in flycast on the same frame.
-4. Re-run end to end: `python ghidra_export.py fetch` (resumable), `python ghidra_export.py finger`, `python sh4_export.py`, `python match.py`, `python report.py`; then, from the maplecast-flycast repo root, `PYTHONIOENCODING=utf-8 python tools/re_kb/apply_seed.py tools/re_kb/23_steam_function_map.surql` (one statement per request; `rekb.sh @file` fails on this 5 MB file with 'length limit exceeded' and applies NOTHING).
+4. Re-run end to end: `python ghidra_export.py fetch` (resumable), `python ghidra_export.py finger`, `python sh4_export.py`, `python match.py`, `python report.py`; then, from the maplecast-flycast repo root, `PYTHONIOENCODING=utf-8 python tools/re_kb/apply_seed.py tools/re_kb/30_steam_function_map.surql` (one statement per request; `rekb.sh @file` fails on this 5 MB file with 'length limit exceeded' and applies NOTHING).
 
 ## 6. Precision spot-check of INFERRED rows (2026-09-02)
 
@@ -1001,6 +1007,7 @@ Estimated precision of the `high` tier from this sample: 5/6. `medium`/`low` wer
 ## 7. Known gaps / UNKNOWN
 
 * `FUN_14061d900` (Ghidra merged the four node constructors reached through `PTR_caseD_4_140a6e5c8` into one body) has no single SH4 counterpart; the DC constructor table is `loc_8c045020` (4 entries) -- not mapped.
-* `FUN_140848ee0` (model record walk) and `FUN_140846c30` (matrix slot store) carry no constants and were not reached by propagation with enough evidence; UNKNOWN on the SH4 side.
+* `FUN_140848ee0` (NaomiLib object record walk, role assigned by the WORLD-CAMERA lane) and `FUN_140846c30` (matrix slot store) carry no constants and were not reached by propagation with enough evidence; their SH4 counterparts are UNKNOWN here.
+* The live KB also holds 12 `steam_routine` roles written by hand by the WORLD-CAMERA lane on functions this matcher left unmatched (fight camera x/y/zoom, matrix pre/post-multiply, queue flush, ...); the seed file coalesces (`role ?? 'UNMATCHED'`) so re-applying it cannot erase them.
 * Functions inside the two Ghidra mega blobs are not in Ghidra's function list at all; re-analysis of the binary (splitting `caseD_0`) is required before this map can cover the character move code.
 * The SH4 side does not include the S_PLxx character-program overlays (`_marv_re/char_prg`).

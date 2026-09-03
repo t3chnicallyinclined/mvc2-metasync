@@ -3,7 +3,7 @@
 
     docs/steam_sh4_map.csv                      (steam_addr, sh4_pc, confidence, evidence, ...)
     docs/STEAM-SH4-FUNCTION-MAP.md              (method, coverage, anchors, render-relevant functions)
-    <maplecast-flycast>/tools/re_kb/23_steam_function_map.surql   (idempotent KB seed)
+    <maplecast-flycast>/tools/re_kb/30_steam_function_map.surql   (idempotent KB seed)
 
     python report.py
 """
@@ -14,7 +14,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 QUARTERS = os.path.abspath(os.path.join(HERE, "..", "..", ".."))
 DOCS = os.path.join(QUARTERS, "docs")
 KB_DIR = r"C:\Users\trist\projects\maplecast-flycast\tools\re_kb"
-SURQL = os.path.join(KB_DIR, "23_steam_function_map.surql")
+SURQL = os.path.join(KB_DIR, "30_steam_function_map.surql")
 GAME_LO, GAME_HI = 0x140600000, 0x1408e0000
 TODAY = "2026-09-02"
 
@@ -55,6 +55,28 @@ def main():
     steam = {f["addr"]: f for f in (json.loads(l) for l in open(os.path.join(HERE, "steam_funcs.jsonl"), encoding="utf-8"))}
     sh4 = {f["pc"]: f for f in (json.loads(l) for l in open(os.path.join(HERE, "sh4_funcs.jsonl"), encoding="utf-8"))}
     rows = json.load(open(os.path.join(HERE, "match_result.json"), encoding="utf-8"))
+    # merge confirmations written into the live KB by OTHER lanes (same id scheme recompiles:FUN_x_loc_y);
+    # a KB 'confirmed' row overrides the matcher's INFERRED tier and adds pairs the matcher did not have.
+    ext_path = os.path.join(HERE, "cache", "kb_recompiles_external.json")
+    n_ext = 0
+    if os.path.exists(ext_path):
+        ext = json.load(open(ext_path, encoding="utf-8"))[1]["result"]
+        have = {(o["steam"], o["sh4"]): o for o in rows}
+        for e in ext:
+            sa = "0x" + e["in"].split("FUN_")[1]
+            pc = "0x" + e["out"].split("loc_")[1]
+            ev = "KB (%s): %s" % (e["method"], e["evidence"])
+            if (sa, pc) in have:
+                o = have[(sa, pc)]
+                o["confidence"], o["method"], o["evidence"] = "confirmed", "kb-" + e["method"], ev + " | matcher: " + o["evidence"]
+            else:
+                a, p = int(sa, 16), int(pc, 16)
+                rows.append({"steam": sa, "steam_name": steam[a]["name"] if a in steam else sa, "sh4": pc,
+                             "sh4_label": "loc_%08x" % p, "bank": sh4[p]["bank"] if p in sh4 else "?", "confidence": "confirmed",
+                             "method": "kb-" + e["method"], "evidence": ev, "score": 0, "runner_up": "",
+                             "steam_ninsn": steam[a]["ninsn"] if a in steam else 0, "sh4_ninsn": sh4[p]["ninsn"] if p in sh4 else 0})
+            n_ext += 1
+        print("merged", n_ext, "external KB confirmations")
     kb_r = {r["id"]: r for r in json.load(open(os.path.join(HERE, "cache", "kb_routines.json"), encoding="utf-8"))[1]["result"]}
     kbg = json.load(open(os.path.join(HERE, "cache", "kb_globals_fields.json"), encoding="utf-8"))
     kb_globals = kbg[1]["result"]
@@ -127,7 +149,7 @@ def main():
               "project `dumpproj`, read through the GhidraMCP HTTP bridge on :8080) and the marvelous2 SH4 disassembly "
               "(`C:\\Users\\trist\\projects\\_marv_re\\build\\bank*.asm`, `loc_8c......` == PC). Machine-readable: "
               "`docs/steam_sh4_map.csv`. Scripts: `d3dcap/replay/re_map/` (`ghidra_export.py`, `sh4_export.py`, `blkmap.py`, "
-              "`match.py`, `seeds.json`, `report.py`). KB seed: `maplecast-flycast/tools/re_kb/23_steam_function_map.surql`.\n")
+              "`match.py`, `seeds.json`, `report.py`). KB seed: `maplecast-flycast/tools/re_kb/30_steam_function_map.surql`.\n")
     md.append("Every row is tagged **CONFIRMED** (both sides read by a human; `seeds.json`) or **INFERRED** (fingerprint / "
               "call-graph only; tiers high / medium / low). An INFERRED row is a hypothesis with its evidence and runner-up "
               "attached, not a fact.\n")
@@ -168,9 +190,9 @@ def main():
     md.append("## 3. CONFIRMED anchors (both sides read)\n")
     md.append("| Steam | SH4 | what | evidence |\n|---|---|---|---|")
     for o in rows:
-        if o["method"] in ("seed", "seed-inlined"):
+        if o["method"] in ("seed", "seed-inlined") or o["method"].startswith("kb-"):
             md.append("| `%s` | `%s` (%s) | %s | %s |" % (o["steam_name"], o["sh4_label"], o["bank"],
-                      SEED_ROLES.get(int(o["steam"], 16), "") if o["method"] == "seed" else "inlined into " + o["steam_name"],
+                      SEED_ROLES.get(int(o["steam"], 16), "") if o["method"] == "seed" else ("inlined into " + o["steam_name"] if o["method"] == "seed-inlined" else "confirmed by another lane (KB)"),
                       o["evidence"].replace("|", "/")))
     md.append("\n### Block-map corrections found by this crawl (all from pairs above)\n")
     md.append("* **Pool-tail bookkeeping is pointer-scaled, not a flat delta.** DC `0x8C287A54` free_head(4) free_tail(4) heads[14](4) "
@@ -208,7 +230,7 @@ def main():
               "DC `0x8C26A524..`, `0x8C26A8A8`, `0x8C26A8E4`, `0x8C26A95C`, `0x8C26A974` in flycast on the same frame.")
     md.append("4. Re-run end to end: `python ghidra_export.py fetch` (resumable), `python ghidra_export.py finger`, "
               "`python sh4_export.py`, `python match.py`, `python report.py`; then, from the maplecast-flycast repo root, "
-              "`PYTHONIOENCODING=utf-8 python tools/re_kb/apply_seed.py tools/re_kb/23_steam_function_map.surql` "
+              "`PYTHONIOENCODING=utf-8 python tools/re_kb/apply_seed.py tools/re_kb/30_steam_function_map.surql` "
               "(one statement per request; `rekb.sh @file` fails on this 5 MB file with 'length limit exceeded' and applies NOTHING).")
     md.append("\n## 6. Precision spot-check of INFERRED rows (2026-09-02)\n")
     md.append("Six `high` rows drawn at random (`random.seed(7)`) and read on both sides before sign-off:\n")
@@ -223,8 +245,11 @@ def main():
     md.append("\n## 7. Known gaps / UNKNOWN\n")
     md.append("* `FUN_14061d900` (Ghidra merged the four node constructors reached through `PTR_caseD_4_140a6e5c8` into one body) has "
               "no single SH4 counterpart; the DC constructor table is `loc_8c045020` (4 entries) -- not mapped.")
-    md.append("* `FUN_140848ee0` (model record walk) and `FUN_140846c30` (matrix slot store) carry no constants and were not reached by "
-              "propagation with enough evidence; UNKNOWN on the SH4 side.")
+    md.append("* `FUN_140848ee0` (NaomiLib object record walk, role assigned by the WORLD-CAMERA lane) and `FUN_140846c30` (matrix slot "
+              "store) carry no constants and were not reached by propagation with enough evidence; their SH4 counterparts are UNKNOWN here.")
+    md.append("* The live KB also holds 12 `steam_routine` roles written by hand by the WORLD-CAMERA lane on functions this matcher "
+              "left unmatched (fight camera x/y/zoom, matrix pre/post-multiply, queue flush, ...); the seed file coalesces "
+              "(`role ?? 'UNMATCHED'`) so re-applying it cannot erase them.")
     md.append("* Functions inside the two Ghidra mega blobs are not in Ghidra's function list at all; re-analysis of the binary "
               "(splitting `caseD_0`) is required before this map can cover the character move code.")
     md.append("* The SH4 side does not include the S_PLxx character-program overlays (`_marv_re/char_prg`).")
@@ -272,11 +297,14 @@ def main():
             note = "No SH4 counterpart found by the crawl (fingerprint: %d imms, %d blk offsets, %d callees)." % (
                 len(f["imms"]), len(f["blk_offs"]) + len(f["g_offs"]), len(set(f["callees"])))
         consts = sorted(set(v for v in f["imms"] if not (0x140000000 <= v < 0x1440e8000)) | set(f["dcaddrs"]))[:40]
-        q.append("UPSERT steam_routine:FUN_%x SET addr='0x%x', name='%s', role='%s', note='%s', ninsn=%d, size=%d, "
+        # unmatched rows must not clobber a role/note another lane wrote by hand: coalesce with the existing value
+        role_expr = "'%s'" % esc(role) if cps else "role ?? '%s'" % esc(role)
+        note_expr = "'%s'" % esc(note) if cps else "note ?? '%s'" % esc(note)
+        q.append("UPSERT steam_routine:FUN_%x SET addr='0x%x', name='%s', role=%s, note=%s, ninsn=%d, size=%d, "
                  "blk_reads=%s, blk_writes=%s, consts=%s, floats=[%s], strings=[%s], callees=[%s], matched=%s;" % (
-                     a, a, esc(f["name"]), esc(role), esc(note), f["ninsn"], f["size"],
+                     a, a, esc(f["name"]), role_expr, note_expr, f["ninsn"], f["size"],
                      hexlist(sorted(set(f["blk_reads"]))[:40]), hexlist(sorted(set(f["blk_writes"]))[:40]), hexlist(consts),
-                     ", ".join("%r" % float("%.6g" % x) for x in f["floats"][:20]),
+                     ", ".join("%r" % float("%.6g" % x) for x in f["floats"] if x == x and abs(x) != float("inf"))[:20] if False else ", ".join("%r" % float("%.6g" % x) for x in [y for y in f["floats"] if y == y and abs(y) != float("inf")][:20]),
                      ", ".join("'%s'" % esc(s) for s in f["strings"][:10]),
                      ", ".join("'FUN_%x'" % c for c in sorted(set(f["callees"]))[:40]),
                      "true" if cps else "false"))
@@ -286,6 +314,8 @@ def main():
     for o in rows:
         a, pc = int(o["steam"], 16), int(o["sh4"], 16)
         method = o["method"]
+        if method.startswith("kb-"):
+            continue  # owned by the other lane's seed; never overwrite
         q.append("RELATE steam_routine:FUN_%x->recompiles:FUN_%x_loc_%08x->routine:loc_%08x SET confidence='%s', method='%s', evidence='%s', inlined=%s;" % (
             a, a, pc, pc, o["confidence"], method, esc(o["evidence"][:400]), "true" if method in ("inlined", "seed-inlined") else "false"))
     # calls among matched steam functions
