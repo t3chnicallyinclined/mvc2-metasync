@@ -487,10 +487,20 @@ def main():
                 if nd['kind'] == 0:
                     cid = (p1 if nd['slot'] % 2 == 0 else p2)[nd['slot'] // 2]
                 else:
-                    if nd['owner'] > 5:
-                        missing['object with owner %d (unowned)' % nd['owner']] += 1
+                    owner = nd['owner']
+                    if owner > 5:
+                        # an OWNERLESS pool object (owner 0xFF: global supers, some projectiles) still
+                        # carries its GFX1 bank pointer, and every effect inherits its character's
+                        # GFX1 by struct copy -- so the bank names the character. Resolve through the
+                        # fighters of this frame (kind 0 nodes carry theirs).
+                        for f in v3nodes.get(fr_clock, ()):
+                            if f['kind'] == 0 and f['gfx1'] and f['gfx1'] == nd['gfx1']:
+                                owner = f['slot']
+                                break
+                    if owner > 5:
+                        missing['object with owner %d (unowned, gfx1 %08X unmatched)' % (nd['owner'], nd['gfx1'])] += 1
                         continue
-                    cid = (p1 if nd['owner'] % 2 == 0 else p2)[nd['owner'] // 2]
+                    cid = (p1 if owner % 2 == 0 else p2)[owner // 2]
                 # mirror = the node's facing ONLY. sid bit 15 selects the record FORMAT (the
                 # scale walker), it is not a flip (Ghidra FUN_1406129f0; v3gate 100% with this).
                 mir = bool(nd['face'])

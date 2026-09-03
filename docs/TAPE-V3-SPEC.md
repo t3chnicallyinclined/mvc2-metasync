@@ -325,3 +325,45 @@ Objects and pages come from an **asset library** built from captures (`alist_<f>
 `tcw_build.py`) and completed by a one-time agent upload of any hash the server has not seen —
 the same model as skins. Textures were never on the wire (the TCW is the key). v5 stays valid: a
 v6 reader treats an interned object as "asset present"; a v5 reader ignores the new fields.
+
+
+## 10. The minimum data set, derived from the Steam binary  *(Ghidra read-set, 2026-09-03)*
+
+The question "do we have everything?" has a mechanical answer: list every memory read of the
+render path and classify it. Decompiled in Ghidra: the sprite walker `FUN_140620f10`, the sprite
+submit `FUN_1406129f0`, the world-space walkers `FUN_140620740` / `FUN_140620cd0`, the polygon-list
+consumer `FUN_140848ee0` → `FUN_1408436a0`, the projection `FUN_140848120`, the matrix stack.
+
+### 10.1 Sprite pass — per node (`FUN_140620f10` writes, `FUN_1406129f0` reads)
+| offset | meaning | in the tape as | class |
+|---|---|---|---|
+| `+0x188` | sid (bit 15 = scale-walker format) | `sid` | state |
+| `+0x124/+0x128` | screen x/y (walker output) | `fsx/fsy` | state |
+| `+0x130/+0x134` | scale x/y (= 5/3, 15/7 ÷ zoom) | `zx/zy` | state (constant so far) |
+| `+0x12C` | depth base | `depth` | state |
+| `+0x148` | angle (`+0x64` + animation cell) | `angle` | state |
+| `+0x178/+0x17A` | hotspot | `hotx/hoty` | state |
+| `+0x154` | facing (`+0x174` ⊕ cell flip) | `face` | state |
+| `+0x14C` | float 1.0 on every node in every capture | — | constant |
+| `+0x120` | tile-index base into the tiledesc arena | — | derived by the tiled builder from GFX1 (asset) |
+| `+0x230` | texture-table slot byte (= fighter slot) | `slot`/`owner` | derived |
+| `+0x1A8/+0x1B0/+0x1F0` | GFX1 / GFX2 / template pointers | `gfx1/gfx2` (+ atlas) | asset |
+| `+0x1B8` | palette pointer | `pal` (resolved 32 B) | state (interned) |
+| `+0x172` | palette-bank base (slot) | `flash` | derived |
+| `+0x38 / +0x4D / +0x03 / +0x170` | layer / sort / category / drawn | `layer/sort/cat/drawn` + list order | state |
+| `blk+0x32BDC/0x32BE0/0x32BEC` | render flag bases (2, 1024, 16→400) | — | constant / texture-table base only |
+
+### 10.2 World-space pass — per node (`FUN_140620cd0/740`)
+`+0xA8` 4×4 (= CBWorld), `+0x94..0x9C` colour, `+0xF0` flags, `+0xE8` model, `+0xA0` polygon list
+(TCW + vertices = **asset**, keyed by TCW + content hash), `+0x170` drawn → all in `anodes/aobjs`.
+
+### 10.3 Globals
+Render camera `blk+0x6914/0x6918/0x691C` (eyeX, eyeY, **zoom** — added in 0.3.37), `blk+0x6998`
+ground, stage id `blk+0x6D04` (0.3.36), per-layer depth bases `blk+0x6D08..` = the LayerZ table
+(constant), fog/colour PS constants (constant per stage → template).
+
+Everything the two passes read is therefore either in the tape, a static asset, derivable from a
+tape field, or a constant verified across every capture. What the audit (`tape_audit.py`) still
+flags on the first v5 tape is not a missing FIELD but missing FRAMES: 30 rows without a draw list
+and 88 torn lists — the agent's read timing, fixed by the stub-retry in 0.3.37 — plus the stage
+sheets of that match's stage, which come from the arc rip, not the tape.
