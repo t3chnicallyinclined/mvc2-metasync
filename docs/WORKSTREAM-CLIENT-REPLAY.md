@@ -121,7 +121,15 @@ Keys instead of object bytes (the client resolves them against the pack); static
 `node+0x150` (M11); drop `objs`, `pal`, `blend` and the six duplicate fighter columns (review-re §3). Target < 1
 MB/match. Gate: v6 re-emits the v5 draw list identically. The keyed frame format of W5 is also M-interim's wire.
 
-### W6 — Delivery
+### W6 — Delivery (product decisions from Tris, 2026-09-03)
+- **Placement:** the replay lives on the LIVE RESULTS feed — each match card gets a "Watch replay" action (design
+  team to place it; `metasync-designer` agent for the PWA mock).
+- **Retention:** the live feed keeps replays for the last 100 matches; saving a replay beyond that is a PAID feature.
+  The server contract (lane 1): tapes older than the window are evicted from the stream endpoint unless saved.
+- **Agent CPU (measured 2026-09-03 03:40, game open):** 0.3.39/0.3.40/0.3.41 all ~139–141% of one logical core
+  while the game runs (unchanged by today's fields) — acceptable on a 32-thread box (~4%), NOT on a 4–8 core one.
+  Ship gate for the replay agent: profile the per-tick work (RPM count, object hashing) and get it under ~25% of
+  one core in-match before the beta channel picks it up.
 E1 server: tape range endpoint (lane 1 contract only: `GET /rr/tape/<id>` with Range, gzip as stored) + the
 M-interim emitter/publisher. E2 PWA route `/replay/<match>` (desktop: worker + WebGPU; phone: subscriber + WebGPU).
 E3 release gate = headless render-check of 3 gold frames, byte-exact vs stored PNGs, pre-bloom per D-post.
