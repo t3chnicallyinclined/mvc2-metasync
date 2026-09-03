@@ -69,7 +69,9 @@ Say "[inject] injected pre-execution; capture is HELD until a step arms it" Gree
 # have it). Joined on the matrix afterwards (tcw_build.py), that names the texture of every
 # world-space draw in the capture -- effects included, which only exist while they are on screen.
 $tcwLog = Join-Path $capDir 'tcw_log.json'
-$tcw = Start-Process -FilePath python -ArgumentList @((Join-Path $here 'replay	cw_logger.py'), '--out', $tcwLog) -PassThru -WindowStyle Hidden
+$py = (Get-Command python -ErrorAction SilentlyContinue).Source
+if (-not $py -or $py -match 'WindowsApps') { $py = 'C:\Python313\python.exe' }   # the Store alias is not a python
+$tcw = Start-Process -FilePath $py -ArgumentList @((Join-Path $here 'replay	cw_logger.py'), '--out', $tcwLog) -PassThru -WindowStyle Hidden
 Say "[tcw] logger running (pid $($tcw.Id)) -> $tcwLog" Green
 Say ""
 Rule
