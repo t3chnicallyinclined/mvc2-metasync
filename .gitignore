@@ -115,3 +115,7 @@ d3dcap/replay/re_map/__pycache__/
 
 # TTD time-travel traces + live memory images (game-derived, multi-GB) -- never commit
 /d3dcap/ttd/runs/
+d3dcap/replay/fullmatch/*.seq
+d3dcap/replay/fullmatch/*.mp4
+d3dcap/replay/fullmatch/*.log
+d3dcap/replay/fullmatch/*.txt
