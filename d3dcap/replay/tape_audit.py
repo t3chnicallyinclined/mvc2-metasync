@@ -108,13 +108,13 @@ def main():
     for lst in nodes.values():
         for n in lst:
             if n['kind'] == 0 and n['gfx1']:
-                slot_bank[n['slot']] = n['gfx1'] & 0xFFFF
+                slot_bank[n['slot']] = n['gfx1']
     known = set(slot_bank.values()); unknown_slots = [s for s in range(6) if s not in slot_bank]
     bad_owner = 0; by_elim = 0
     for fr, lst in nodes.items():
         for n in lst:
             if n['kind'] == 1 and n['owner'] > 5:
-                b = n['gfx1'] & 0xFFFF
+                b = n['gfx1']
                 if b in known: continue
                 if len(unknown_slots) == 1: by_elim += 1; continue
                 bad_owner += 1

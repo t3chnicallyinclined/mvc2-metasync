@@ -79,7 +79,12 @@ let player = null, playing = false, raf = 0;
     }
   } catch { /* a convenience, not a requirement — type the filename */ }
   if (!$('seq').value) $('seq').value = 'sequence.seq';
+  // ?seq=<file> picks the sequence; &auto=1 presses Load (used by capture_video.mjs)
+  const q = new URLSearchParams(location.search);
+  if (q.get('seq')) $('seq').value = q.get('seq');
+  if (q.get('auto')) $('load').click();
 })();
+window.__rr = { ready: false };   // capture_video.mjs hook: { ready, count, first, show }
 
 async function boot() {
   if (!navigator.gpu) throw new Error('WebGPU unavailable — needs Chrome/Edge 113+ with hardware GPU');
@@ -129,6 +134,7 @@ $('load').onclick = async () => {
     $('pos').value = 0;
     for (const id of ['play', 'prev', 'next', 'pos']) $(id).disabled = false;
     show(0);
+    window.__rr = { ready: true, count: player.count, first: m.first, show };
     log('every frame is RE-RENDERED from Steam\'s own draw calls — this is not a video.');
   } catch (e) {
     log(String(e.message || e), 'err');

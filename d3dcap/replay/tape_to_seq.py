@@ -511,7 +511,11 @@ def main():
         for _fr, _rows in v3nodes.items():
             for _n in _rows:
                 if _n['kind'] == 0 and _n['gfx1']:
-                    bank_slot[_n['gfx1'] & 0xFFFF] = _n['slot']
+                    # the tape's gfx1 is the fighter's GFX1 TABLE POINTER (u32): unique per fighter, but its
+                    # low 16 bits are 0x1020 for EVERY fighter (page-aligned tables), so the old `& 0xFFFF`
+                    # key collapsed all six fighters onto one slot -> every bank-resolved object (hit sparks,
+                    # cat 3: sids 1002..1006 in the OWNER's own sprite set) drew with the wrong character's rip.
+                    bank_slot[_n['gfx1']] = _n['slot']
         unknown_slots = [s_ for s_ in range(6) if s_ not in set(bank_slot.values())]
         print('  TAPE v%d: %d frames of ordered nodes, %d palettes, stride %d' % (
             4 if stride >= 50 else 3, len(v3nodes), len(v3pals), stride))
@@ -657,7 +661,7 @@ def main():
                         # through the slot->bank map of the whole tape, and when the bank is seen on no
                         # fighter node (a parked fighter carries gfx1 == 0) by ELIMINATION if exactly one
                         # slot has no known bank. First v5 tape: 13% of objects were this class.
-                        b = nd['gfx1'] & 0xFFFF
+                        b = nd['gfx1']           # full pointer (see bank_slot)
                         if nd.get('oslot', -1) >= 0:
                             owner = nd['oslot']          # 0.3.38 raw owner link
                         elif b in bank_slot:
