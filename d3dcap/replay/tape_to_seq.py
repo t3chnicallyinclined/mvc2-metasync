@@ -168,6 +168,51 @@ def nl_groups(pay, has_colored=False):
     return out
 
 
+def complete_prop(recs, arc_models, cache, oi):
+    """Stage props are ARC MODELS placed by list-5 nodes (STAGE-DRAW-GHIDRA.md); agents <= 0.3.40 cut every
+    object at 4 KB / 8 records (stage 16: 9..18-mesh models shipped 5..7 records = part of the background
+    missing). If the object's FIRST record is an arc model's first mesh (vertex identity, the 99.6% gate),
+    keep the tape's own records (exact bytes) and append the arc model's remaining meshes as records:
+    key = 0xC10 + texIndex, PCW/ISP/TSP from the mesh header (falling back to the object's own words),
+    colour = (alpha, R, G, B), one triple group per mesh, centre/radius for the sort key."""
+    if oi in cache:
+        return cache[oi]
+    out = recs
+    if recs and recs[0].get('verts') and arc_models:
+        v0 = {tuple(round(c, 2) for c in v[:3]) for v in recs[0]['verts']}
+        for mi, meshes in arc_models.items():
+            m0 = meshes[0]
+            s0 = {tuple(round(c, 2) for c in v['pos']) for tri in m0['tris'] for v in tri}
+            if not v0 or not s0 or len(v0 & s0) / len(v0) < 0.9:
+                continue
+            if len(meshes) > len(recs):
+                r0 = recs[0]
+                extra = []
+                for m in meshes[len(recs):]:
+                    verts = [(v['pos'][0], v['pos'][1], v['pos'][2], 0.0, 0.0, 0.0, v['uv'][0], v['uv'][1])
+                             for tri in m['tris'] for v in tri]
+                    if not verts:
+                        continue
+                    col = m.get('color') or [1.0, 1.0, 1.0]
+                    ctr = m.get('center'); rad = m.get('radius')
+                    if ctr is None:
+                        xs = [v[0] for v in verts]; ys = [v[1] for v in verts]; zs = [v[2] for v in verts]
+                        ctr = (sum(xs) / len(xs), sum(ys) / len(ys), sum(zs) / len(zs))
+                        rad = max(((v[0] - ctr[0]) ** 2 + (v[1] - ctr[1]) ** 2 + (v[2] - ctr[2]) ** 2) ** 0.5 for v in verts)
+                    ti = int(m.get('texIndex', 255))
+                    extra.append(dict(tcw=0xC10 + ti, key='%08X' % (0xC10 + ti),
+                                      pcw=int(m.get('baseParams', r0['pcw'])), isp=int(m.get('texInstr', r0['isp'])),
+                                      tsp=int(m.get('tsp', r0['tsp'])), texnum=ti,
+                                      colour=(float(m.get('alpha', 1.0)), float(col[0]), float(col[1]), float(col[2])),
+                                      verts=verts, groups=[(0x8, verts)], centre=tuple(ctr), radius=float(rad), arc=True))
+                out = list(recs) + extra
+                complete_prop.stats[mi] = (len(recs), len(meshes))
+            break
+    cache[oi] = out
+    return out
+complete_prop.stats = {}
+
+
 def decode_anodes(tape):
     """frame -> [node dict]; and the interned objects as [(header bytes, [records])]."""
     if not tape.get('anodes'):
@@ -637,12 +682,16 @@ def main():
             wt = WorldTemplate(a.world_template)
             stage_rip = None
             stage_preload = {}
-            stage_geo = []          # arc deck geometry for the current frame (see emit_stage)
+            stage_geo = []
+            arc_models, prop_cache = {}, {}          # arc deck geometry for the current frame (see emit_stage)
             stage_announced = []
             sid_ = tape.get('stage_id')
             if sid_ is not None and os.path.exists(os.path.join(STAGE_DIR, 'STG%02X.json' % int(sid_))):
                 stage_rip = json.load(open(os.path.join(STAGE_DIR, 'STG%02X.json' % int(sid_))))
                 print('  stage %02X: %d arc textures available (TCW 0xC10 + index)' % (int(sid_), len(stage_rip['textures'])))
+                for _m in stage_rip['meshes']:
+                    if _m.get('model', 0) != 0 and _m.get('tris'):
+                        arc_models.setdefault(int(_m['model']), []).append(_m)
                 # Prefer pages ripped with the HOST decode (rip_texbank.py --bank stage --stage XX --out
                 # tcw_pages/stage_XX): rip_stage.py's PNGs use a transposed twiddle + wrong 565/1555
                 # expansion (docs/TEXTURE-BANKS-GHIDRA.md, falsification arm 0/13). Same TCW keys.
@@ -991,7 +1040,10 @@ def main():
                 hw = sha8(cbw); hs = sha8(scb)
                 cb_recs.setdefault(hw, {**intern(cbw)})
                 cb_recs.setdefault(hs, {**intern(scb)})
-                for rec in v5objs[nd['obj']]:
+                objrecs = v5objs[nd['obj']]
+                if nd['list'] == 5 and stage_rip is not None:
+                    objrecs = complete_prop(objrecs, arc_models, prop_cache, nd['obj'])
+                for rec in objrecs:
                     key = rec['key']
                     page = tape_pages.get(key)
                     if page is None and key in wt.pages:
@@ -1294,6 +1346,8 @@ def main():
     if rotated_general:
         print('  general-rotation parts (disassembly formula, NOT pixel-gated): %s'
               % {('0x%04X' % k): v for k, v in rotated_general.items()})
+    if complete_prop.stats:
+        print('  stage props completed from the arc (tape records -> arc meshes): %s' % dict(sorted(complete_prop.stats.items())))
     print('\n%d frames, %d draws (%.1f/frame), %d distinct textures'
           % (len(heads), drawn_total, drawn_total / max(1, len(heads)), len(textures)))
     if world_state_total:
