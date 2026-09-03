@@ -232,7 +232,11 @@ def decode_anodes(tape):
                 key = stash.decode('ascii') if ok else '%08X' % tcw
                 recs.append(dict(tcw=tcw, key=key, pcw=pcw_w, isp=isp_w, tsp=tsp_w, groups=groups,
                                  texnum=struct.unpack_from('<i', hdr, 0x20)[0],
-                                 colour=struct.unpack_from('<4f', hdr, 0x2C), verts=verts))
+                                 colour=struct.unpack_from('<4f', hdr, 0x2C), verts=verts,
+                                 # NaomiLib bounding sphere @0x10..0x1C: the translucent sort key input
+                                 # (FUN_140843320); a synthetic tape stashes its page key there (ok above)
+                                 centre=None if ok else struct.unpack_from('<3f', hdr, 0x10),
+                                 radius=None if ok else struct.unpack_from('<f', hdr, 0x1C)[0]))
                 q += 0x50 + max(0, size)
             objs.append(recs)
     return frames, objs
@@ -253,6 +257,78 @@ def scene_block(cam, variant):
             out.append(a * cx + b * cy + c)
     return struct.pack('<108f', *out)
 scene_block.model = json.load(open(CAMERA_BLOCK)) if os.path.exists(CAMERA_BLOCK) else None
+
+
+# ── THE TRANSLUCENT SORT (Ghidra, docs/TRANSLUCENT-SORT-GHIDRA.md; gate d3dcap/replay/sort_gate.py) ──
+# Steam queues every draw with a category (FUN_1408436a0: PCW list type 0 -> 0, 1 -> 1, translucent -> 3;
+# a flag-bit-5 node with alpha < 1 -> 3) and flushes (FUN_140843eb0 -> FUN_140842e30) categories 0, 1, 2 in
+# SUBMISSION order and category 3 qsort'ed (MSVC CRT) by LAB_1408434d0: f32 key DESCENDING, ties by the
+# submission sequence number ASCENDING. The key of a world record = w of [centre(rec+0x10) 1] x W x V x P
+# (FUN_140843320; the Screen matrix's 4th column is (0,0,0,1)); radius(rec+0x1C) < 0 forces key = -radius.
+# HUD lists (kind 0) skip V. A sprite record's key is the walker depth node+0x12C plus 0.001 per record
+# (FUN_1406129f0), and FUN_1408432e0 turns THAT into the quad's vertex z = max(0, (P32 - D*P22)/D).
+def scene_VP(scb):
+    """(V, P) 4x4 row-vector matrices from a 432-B scene block (rows 7-10 = V, 15-18 = P; WORLD-CAMERA doc 3.1)."""
+    V = np.array(struct.unpack_from('<16f', scb, 7 * 16), dtype=np.float32).reshape(4, 4)
+    P = np.array(struct.unpack_from('<16f', scb, 15 * 16), dtype=np.float32).reshape(4, 4)
+    return V, P
+
+
+def sort_key_record(centre, radius, W16, V, P, hud=False):
+    """FUN_140843320 for a record drawn with world matrix W16 (the node's +0xA8, row-vector order)."""
+    if centre is None:
+        return None
+    if radius is not None and radius < 0:
+        return float(-radius)
+    W = np.array(W16, dtype=np.float32).reshape(4, 4)
+    v = np.array([centre[0], centre[1], centre[2], 1.0], dtype=np.float32)
+    return float((v @ ((W @ P) if hud else (W @ V @ P)))[3])
+
+
+def sprite_vertex_z(D, P):
+    """FUN_1408432e0: the sprite quad's vertex z from its depth key D under projection P (slot 3)."""
+    D = np.float32(D)
+    if D == 0:
+        return 0.0
+    z = (np.float32(P[3, 2]) - D * np.float32(P[2, 2])) / D
+    return float(max(np.float32(0), z))
+
+
+def order_draws(draws, legacy=False):
+    """Two phases: categories 0/1 (Z-write) in submission order, then category 3 by (-key, submission).
+    Draws without a key (no centre available) keep their submission slot among the cat-3 draws by taking
+    the key of the previous keyed draw. Bit-13 draws inherit the cull state of the draw flushed before
+    them (ring state, FUN_140849ac0 path)."""
+    if legacy:
+        for d in draws:
+            for k in ('_cat', '_key', '_sub', '_inherit_cull'):
+                d.pop(k, None)
+        return draws
+    stats = Counter()
+    phase1 = [d for d in draws if d.get('_cat', 0) in (0, 1)]
+    phase1.sort(key=lambda d: (d.get('_cat', 0), d.get('_sub', (9,))))
+    phase3 = [d for d in draws if d.get('_cat', 0) not in (0, 1)]
+    phase3.sort(key=lambda d: d.get('_sub', (9,)))
+    last = 0.0
+    for d in phase3:
+        if d.get('_key') is None:
+            d['_key'] = last
+            stats['cat3 draw without a key (kept in submission slot)'] += 1
+        last = d['_key']
+    phase3.sort(key=lambda d: (-d['_key'], d.get('_sub', (9,))))
+    out = phase1 + phase3
+    prev = None
+    for i, d in enumerate(out):
+        if d.pop('_inherit_cull', False) and prev is not None and 'raster' in prev:
+            d['raster'] = prev['raster']
+        d['i'] = i
+        prev = d
+        stats['cat %d' % d.get('_cat', 0)] += 1
+        for k in ('_cat', '_key', '_sub'):
+            d.pop(k, None)
+    order_draws.stats.update(stats)
+    return out
+order_draws.stats = Counter()
 
 
 class WorldTemplate:
@@ -449,6 +525,9 @@ def main():
     ap.add_argument('--bank', type=int, default=None,
                     help='palette bank override. Default is the atlas bodyBank; the costume->bank '
                          'rule is NOT yet known (see the note in the header).')
+    ap.add_argument('--pal-lag', type=int, default=0,
+                    help='TAPE v5 palrows: use the rows of frame-N (the bound LUT lags a mid-frame palette '
+                         'change by >= 1 frame; exact lag not yet gated). Default 0 = same frame.')
     ap.add_argument('--forward-records', action='store_true',
                     help='draw assembly records in list order. Measured WRONG -- capes and limbs '
                          'punch through bodies. Diagnostic only.')
@@ -462,6 +541,10 @@ def main():
     ap.add_argument('--flip-facing', action='store_true')
     ap.add_argument('--swap-teams', action='store_true')
     ap.add_argument('--no-world', action='store_true', help='ignore the v5 world-space stream')
+    ap.add_argument('--legacy-order', action='store_true',
+                    help='emit draws in the old dispatcher order (world 5/6, sprites, 7/8, HUD) instead of '
+                         "Steam's two phases (Z-write categories in submission order, then category 3 sorted "
+                         'by the FUN_140843320 key; docs/TRANSLUCENT-SORT-GHIDRA.md)')
     ap.add_argument('--world-template', default=WORLD_TEMPLATE)
     a = ap.parse_args()
 
@@ -476,6 +559,7 @@ def main():
     # B3-0, nibble*17). Verified: all 5 resolved rows of tape 59612530 match an atlas LUT row
     # byte-for-byte.
     v3nodes, v3pals = {}, []
+    v3palrows = {}                        # frame -> (48 x pal index, 48 x flag); TAPE v5 `palrows`
     bank_slot, unknown_slots = {}, []     # filled after the nodes decode
     if tape.get('nodes'):
         nb = gzip.decompress(base64.b64decode(tape['nodes']))
@@ -508,6 +592,24 @@ def main():
                 w = struct.unpack_from('<H', pb, i * 32 + j * 2)[0]
                 pal[j] = ((w >> 8) & 15) * 17, ((w >> 4) & 15) * 17, (w & 15) * 17, ((w >> 12) & 15) * 17
             v3pals.append(pal)
+        # TAPE v5 `palrows` (docs/PALETTE-SOURCE-GHIDRA.md s4): the ENGINE-RESOLVED palette rows, per
+        # frame per fighter slot -- the 8 staging lines blk+0x1040+(0x10+8*slot+row)*0x38 that the
+        # engine uploads to PALETTE_RAM and the draw binds as its 256x1 LUT (capgate 494/518 draws
+        # byte-exact). `pal` above is DatPal+0 = costume 0 row 0 and is WRONG for any non-default
+        # colour (5/5 fighters on the TTD gate) -- it is kept only for tapes without this key.
+        # Record: [u32 frame][48 x u16 index into `pals` (slot*8+row)][48 x u8 flag (1 raw / 2 dim
+        # pending, 0 uploaded)], stride from `palrows_stride` (148).
+        if tape.get('palrows'):
+            prb = gzip.decompress(base64.b64decode(tape['palrows']))
+            pstride = int(tape.get('palrows_stride', 148))
+            off = 0
+            while off + pstride <= len(prb):
+                pfr = struct.unpack_from('<I', prb, off)[0]
+                idx = struct.unpack_from('<48H', prb, off + 4)
+                flg = prb[off + 100:off + 148]
+                v3palrows[pfr] = (idx, flg)
+                off += pstride
+            print('  TAPE v5 palrows: %d frames of 6x8 engine-resolved palette rows' % len(v3palrows))
         for _fr, _rows in v3nodes.items():
             for _n in _rows:
                 if _n['kind'] == 0 and _n['gfx1']:
@@ -677,7 +779,9 @@ def main():
                 mir = bool(nd['face'])
                 items.append((0, Atlas.get(a.atlas, cid), nd['sid'] & 0x7FFF, nd['fsx'], nd['fsy'],
                               mir, 'body' if nd['kind'] == 0 else 'obj', nd['pal'],
-                              dict(bit15=bool(nd['sid'] & 0x8000), angle=nd.get('angle', 0), hot=nd.get('hot', (0, 0)))))
+                              dict(bit15=bool(nd['sid'] & 0x8000), angle=nd.get('angle', 0), hot=nd.get('hot', (0, 0)),
+                                   walk=_si, depth=nd.get('depth'),
+                                   pslot=(nd['slot'] if nd['kind'] == 0 else owner), pframe=fr_clock)))
         for slot in range(6 if not v3nodes else 0):
             if not r[C['drawn[6]']][slot]:
                 continue
@@ -739,6 +843,15 @@ def main():
 
         world_missing = Counter()
         world_state = Counter()             # how each world draw's D3D state was served (WorldTemplate.select)
+        sub_seq = [0]                       # submission sequence within the frame (the qsort tie-break)
+        def next_sub():
+            sub_seq[0] += 1
+            return sub_seq[0]
+        # slot 3 during the sprite walk = the world camera P (FUN_14061d7e0 is called per sprite node)
+        Vs, Ps = (None, None)
+        if scene_block.model is not None:
+            Vs, Ps = scene_VP(scene_block((float(r[C['eyeX']]) if 'eyeX' in C else 0.0,
+                                           float(r[C['eyeY']]) if 'eyeY' in C else 0.0), 'list6'))
         last_cull = [None]                  # ring cull state carried across draws (FUN_140849ac0 path)
         def emit_stage(cam, deck_col=(1.0, 1.0, 1.0)):
             """The loaded stage's 3D deck from the ARC RIP (STGxx.json model 0), not from a capture.
@@ -790,7 +903,15 @@ def main():
                             nv += 1
                     fi = len(idxs)
                     idxs.extend(range(first, first + nv))
+                    if mesh.get('center') is not None:
+                        centre, radius = tuple(mesh['center']), mesh.get('radius')
+                    else:
+                        # old rip without the header sphere: vertex centroid stands in (counted)
+                        pts = [vtx['pos'] for tri in mesh['tris'] for vtx in tri]
+                        centre = tuple(sum(p[k] for p in pts) / len(pts) for k in range(3)); radius = None
+                        world_missing['deck mesh %d: sort centre from the vertex centroid (rip lacks the header sphere)' % mi] += 1
                     stage_geo.append(dict(fi=fi, nv=nv, tkey=tkey, opaque=bool(mesh.get('isOpaque', True)),
+                                          centre=centre, radius=radius,
                                           # the mesh's own TA header words, when the rip carries them
                                           # (rip_stage.py: baseParams = PCW @0, texInstr = ISP @4, tsp @8)
                                           hdr=(mesh.get('baseParams'), mesh.get('texInstr'), mesh.get('tsp'))))
@@ -803,6 +924,8 @@ def main():
             hw = sha8(ident); hs = sha8(scb)
             cb_recs.setdefault(hw, {**intern(ident)})
             cb_recs.setdefault(hs, {**intern(scb)})
+            Vd, Pd = scene_VP(scb)
+            IDENT16 = (1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1)
             for g in stage_geo:
                 if g['hdr'][2] is not None:
                     # state from the mesh's PCW/ISP/TSP exactly as for a tape record (kind 2 =
@@ -823,6 +946,11 @@ def main():
                 pscb = [(pscb[0] if pscb else None), hs, (pscb[2] if len(pscb) > 2 else None), None]
                 d.update({'i': len(draws), 'firstIndex': g['fi'], 'indexCount': g['nv'], 'stride': STRIDE, 'voff': 0,
                           'tex': [g['tkey'], None], 'vscbHash': [hw, hs, None, None], 'pscbHash': pscb})
+                # category from the PCW list type (kind 2 deck draw, FUN_1408436a0); old rips: isOpaque
+                ltype = ((g['hdr'][0] >> 24) & 7) if g['hdr'][0] is not None else (0 if g['opaque'] else 2)
+                d['_cat'] = 0 if ltype == 0 else (1 if ltype == 1 else 3)
+                d['_key'] = sort_key_record(g['centre'], g['radius'], IDENT16, Vd, Pd) if d['_cat'] == 3 else None
+                d['_sub'] = (1, next_sub())
                 draws.append(d)
 
         def emit_world(lists):
@@ -853,6 +981,8 @@ def main():
                 m = nd['matrix']
                 cbw = struct.pack('<12f', m[0], m[4], m[8], m[12], m[1], m[5], m[9], m[13], m[2], m[6], m[10], m[14])
                 scb = scene_block(cam, variant)
+                Vn, Pn = scene_VP(scb)
+                rank = {5: 2, 6: 3, 7: 4, 8: 5, 9: 5, 11: 6, 12: 7, 13: 6}.get(nd['list'], 8)   # FUN_140620960 submission order
                 hw = sha8(cbw); hs = sha8(scb)
                 cb_recs.setdefault(hw, {**intern(cbw)})
                 cb_recs.setdefault(hs, {**intern(scb)})
@@ -924,6 +1054,15 @@ def main():
                         elif pred['cull'] is not None:
                             last_cull[0] = pred['cull']
                         tdraw_w, ps_variant = wt.select(pred, world_state)
+                        # queue category (FUN_1408436a0): list type 0 -> cat 0 (kind 3 with alpha < 1 -> cat 3),
+                        # 1 -> cat 1, 2/3/4 -> cat 3 with the record-centre key
+                        ltype = (rec['pcw'] >> 24) & 7
+                        cat = 0 if ltype == 0 else (1 if ltype == 1 else 3)
+                        if ltype == 0 and kind == 3 and amult < 1.0:
+                            cat = 3
+                        skey = sort_key_record(rec.get('centre'), rec.get('radius'), m, Vn, Pn, hud=(kind == 0)) if cat == 3 else None
+                        if cat == 3 and skey is None:
+                            world_missing['record without a sort centre (synthetic tape)'] += 1
                         first = len(verts) // STRIDE
                         for (x, y, z, nx, ny, nz, u, v) in gverts:
                             verts.extend(struct.pack('<4f', x, y, z, 0.0))
@@ -942,6 +1081,9 @@ def main():
                         d = dict(tdraw_w)
                         d.update({'i': len(draws), 'firstIndex': fi, 'indexCount': nv, 'stride': STRIDE, 'voff': 0,
                                   'tex': [tkey, None], 'vscbHash': [hw, hs, None, None], 'pscbHash': pscb})
+                        d['_cat'], d['_key'], d['_sub'] = cat, skey, (rank, next_sub())
+                        if nd['flags'] & 0x2000:
+                            d['_inherit_cull'] = True
                         draws.append(d)
         emit_world((5, 6, 12, 13))          # stage: behind the sprites
         for lay, at, sid, tsx, tsy, mir, kind, cos, extra in items:
@@ -958,7 +1100,21 @@ def main():
             if a.flip_facing:
                 mir = not mir
 
-            if v3nodes and a.bank is None and 0 <= cos < len(v3pals):
+            # TAPE v5: the engine's own staged rows for this fighter slot (slot*8 + row) -- no LUT
+            # locate, no costume rule; row = the record's palette sub-row (rec.flags >> 4, `row_of`),
+            # exactly the bank the slot table carries (FUN_140612180). --pal-lag N reads the rows of
+            # an earlier frame (the bound LUT lags a mid-frame palette change by >= 1 frame, INFERRED).
+            prow = None
+            if v3palrows and a.bank is None and 0 <= extra.get('pslot', -1) < 6:
+                pf = extra.get('pframe')
+                for _lag in range(a.pal_lag, -1, -1):
+                    if (pf - _lag) in v3palrows:
+                        prow = v3palrows[pf - _lag]; break
+            if prow is not None:
+                _ps = extra['pslot'] * 8
+                base_pal = v3pals[prow[0][_ps]] if prow[0][_ps] < len(v3pals) else v3pals[cos]
+                blk_base = None
+            elif v3nodes and a.bank is None and 0 <= cos < len(v3pals):
                 base_pal = v3pals[cos]                 # v3: `cos` is the resolved palette index
                 blk_base = None                        # locate its row-0 in the LUT for sibling rows
                 for bi, bk in enumerate(at.banks):
@@ -968,6 +1124,11 @@ def main():
                 base_pal = at.palette(a.bank, cos); blk_base = None
             pal_cache = {}
             def pal_for_row(row):
+                if prow is not None:
+                    if row == 0:
+                        return base_pal
+                    _pi = prow[0][extra['pslot'] * 8 + (row & 7)]
+                    return v3pals[_pi] if _pi < len(v3pals) else base_pal
                 if row == 0 or blk_base is None or blk_base + row >= len(at.banks):
                     return base_pal
                 if row not in pal_cache:
@@ -1064,7 +1225,14 @@ def main():
                         rot.append(((Px + X * c + Y * sn) * TAPE_X, (Py - X * sn + Y * c) * TAPE_Y))
                     corners = rot
                     rotated_general[extra['angle']] += 1
-                z = Z0 - len(draws) * ZSTEP
+                # sort key = walker depth (+0x12C, tape 'depth') + 0.001 per record in submission order
+                # (FUN_1406129f0), the vertex z = FUN_1408432e0(key) under the world P (slot 3 at the walk)
+                D = None
+                if extra.get('depth') is not None and Ps is not None and not a.legacy_order:
+                    D = float(np.float32(extra['depth']) + np.float32(0.001) * ri)
+                    z = sprite_vertex_z(D, Ps)
+                else:
+                    z = Z0 - len(draws) * ZSTEP
                 u0, u1 = (1.0, 0.0) if mir else (0.0, 1.0)   # the mirror lives in the UV winding
                 first = len(verts) // STRIDE
                 for (cx, cy), u, v in zip(corners, (u0, u0, u1, u1), (0.0, 1.0, 0.0, 1.0)):
@@ -1079,9 +1247,12 @@ def main():
                 d = dict(tdraw)
                 d.update({'i': len(draws), 'firstIndex': fi, 'indexCount': 6,
                           'stride': STRIDE, 'voff': 0, 'tex': [key, palkey]})
+                d['_cat'], d['_key'], d['_sub'] = 3, D, (0, extra.get('walk', 0), ri)
                 draws.append(d)
         emit_world((7, 8, 9))               # effects, shadows, markers: after the sprites
         emit_world((11,))                   # the HUD last
+        # Steam's flush order: Z-write categories (submission order), then category 3 sorted by the key
+        draws = order_draws(draws, legacy=a.legacy_order)
         for k, v in world_missing.items():
             missing['world: ' + k] += v
         for k, v in world_state.items():
@@ -1122,6 +1293,8 @@ def main():
           % (len(heads), drawn_total, drawn_total / max(1, len(heads)), len(textures)))
     if world_state_total:
         print('  world draws, D3D state from the record header (tsp_state): %s' % dict(world_state_total))
+    if order_draws.stats:
+        print('  draw order (FUN_140842e30 flush; --legacy-order for the old dispatcher order): %s' % dict(order_draws.stats))
     if missing:
         print('  %d draws skipped -- no assembly record:' % sum(missing.values()))
         for k, v in missing.most_common(8):
