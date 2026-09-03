@@ -58,10 +58,18 @@ def dump_frames(state_dir):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument('tape'); ap.add_argument('--state', default=os.path.join(HERE, 'capgate', 'state'))
+    ap.add_argument('tape', nargs='?', help="tape .json.gz, or 'latest' = the newest tape in %LOCALAPPDATA%/RetroReceipts/gs-cache")
+    ap.add_argument('--state', default=os.path.join(HERE, 'capgate', 'state'))
+    ap.add_argument('--since-minutes', type=float, default=0.0, help='only dumps written in the last N minutes (the guided session you just ran)')
     ap.add_argument('--frames', nargs=2, type=int)
     ap.add_argument('--since', type=float, default=0.0, help='only dumps whose state_<f>.json mtime (epoch s) is newer: pairs ONE session with ONE tape (frame clocks restart every match, so older dumps collide by number)')
     a = ap.parse_args()
+    import time
+    if a.since_minutes: a.since = max(a.since, time.time() - a.since_minutes * 60)
+    if not a.tape or a.tape == 'latest':
+        gs = os.path.join(os.environ.get('LOCALAPPDATA', ''), 'RetroReceipts', 'gs-cache')
+        cands = sorted((os.path.getmtime(os.path.join(gs, f)), os.path.join(gs, f)) for f in os.listdir(gs) if f.endswith('.json.gz'))
+        a.tape = cands[-1][1]; print('latest tape:', os.path.basename(a.tape))
     t = json.load(gzip.open(a.tape)); tn = tape_nodes(t); tp = tape_palrows(t)
     frames = [f for f in dump_frames(a.state) if f in tn and (not a.frames or a.frames[0] <= f <= a.frames[1])
               and os.path.getmtime(os.path.join(a.state, 'state_%d.json' % f)) >= a.since]
