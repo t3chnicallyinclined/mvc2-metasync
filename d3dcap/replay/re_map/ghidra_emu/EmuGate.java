@@ -26,9 +26,32 @@
 //                                     execute until it returns, a stub misfires, an error, or the cap
 //   dump  <hexaddr> <hexlen> <file>   read emulator memory to a file
 //   out   <file>                      result file (status / steps / error / uninit ranges / stub hits)
+//
+// FRAME-TRACE extension (docs/FRAME-READSET.md, 2026-09-03) -- whole-frame runs on the live TTD images:
+//   trace <file>                      log EVERY ram access made while executing (after this line) to a binary
+//                                     stream: u8 kind {0 read, 1 write, 2 call, 3 extcall, 4 callother, 5 mark}
+//                                     u64 pc, u64 addr, u32 size (little endian, 21 B/record). Instruction fetch
+//                                     (reads inside [pc, pc+16)) is dropped. kind 2: pc = callee entry, addr = return
+//                                     address. kind 3: pc = external target, addr = return address. kind 5: run index.
+//   functable <file>                  "<hexaddr> <hexsize> <name>" per line: function starts, used to detect calls
+//   image <hexlo> <hexhi>             the executable image range; with `extstub on` any PC outside it (and not the
+//                                     sentinel) is an OS/DLL call: logged (target, return, RCX, RDX, R8), RAX = 0, RET
+//   extstub on|off
+//   callother skip|abort              unimplemented CALLOTHER (vfmadd, rdtsc, cpuid ...): log + skip, or abort the run
+//   note <text>                       copied into the result file (job provenance)
+//   heap <hexaddr> <hexsize>          zero-filled bump-allocator arena for `extalloc`
+//   extalloc <hexaddr> <reg>          external target with allocator semantics (e.g. RtlAllocateHeap: size in R8):
+//                                     RAX = next 16-aligned chunk of the heap arena, RET. Logged like extcall.
+//   extret <hexaddr> <hexrax>         external target that returns a fixed value (e.g. HeapFree -> 1)
 import ghidra.app.script.GhidraScript;
 import ghidra.app.emulator.EmulatorHelper;
 import ghidra.pcode.memstate.MemoryFaultHandler;
+import ghidra.app.emulator.MemoryAccessFilter;
+import ghidra.pcode.emulate.BreakCallBack;
+import ghidra.pcode.pcoderaw.PcodeOpRaw;
+import ghidra.program.model.address.AddressSpace;
+import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
 import ghidra.program.model.address.Address;
 import java.io.*;
 import java.math.BigInteger;
@@ -50,6 +73,40 @@ public class EmuGate extends GhidraScript {
     long maxSteps = 5000000L;
     long stackBase = 0x10000000L, stackSize = 0x100000L;
     String outPath = null;
+    // frame-trace extension
+    BufferedOutputStream trace = null;
+    long traceCount = 0, curPc = 0;
+    ByteBuffer rec = ByteBuffer.allocate(21).order(ByteOrder.LITTLE_ENDIAN);
+    HashSet<Long> funcStarts = new HashSet<>();
+    long imgLo = 0, imgHi = 0;
+    boolean extStub = false, callotherSkip = false;
+    int runIndex = 0;
+    LinkedHashMap<String, Integer> extCounts = new LinkedHashMap<>();
+    LinkedHashMap<String, Integer> callotherCounts = new LinkedHashMap<>();
+    List<String> notes = new ArrayList<>();
+    long heapBase = 0, heapSize = 0, heapCur = 0;
+    Map<Long, String> extAlloc = new HashMap<>();
+    Map<Long, Long> extRet = new HashMap<>();
+
+    void traceRec(int kind, long pc, long addr, int size) {
+        if (trace == null) return;
+        rec.clear();
+        rec.put((byte) kind).putLong(pc).putLong(addr).putInt(size);
+        try { trace.write(rec.array(), 0, 21); } catch (IOException e) { throw new RuntimeException(e); }
+        traceCount++;
+    }
+
+    class TraceFilter extends MemoryAccessFilter {
+        @Override protected void processRead(AddressSpace spc, long off, int size, byte[] values) {
+            if (trace == null || !spc.isMemorySpace()) return;
+            if (off >= curPc && off < curPc + 16) return;           // instruction fetch
+            traceRec(0, curPc, off, size);
+        }
+        @Override protected void processWrite(AddressSpace spc, long off, int size, byte[] values) {
+            if (trace == null || !spc.isMemorySpace()) return;
+            traceRec(1, curPc, off, size);
+        }
+    }
 
     Address A(long v) { return currentProgram.getAddressFactory().getDefaultAddressSpace().getAddress(v); }
 
@@ -107,9 +164,34 @@ public class EmuGate extends GhidraScript {
         setReg("RIP", entry);
         long steps = 0;
         long t0 = System.currentTimeMillis();
+        traceRec(5, entry, 0, runIndex++);
         while (true) {
             long pc = emu.getExecutionAddress().getOffset();
             if (pc == SENTINEL) return "ok steps=" + steps + " ms=" + (System.currentTimeMillis() - t0);
+            if (extStub && imgHi != 0 && (pc < imgLo || pc >= imgHi)) {
+                long rsp0 = reg("RSP");
+                long ret = rd64(rsp0);
+                String key = String.format("%x", pc);
+                extCounts.merge(key, 1, Integer::sum);
+                if (extCounts.get(key) <= 3)
+                    stubHits.add(String.format("extcall target=%x ret=%x rcx=%x rdx=%x r8=%x r9=%x step=%d", pc, ret,
+                        reg("RCX"), reg("RDX"), reg("R8"), reg("R9"), steps));
+                traceRec(3, pc, ret, 0);
+                long rax = 0;
+                if (extAlloc.containsKey(pc)) {
+                    long n = reg(extAlloc.get(pc));
+                    if (heapSize == 0) return "error extalloc without a heap arena at pc=" + Long.toHexString(pc);
+                    if (heapCur + n + 16 > heapBase + heapSize) return "error heap arena exhausted (" + n + " B) at pc=" + Long.toHexString(pc);
+                    rax = heapCur;
+                    heapCur = (heapCur + n + 15) & ~15L;
+                    if (extCounts.get(key) <= 3) stubHits.add(String.format("extalloc target=%x size=%x -> %x", pc, n, rax));
+                } else if (extRet.containsKey(pc)) {
+                    rax = extRet.get(pc);
+                }
+                setReg("RAX", rax);
+                doRet();
+                continue;
+            }
             Stub s = stubs.get(pc);
             if (s != null) {
                 long rcx = reg("RCX");
@@ -141,6 +223,8 @@ public class EmuGate extends GhidraScript {
             }
             if (steps >= maxSteps) return "error step cap " + maxSteps + " at pc=" + Long.toHexString(pc);
             boolean ok;
+            curPc = pc;
+            long rspBefore = trace != null ? reg("RSP") : 0;
             try {
                 ok = emu.step(monitor);
             } catch (Exception e) {
@@ -148,6 +232,14 @@ public class EmuGate extends GhidraScript {
             }
             steps++;
             if (!ok) return "error at pc=" + Long.toHexString(pc) + " steps=" + steps + " : " + emu.getLastError();
+            if (trace != null) {
+                long npc = emu.getExecutionAddress().getOffset();
+                if (funcStarts.contains(npc)) {
+                    long nrsp = reg("RSP");
+                    if (nrsp == rspBefore - 8) traceRec(2, npc, rd64(nrsp), 0);
+                }
+            }
+            if ((steps % 1000000) == 0) println("  ... " + steps + " steps, pc=" + Long.toHexString(pc) + ", traced=" + traceCount);
         }
     }
 
@@ -165,6 +257,19 @@ public class EmuGate extends GhidraScript {
             @Override public boolean unknownAddress(Address address, boolean write) {
                 addRange(unknown, address.getOffset(), 1);
                 return true;
+            }
+        });
+        emu.getEmulator().addMemoryAccessFilter(new TraceFilter());
+        emu.registerDefaultCallOtherCallback(new BreakCallBack() {
+            @Override public boolean pcodeCallback(PcodeOpRaw op) {
+                String name;
+                try { name = currentProgram.getLanguage().getUserDefinedOpName((int) op.getInput(0).getOffset()); }
+                catch (Exception e) { name = "?"; }
+                String key = name + "@" + Long.toHexString(curPc);
+                callotherCounts.merge(key, 1, Integer::sum);
+                traceRec(4, curPc, 0, 0);
+                if (!callotherSkip) throw new RuntimeException("unimplemented CALLOTHER " + name + " at " + Long.toHexString(curPc));
+                return true;      // skipped: outputs left unchanged
             }
         });
         List<String> results = new ArrayList<>();
@@ -201,6 +306,21 @@ public class EmuGate extends GhidraScript {
                     case "mathhook": { Stub s = new Stub(); s.name = t[2]; s.math = t[2];
                         stubs.put(Long.parseUnsignedLong(t[1], 16), s); break; }
                     case "maxsteps": maxSteps = Long.parseLong(t[1]); break;
+                    case "trace": trace = new BufferedOutputStream(new FileOutputStream(t[1]), 1 << 20); break;
+                    case "functable": {
+                        for (String m : Files.readAllLines(Paths.get(t[1]))) {
+                            String[] kv = m.trim().split("\\s+");
+                            if (kv.length >= 1 && !kv[0].isEmpty()) funcStarts.add(Long.parseUnsignedLong(kv[0], 16));
+                        }
+                        log.add("functable " + funcStarts.size() + " entries"); break; }
+                    case "image": imgLo = Long.parseUnsignedLong(t[1], 16); imgHi = Long.parseUnsignedLong(t[2], 16); break;
+                    case "extstub": extStub = t[1].equals("on"); break;
+                    case "callother": callotherSkip = t[1].equals("skip"); break;
+                    case "note": notes.add(ln.substring(5)); break;
+                    case "heap": heapBase = Long.parseUnsignedLong(t[1], 16); heapSize = Long.parseUnsignedLong(t[2], 16);
+                        heapCur = heapBase + 16; emu.writeMemory(A(heapBase), new byte[(int) heapSize]); break;
+                    case "extalloc": extAlloc.put(Long.parseUnsignedLong(t[1], 16), t[2]); break;
+                    case "extret": extRet.put(Long.parseUnsignedLong(t[1], 16), Long.parseUnsignedLong(t[2], 16)); break;
                     case "run": {
                         String r = runOnce(Long.parseUnsignedLong(t[1], 16));
                         results.add("run " + t[1] + " " + r);
@@ -220,9 +340,15 @@ public class EmuGate extends GhidraScript {
         } catch (Exception e) {
             results.add("status error " + e);
         } finally {
+            if (trace != null) { try { trace.close(); } catch (IOException e) { /* ignore */ } }
             if (outPath != null) {
                 try (PrintWriter w = new PrintWriter(new FileWriter(outPath))) {
                     for (String s : results) w.println(s);
+                    for (String s : notes) w.println("note " + s);
+                    w.println("traced " + traceCount);
+                    if (heapSize != 0) w.println(String.format("heapused %x", heapCur - heapBase));
+                    for (Map.Entry<String, Integer> e : extCounts.entrySet()) w.println("extcount " + e.getKey() + " " + e.getValue());
+                    for (Map.Entry<String, Integer> e : callotherCounts.entrySet()) w.println("callother " + e.getKey() + " " + e.getValue());
                     for (String s : log) w.println(s);
                     for (String s : stubHits) w.println(s);
                     for (Map.Entry<Long, Long> e : uninit.entrySet())

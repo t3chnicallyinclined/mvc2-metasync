@@ -134,6 +134,8 @@ def run_job(lines, tag):
             out['uninit'].append((int(t[1], 16), int(t[2], 16)))
         elif t[0] == 'unknown':
             out['unknown'].append((int(t[1], 16), int(t[2], 16)))
+        else:
+            out.setdefault('extra', []).append(ln.strip())       # traced / extcount / callother / note / mem
     return out
 
 
@@ -508,6 +510,91 @@ def cmd_walker(a):
     return 0
 
 
+# ── target 3: a whole frame on the live TTD images (docs/FRAME-READSET.md) ───────────────────────────────
+def cmd_frame(a):
+    import emu_frame as F
+    R = F.load_run(a.run)
+    ftab, fstarts, fsizes, fnames = F.functable(WORK)
+    inputs, seats, entry = F.tick_inputs(R)
+    kb = F.kb_tables()
+    lab = F.Labeler(kb.get('global'), kb.get('field'))
+    sh4 = F.sh4_map()
+    iat = json.load(open(a.iat)) if a.iat and os.path.exists(a.iat) else {}
+    print('run %s  clock %s (after %s)  blk @ 0x%X  ctx @ 0x%X  dcram @ 0x%X  exe 0x%X+0x%X' % (
+        a.run, R['clock'], R['clock_after'], R['blk'], R['ctx'], R['dcram'], R['exe'], R['exe_size']))
+    print('tick inputs (game_state+0x218..): %s  seat map (+0x258..): %s  sim entry *(gs+0x10) = 0x%x' % (
+        ['0x%x' % x for x in inputs], seats, entry))
+    targets = ['tick', 'render'] if a.target == 'all' else [a.target]
+    report = dict(run=a.run, clock=R['clock'], inputs=inputs, seats=seats, sim_entry='0x%x' % entry, targets={})
+    for t in targets:
+        runs = []
+        for rep in range(a.repeat):
+            tag = 'frame_%s_%s_r%d' % (os.path.basename(a.run.rstrip('\\/')), t, rep)
+            if a.layerz_reset and t == 'render':
+                tag += '_lz'
+            lines, trace, outs = F.frame_job(R, t, tag, WORK, a.maxsteps, inputs, ftab, layerz_reset=a.layerz_reset)
+            r = run_job(lines, tag)
+            hashes = {k: F.sha256(p) for k, p in [('trace', trace)] + list(outs.items()) if os.path.exists(p)}
+            extra = r.get('extra', [])
+            runs.append(dict(tag=tag, status=r['status'], runs=r['runs'], hashes=hashes, trace=trace, outs=outs,
+                             uninit=classify_uninit(r['uninit'], R['blk'], R['ctx']), unknown=r['unknown'][:50],
+                             stubhits=r['stubhits'][:40], extra=[e for e in extra if not e.startswith('mem ')],
+                             wall=r['wall'], log=r['log']))
+            print('\n== %s: %s  [%s]  wall %.0fs' % (tag, r['status'], '; '.join(r['runs']), r['wall']))
+            for e in runs[-1]['extra'][:30]:
+                print('   ' + e)
+            for h in r['stubhits'][:12]:
+                print('   ' + h)
+        entry_t = dict(runs=runs)
+        entry_t['deterministic'] = all(x['hashes'] == runs[0]['hashes'] for x in runs) if len(runs) > 1 else None
+        print('   determinism (%d runs): %s  hashes %s' % (len(runs), entry_t['deterministic'], runs[0]['hashes']))
+        if os.path.exists(runs[0]['trace']):
+            an = F.analyze(runs[0]['trace'], R, fstarts, fsizes, fnames, lab, sh4, iat)
+            entry_t['analysis'] = an
+            print('   trace: %d records %s; calls %d (%d distinct); extcalls %s; callother %d' % (
+                an['records'], an['by_kind'], an['calls']['total'], an['calls']['distinct'], an['extcalls'], an['callother']))
+            for rn, rg in an['regions'].items():
+                if rn == 'other':
+                    print('   region other: reads %d writes %d addrs %s' % (rg['reads'], rg['writes'], ['0x%x' % x for x in rg['addrs'][:12]]))
+                else:
+                    print('   region %-7s reads %8d (%7d B, %4d ranges)  writes %8d (%7d B, %4d ranges)' % (
+                        rn, rg['reads'], rg['read_bytes'], len(rg['read_ranges']), rg['writes'], rg['write_bytes'], len(rg['write_ranges'])))
+            print('   blk read groups: %s' % {k: len(v) for k, v in an['blk_read_groups'].items()})
+            print('   blk write groups: %s' % {k: len(v) for k, v in an['blk_write_groups'].items()})
+        if os.path.exists(runs[0]['outs']['blk']):
+            if t == 'render':
+                g = F.gate_render(R, runs[0]['outs']['blk'])
+                entry_t['gate'] = g
+                print('   GATE render: %d/%d node fields exact on %d drawn nodes; blk bytes changed %d; clock %d -> %d' % (
+                    g['total_exact'], g['total_fields'], g['nodes'], g['blk_bytes_changed'], g['clock_pre'], g['clock_out']))
+                for k, v in g['fields'].items():
+                    if v['bad']:
+                        print('      %s: %d bad %s' % (k, len(v['bad']), v['bad'][:3]))
+            elif t == 'chain':
+                g = F.gate_chain(R, runs[0]['outs']['blkA'], runs[0]['outs']['blk'])
+                entry_t['gate'] = g
+                print('   GATE chain (tick -> reset LayerZ/G+0x24 -> dispatcher): %d/%d node fields identical on %d drawn nodes; blk bytes differing %d; quads %d vs %d; clock %d/%d' % (
+                    g['total_exact'], g['total_fields'], g['nodes'], g['blk_bytes_changed'], g['quads_A'], g['quads_B'], g['clock_A'], g['clock_B']))
+                for k, v in g['fields'].items():
+                    if v['bad']:
+                        print('      %s: %d bad %s' % (k, len(v['bad']), v['bad'][:3]))
+                print('   LayerZ A %s' % [round(x, 3) for x in g['layerz_A']])
+                print('   LayerZ B %s' % [round(x, 3) for x in g['layerz_B']])
+            else:
+                g = F.gate_tick(R, runs[0]['outs']['blk'], lab)
+                entry_t['gate'] = g
+                print('   GATE tick: clock %d -> %d (delta %d); blk bytes changed %d; pre->post diff %s; changed outside pre->post diff: %s' % (
+                    g['clock_pre'], g['clock_out'], g['clock_delta'], g['changed_bytes'], g.get('pre_post_diff_bytes'), g.get('changed_outside_prepost_diff')))
+                print('   changed groups: %s' % {k: len(v) for k, v in g['changed_groups'].items()})
+                for v in g.get('violations', [])[:20]:
+                    print('      violation %s' % (v,))
+        report['targets'][t] = entry_t
+    if a.json:
+        json.dump(report, open(a.json, 'w'), indent=1, default=str)
+        print('\nwrote %s' % a.json)
+    return 0
+
+
 def cmd_raw(a):
     lines = [ln.rstrip('\n') for ln in open(a.job) if not ln.startswith('out ')]
     r = run_job(lines, 'raw_' + os.path.splitext(os.path.basename(a.job))[0])
@@ -526,6 +613,14 @@ def main():
                    help='what ctx+0x1f8200 holds when the walk starts (the dump does not carry ctx)')
     w.add_argument('--maxsteps', type=int, default=20000000)
     r = sub.add_parser('raw'); r.add_argument('job')
+    f = sub.add_parser('frame', help='whole-frame run on the live TTD images (emu_frame.py)')
+    f.add_argument('--run', required=True, help='d3dcap/ttd/runs/<ts> (with pre/ and post/)')
+    f.add_argument('--target', default='all', choices=['tick', 'render', 'sim', 'chain', 'all'])
+    f.add_argument('--repeat', type=int, default=2, help='runs per target (determinism gate)')
+    f.add_argument('--maxsteps', type=int, default=60000000)
+    f.add_argument('--iat', default=None, help='json {target hex: dll!name} for naming external calls')
+    f.add_argument('--json', default=None)
+    f.add_argument('--layerz-reset', action='store_true', help='render: reset blk+0x6D08.. to the init constants first (idempotence gate on a post-walk dump)')
     for p in (c, w):
         p.add_argument('--cap', default=DEF_CAP)
         p.add_argument('--pack', default=None)
@@ -533,7 +628,7 @@ def main():
                        help='sse2: force the UCRT non-FMA path (DAT_142eefbd8=0); hook: Java Math for tanf/atanf/sinf/cosf')
         p.add_argument('--json', default=None)
     a = ap.parse_args()
-    return {'camera': cmd_camera, 'walker': cmd_walker, 'raw': cmd_raw}[a.cmd](a)
+    return {'camera': cmd_camera, 'walker': cmd_walker, 'raw': cmd_raw, 'frame': cmd_frame}[a.cmd](a)
 
 
 if __name__ == '__main__':
