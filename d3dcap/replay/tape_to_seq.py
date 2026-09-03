@@ -85,6 +85,119 @@ try:
 except Exception:
     RIP = None
 
+# ══ TAPE v5: THE WORLD-SPACE CLASS (System A) ═══════════════════════════════════════════════════
+# Shadows, 1P/2P markers, super glows, hail chunks, the HUD and the stage props are not sprites:
+# the game's second render system draws them as textured polygon lists placed by a 4x4 matrix and
+# projected by a scene constant block built from the camera. Everything below is taken from the
+# capture, byte for byte (see mvc-system-a-world-nodes): the node's 4x4 at +0xA8 transposed IS
+# Steam's CBWorld; the polygon list at +0xA0 IS Steam's vertex buffer; the scene block is a fitted
+# function of the render camera blk+0x6914 (exact to 2e-5 on every walker-time frame).
+WORLD_TEMPLATE = os.path.join(HERE, 'capgate', 'frame_4445.pack')
+CAMERA_BLOCK = os.path.join(HERE, 'camera_block.json')
+TCW_PAGES = os.path.join(HERE, 'tcw_pages')
+
+
+def decode_anodes(tape):
+    """frame -> [node dict]; and the interned objects as [(header bytes, [records])]."""
+    if not tape.get('anodes'):
+        return {}, []
+    ab = gzip.decompress(base64.b64decode(tape['anodes']))
+    stride = int(tape.get('anodes_stride', 96))
+    frames, off = {}, 0
+    while off + 6 <= len(ab):
+        fr, n = struct.unpack_from('<IH', ab, off)
+        off += 6
+        rows = []
+        for _ in range(n):
+            if off + stride > len(ab):
+                break
+            rows.append(dict(list=ab[off], flags=struct.unpack_from('<I', ab, off + 4)[0],
+                             matrix=struct.unpack_from('<16f', ab, off + 8),
+                             colour=struct.unpack_from('<3f', ab, off + 72),
+                             obj=struct.unpack_from('<H', ab, off + 84)[0],
+                             model=struct.unpack_from('<Q', ab, off + 88)[0]))
+            off += stride
+        frames[fr] = rows
+    ob = gzip.decompress(base64.b64decode(tape.get('aobjs', ''))) if tape.get('aobjs') else b''
+    objs = []
+    if len(ob) >= 2:
+        n = struct.unpack_from('<H', ob, 0)[0]
+        o = 2
+        for _ in range(n):
+            if o + 4 > len(ob):
+                break
+            ln = struct.unpack_from('<I', ob, o)[0]
+            body = ob[o + 4:o + 4 + ln]
+            o += 4 + ln
+            recs = []
+            q = 0x18
+            while q + 0x50 <= len(body):
+                pcw = struct.unpack_from('<i', body, q)[0]
+                if pcw >= 0:
+                    break
+                size = struct.unpack_from('<i', body, q + 0x4C)[0]
+                hdr = body[q:q + 0x50]
+                pay = body[q + 0x50:q + 0x50 + max(0, size)]
+                verts = [struct.unpack_from('<8f', pay, v) for v in range(8, len(pay) - 31, 32)]
+                key = hdr[0x10:0x30].rstrip(b'\x00').decode('ascii', 'ignore')   # synthetic tapes stash the page key here
+                tcw = struct.unpack_from('<I', hdr, 0x0C)[0]
+                recs.append(dict(tcw=tcw, key=key if key.startswith('sha_') or key else '%08X' % tcw,
+                                 colour=struct.unpack_from('<4f', hdr, 0x2C), verts=verts))
+                q += 0x50 + max(0, size)
+            objs.append(recs)
+    return frames, objs
+
+
+def scene_block(cam, variant):
+    """The 432-byte scene constant block for camera (cx, cy, cz) and list variant 'list6'|'list7'."""
+    m = scene_block.model[variant]
+    sc = m['scale']
+    cx, cy = cam[0] * sc, cam[1] * sc
+    out = []
+    for i in range(108):
+        kind = m['model'][str(i)]
+        if kind[0] == 'const':
+            out.append(kind[1])
+        else:
+            a, b, c = kind[1]
+            out.append(a * cx + b * cy + c)
+    return struct.pack('<108f', *out)
+scene_block.model = json.load(open(CAMERA_BLOCK)) if os.path.exists(CAMERA_BLOCK) else None
+
+
+class WorldTemplate:
+    """Pipeline state + PS constants lifted from real world-space draws of a captured frame."""
+    def __init__(self, path):
+        man, B = load_pack_rrpk(path)
+        self.inputLayouts = man['inputLayouts']
+        self.draw = {}
+        self.pscb = {}
+        for d in man['draws']:
+            if d.get('vsVariant') != 'vs_world':
+                continue
+            v = d.get('psVariant')
+            if v in self.draw:
+                continue
+            self.draw[v] = {k: d[k] for k in ('vs', 'ps', 'il', 'vsVariant', 'psVariant', 'psFog', 'samp', 'blend',
+                                              'bfactor', 'smask', 'depth', 'raster', 'vp', 'scissor', 'stride')}
+            cbs = man['constantBuffers']
+            self.pscb[v] = [bytes(B(cbs[h])) if (h and cbs.get(h) and cbs[h]['len'] != 432 and cbs[h]['len'] != 48) else None
+                            for h in (d.get('pscbHash') or [])]
+        self.pages = {}
+        idx = os.path.join(TCW_PAGES, 'index.json')
+        if os.path.exists(idx):
+            for k, v in json.load(open(idx)).items():
+                self.pages[k] = v
+
+
+def load_pack_rrpk(path):
+    b = open(path, 'rb').read()
+    n = struct.unpack_from('<I', b, 4)[0]
+    man = json.loads(b[8:8 + n].decode('utf-8'))
+    body = b[8 + n:]
+    return man, (lambda r: body[r['off']:r['off'] + r['len']])
+
+
 class Atlas:
     """One character's index pixels, packed parts and assemblies."""
 
@@ -227,6 +340,8 @@ def main():
                     help='walk layers 15->0. The engine walks 0->15 (loc_8c0308c2); diagnostic only.')
     ap.add_argument('--flip-facing', action='store_true')
     ap.add_argument('--swap-teams', action='store_true')
+    ap.add_argument('--no-world', action='store_true', help='ignore the v5 world-space stream')
+    ap.add_argument('--world-template', default=WORLD_TEMPLATE)
     a = ap.parse_args()
 
     raw = open(a.tape, 'rb').read()
@@ -271,6 +386,20 @@ def main():
             4 if stride >= 50 else 3, len(v3nodes), len(v3pals), stride))
     cols = [s.strip() for s in tape['schema'].strip('[]').split(',')]
     C = {n: i for i, n in enumerate(cols)}
+    # ── v5 world-space stream ──
+    v5nodes, v5objs = decode_anodes(tape)
+    wt = None
+    if v5nodes and not a.no_world:
+        if scene_block.model is None or not os.path.exists(a.world_template):
+            print('  ⚠ world-space stream present but no camera_block.json / template pack -- skipping it')
+        else:
+            wt = WorldTemplate(a.world_template)
+            # pages shipped inside a synthetic tape (offline test) take precedence over the TCW library
+            tape_pages = {}
+            for k, v in (tape.get('pages') or {}).items():
+                tape_pages[k] = dict(w=v['w'], h=v['h'], fmt=v['fmt'], data=gzip.decompress(base64.b64decode(v['data'])))
+            print('  TAPE v5: %d frames of world-space nodes, %d objects, %d pages in tape, %d in library'
+                  % (len(v5nodes), len(v5objs), len(tape_pages), len(wt.pages)))
     for need in ('drawn[6]', 'sid[6]', 'sx[6]', 'sy[6]', 'facing[6]'):
         if need not in C:
             sys.exit('this tape has no %s column -- it predates tape v2 and cannot drive the '
@@ -422,6 +551,69 @@ def main():
         if not v3nodes:
             items.sort(key=lambda t: ((-t[0] if a.layer_desc else t[0]), KIND[t[6]]))
 
+        world_missing = Counter()
+        def emit_world(lists):
+            """Append vs_world draws for this frame's nodes in `lists`, in list order."""
+            if not wt:
+                return
+            rows_w = v5nodes.get(fr_clock, ())
+            cam = (float(r[C['eyeX']]) if 'eyeX' in C else 0.0, float(r[C['eyeY']]) if 'eyeY' in C else 0.0,
+                   float(r[C['zoom']]) if 'zoom' in C else 812.357)
+            for nd in rows_w:
+                if nd['list'] not in lists or nd['obj'] >= len(v5objs):
+                    if nd['list'] in lists and nd['model']:
+                        world_missing['3D model node (list %d)' % nd['list']] += 1
+                    continue
+                variant = 'list6' if nd['list'] in (5, 6, 11, 12, 13) else 'list7'
+                m = nd['matrix']
+                cbw = struct.pack('<12f', m[0], m[4], m[8], m[12], m[1], m[5], m[9], m[13], m[2], m[6], m[10], m[14])
+                scb = scene_block(cam, variant)
+                hw = sha8(cbw); hs = sha8(scb)
+                cb_recs.setdefault(hw, {**intern(cbw)})
+                cb_recs.setdefault(hs, {**intern(scb)})
+                for rec in v5objs[nd['obj']]:
+                    key = rec['key']
+                    page = tape_pages.get(key)
+                    if page is None and key in wt.pages:
+                        pv = wt.pages[key]
+                        fn = os.path.join(TCW_PAGES, pv.get('file', 'tcw_%s_%dx%d_f%d.png' % (key, pv['w'], pv['h'], pv['fmt'])))
+                        if os.path.exists(fn):
+                            im = Image.open(fn)
+                            data = np.array(im.convert('RGBA')).tobytes() if pv['fmt'] != 61 else np.array(im)[:, :, 0].tobytes()
+                            page = tape_pages[key] = dict(w=pv['w'], h=pv['h'], fmt=pv['fmt'], data=data)
+                    if page is None:
+                        world_missing['no page for %s' % key] += 1
+                        continue
+                    tkey = 'world_%s' % key
+                    if tkey not in textures:
+                        textures[tkey] = {'w': page['w'], 'h': page['h'], 'fmt': page['fmt'], **intern(page['data'])}
+                    ps_variant = 'texalpha' if (nd['flags'] & 0x20) or nd['list'] in (7, 8, 9) else 'opaque'
+                    if ps_variant not in wt.draw:
+                        ps_variant = next(iter(wt.draw))
+                    tdraw_w = wt.draw[ps_variant]
+                    col = rec['colour']
+                    cbytes = bytes((int(max(0, min(1, col[2])) * 255), int(max(0, min(1, col[1])) * 255),
+                                    int(max(0, min(1, col[0])) * 255), int(max(0, min(1, col[3])) * 255)))
+                    first = len(verts) // STRIDE
+                    for (x, y, z, nx, ny, nz, u, v) in rec['verts']:
+                        verts.extend(struct.pack('<4f', x, y, z, 0.0))
+                        verts.extend(struct.pack('<2f', nx, ny))
+                        verts.extend(cbytes)
+                        verts.extend(bytes((0, 0, 0, 0)))
+                        verts.extend(struct.pack('<2f', u, v))
+                    nv = len(rec['verts'])
+                    fi = len(idxs)
+                    idxs.extend(range(first, first + nv))
+                    pscb = [(sha8(b) if b else None) for b in wt.pscb.get(ps_variant, [])]
+                    for b in wt.pscb.get(ps_variant, []):
+                        if b:
+                            cb_recs.setdefault(sha8(b), {**intern(b)})
+                    pscb = [(pscb[0] if pscb else None), hs, (pscb[2] if len(pscb) > 2 else None), None]
+                    d = dict(tdraw_w)
+                    d.update({'i': len(draws), 'firstIndex': fi, 'indexCount': nv, 'stride': STRIDE, 'voff': 0,
+                              'tex': [tkey, None], 'vscbHash': [hw, hs, None, None], 'pscbHash': pscb})
+                    draws.append(d)
+        emit_world((5, 6, 12, 13))          # stage: behind the sprites
         for lay, at, sid, tsx, tsy, mir, kind, cos, extra in items:
             if at is None:
                 missing['no atlas'] += 1
@@ -558,6 +750,10 @@ def main():
                 d.update({'i': len(draws), 'firstIndex': fi, 'indexCount': 6,
                           'stride': STRIDE, 'voff': 0, 'tex': [key, palkey]})
                 draws.append(d)
+        emit_world((7, 8, 9))               # effects, shadows, markers: after the sprites
+        emit_world((11,))                   # the HUD last
+        for k, v in world_missing.items():
+            missing['world: ' + k] += v
         drawn_total += len(draws)
         heads.append({
             'frame': int(r[C['frame']]) if 'frame' in C else len(heads),
@@ -565,9 +761,9 @@ def main():
             'clears': [{'kind': 'ClearRenderTargetView', 'colour': [0, 0, 0, 0]}],
             'vb': intern(bytes(verts)),
             'ib': intern(struct.pack('<%dI' % len(idxs), *idxs)),
-            'inputLayouts': man['inputLayouts'],
-            'textures': {k: textures[k] for k in {d['tex'][0] for d in draws} |
-                         {d['tex'][1] for d in draws}},
+            'inputLayouts': {**man['inputLayouts'], **(wt.inputLayouts if wt else {})},
+            'textures': {k: textures[k] for k in ({d['tex'][0] for d in draws if d['tex'][0]} |
+                                                  {d['tex'][1] for d in draws if d['tex'][1]})},
             'constantBuffers': cb_recs,
             'draws': draws,
         })
