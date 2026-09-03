@@ -122,6 +122,12 @@ Keys instead of object bytes (the client resolves them against the pack); static
 MB/match. Gate: v6 re-emits the v5 draw list identically. The keyed frame format of W5 is also M-interim's wire.
 
 ### W6 — Delivery (product decisions from Tris, 2026-09-03)
+- **BLOCKER (found 2026-09-03 03:50, lane 1 = RetroReceipts-server):** the server rejects every v5 tape with **HTTP 413**:
+  `server/src/config.rs` `GS_MAX_BODY = 8 MB` (the JSON envelope carries `frames_gz` as base64, so a 6 MB gz tape is
+  an 8 MB body) and `receipt.rs` `TAPE_MAX_GZ`/`REPLAY_MAX_GZ = 3 MB`. nginx `/rr/` already allows 64M. Consequence:
+  NO v5 tape (0.3.35+) has reached the server; every replay so far came from the agent's local spool (34 tapes,
+  259 MB, waiting). Hand-off to lane 1: raise `GS_MAX_BODY` to 64 MB and the 3 MB guards to match, or accept the
+  gz stream raw. Agent 0.3.42 parks a 413 for 6 h (it was retrying every tape every idle cycle = the CPU burn).
 - **Placement:** the replay lives on the LIVE RESULTS feed — each match card gets a "Watch replay" action (design
   team to place it; `metasync-designer` agent for the PWA mock).
 - **Retention:** the live feed keeps replays for the last 100 matches; saving a replay beyond that is a PAID feature.
