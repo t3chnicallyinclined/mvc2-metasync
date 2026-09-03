@@ -822,7 +822,7 @@ static void dumpAObjs(unsigned frame) {
     }
     memcpy(g_aobjBuf, &count, 4);
     char path[MAX_PATH];
-    _snprintf_s(path, sizeof(path), _TRUNCATE, "%s\alist_%u.bin", g_dir, frame);
+    _snprintf_s(path, sizeof(path), _TRUNCATE, "%s\\alist_%u.bin", g_dir, frame);
     writeAsyncCopy(path, g_aobjBuf, o);
 }
 
