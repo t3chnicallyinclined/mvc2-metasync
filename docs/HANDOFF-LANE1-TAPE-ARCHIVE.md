@@ -53,3 +53,12 @@ Tapes today: 1.7–13.8 MB gz per match (2–3 min ≈ 10–18 MB). Wire is ×1.
 Asset packs (character/stage art) are ROM-derived and are never stored server-side; the PWA sources them locally (and,
 per Tris, host/lobby nodes that own the game will derive/serve them). Replay metadata (names, ranks) is resolved by the
 PWA from existing endpoints; cloud skins from `/rr/loadout?steamids=`.
+
+## 6. Two more payload fields the replay UI needs (found while wiring it, 2026-09-03)
+
+- **`side` + `reporter` on the live `match_result` payload and on `/rr/session` games.** The PWA must know which SteamID sat
+  in seat P1 to put each player's OWN cloud skin on their side of the picture; `match_key` is a sorted pair + winner + hex,
+  so P1/P2 cannot be derived from it. The agent already reports `side` (gs-92) with every result — echo it, plus `reporter`.
+  Until then LIVE rows and session games replay with stock palettes (the resolver lights up automatically once present).
+- **Bracket matches need a set reference** (`session_id` or `match_key` on `BracketMatch`) before a tournament match row can
+  carry a replay affordance.
