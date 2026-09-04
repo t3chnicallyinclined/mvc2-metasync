@@ -89,31 +89,48 @@ export class TapePlayer extends SequencePlayer {
 
     /**
      * @param tapeUrl  the tape (gz+base64 JSON envelope, as the agent spools it)
-     * @param packUrl  the asset pack directory (manifest.json + files; tools/pack_assets.py)
+     * @param pack     EITHER the asset pack directory (manifest.json + files; tools/pack_assets.py) OR an
+     *                 already-assembled {packIndex, packBlob} — PWA 2026-09-04, the second divergence from
+     *                 d3dcap/replay's copy (port back): packs also come from the server as a manifest of URLs
+     *                 (authed + ownership-attested, sha256-verified, Cache-Storage-cached) and are assembled by
+     *                 pwa/src/lib/replay/pack.ts before the engine ever sees them.
      * @param start/count  the tape rows to play (default: the whole tape)
      */
-    async load(tapeUrl, packUrl, { start = 0, count = Infinity, onProgress, opts = {} } = {}) {
+    async load(tapeUrl, pack, { start = 0, count = Infinity, onProgress, opts = {} } = {}) {
         const fetchBytes = async (url) => {
             const r = await fetch(url, { cache: 'no-store' });
             if (!r.ok) throw new Error(`${url}: HTTP ${r.status}`);
             return new Uint8Array(await r.arrayBuffer());
         };
-        const manifest = await (await fetch(`${packUrl}/manifest.json`, { cache: 'no-store' })).json();
-        let got = 0;
-        const total = manifest.files.reduce((a, f) => a + f.bytes, 0);
-        const parts = await Promise.all(manifest.files.map(async (f) => {
-            const b = await fetchBytes(`${packUrl}/${f.name}`);
-            got += b.byteLength; onProgress?.(got, total, 'pack');
-            return [f.name, b];
-        }));
-        const packBlob = new Uint8Array(parts.reduce((a, [, b]) => a + b.byteLength, 0));
-        const packIndex = [];
-        let at = 0;
-        for (const [name, b] of parts) { packBlob.set(b, at); packIndex.push({ name, off: at, len: b.byteLength }); at += b.byteLength; }
+        let packBlob, packIndex, total = 0;
+        if (pack && typeof pack === 'object' && pack.packIndex && pack.packBlob) {
+            ({ packIndex, packBlob } = pack);
+            total = packBlob.byteLength;
+            onProgress?.(total, total, 'pack');
+        } else {
+            const packUrl = pack;
+            const manifest = await (await fetch(`${packUrl}/manifest.json`, { cache: 'no-store' })).json();
+            let got = 0;
+            total = manifest.files.reduce((a, f) => a + f.bytes, 0);
+            const parts = await Promise.all(manifest.files.map(async (f) => {
+                const b = await fetchBytes(`${packUrl}/${f.name}`);
+                got += b.byteLength; onProgress?.(got, total, 'pack');
+                return [f.name, b];
+            }));
+            packBlob = new Uint8Array(parts.reduce((a, [, b]) => a + b.byteLength, 0));
+            packIndex = [];
+            let at = 0;
+            for (const [name, b] of parts) { packBlob.set(b, at); packIndex.push({ name, off: at, len: b.byteLength }); at += b.byteLength; }
+        }
         const tape = await fetchBytes(tapeUrl);
         onProgress?.(total, total, 'tape');
 
-        this.worker = new Worker(new URL('./tape-worker.mjs', import.meta.url), { type: 'module' });
+        // Carry our own ?v= onto the worker: `new URL(rel, base)` DROPS the base's query, so without this the
+        // worker (and through it the wasm glue) would resolve to the unversioned URL and could still come from
+        // a cache entry stored under a wrong Content-Type. The version is a cache key, not a parameter.
+        const wurl = new URL('./tape-worker.mjs', import.meta.url);
+        wurl.search = new URL(import.meta.url).search;
+        this.worker = new Worker(wurl, { type: 'module' });
         this.worker.onmessage = (e) => this._onMessage(e.data);
         this.info = await new Promise((resolve, reject) => {
             this._opened = [resolve, reject];
