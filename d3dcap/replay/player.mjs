@@ -136,7 +136,6 @@ export class SequencePlayer {
 
     /** The blit pipeline + crop for a viewport (shared with TapePlayer, which feeds frames from a worker). */
     _initBlit(vp) {
-        this.viewport = vp;
         const mod = this.device.createShaderModule({ code: BLIT_WGSL });
         this.blitPipeline = this.device.createRenderPipeline({
             layout: 'auto',
@@ -147,6 +146,39 @@ export class SequencePlayer {
         this.cropBuffer = this.device.createBuffer({
             size: 32, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
         });
+        this.blitSampler = this.device.createSampler({ magFilter: 'nearest', minFilter: 'nearest' });
+        this._initCrop(vp);
+    }
+
+    /**
+     * Re-target the display (PWA 2026-09-04 — the one divergence from d3dcap/replay's copy; port back): a new
+     * internal scale and/or output canvas size. The tape stays decoded and every texture/pipeline stays; only the
+     * scene RT + depth (re-created lazily at the new size by render()), the crop/taps and the blit bind group are
+     * rebuilt. Returns true when something changed. Keep `scale` an integer so per-draw viewports stay exact.
+     */
+    setDisplay({ scale = this.opts.scale, filter = this.opts.filter, canvas = this.opts.canvas } = {}) {
+        const same = scale === this.opts.scale && filter === this.opts.filter
+            && canvas?.w === this.opts.canvas?.w && canvas?.h === this.opts.canvas?.h;
+        if (same) return false;
+        this.opts = { ...this.opts, scale, filter, canvas };
+        const r = this.replayer;
+        if (r && r.scale !== scale) {
+            r.scale = scale;
+            const rt = r.pack.head.sceneRT;
+            r.width = Math.round(rt.w * scale);
+            r.height = Math.round(rt.h * scale);
+            r._target?.destroy(); r._target = null;
+            r._depth?.destroy(); r._depth = null;
+        }
+        this.blitSrc = null; this.blitBind = null;
+        if (this.cropBuffer) this._initCrop(this.viewport);
+        return true;
+    }
+
+    /** The crop + box taps for the current scale / canvas (taps are integer by construction when the canvas is a
+     *  multiple of the viewport; otherwise the caller accepted a rounded box average). */
+    _initCrop(vp) {
+        this.viewport = vp;
         const s = this.replayer.scale;
         const cw = this.opts.canvas?.w ?? vp[2] * s, ch = this.opts.canvas?.h ?? vp[3] * s;   // canvas pixels
         const tx = Math.max(1, Math.round(vp[2] * s / cw)), ty = Math.max(1, Math.round(vp[3] * s / ch));
@@ -156,7 +188,6 @@ export class SequencePlayer {
             tx, ty, this.opts.filter === 'box' ? 1 : 0, 0,
         ]));
         this.blitTaps = [tx, ty];
-        this.blitSampler = this.device.createSampler({ magFilter: 'nearest', minFilter: 'nearest' });
     }
 
     /** Raw BGRA bytes of the last rendered scene target (copyTextureToBuffer, never the canvas). */
