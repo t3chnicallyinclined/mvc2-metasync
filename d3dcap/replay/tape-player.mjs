@@ -13,7 +13,7 @@ import { Replayer } from './replay.mjs';
 const DECODE_AHEAD = 16;
 const PREPARED = 16;
 
-/** Parse one FrameRecord (rr-render/src/feed.rs, "RRFR" v1) into a pack-shaped {head, slice}. */
+/** Parse one FrameRecord (rr-render/src/feed.rs, "RRFR" v2) into a pack-shaped {head, slice}. */
 function decodeFrameRecord(buf, tables, session) {
     const u8 = new Uint8Array(buf);
     const dv = new DataView(buf);
@@ -23,7 +23,7 @@ function decodeFrameRecord(buf, tables, session) {
     if (String.fromCharCode(u8[0], u8[1], u8[2], u8[3]) !== 'RRFR') throw new Error('not a FrameRecord');
     o = 4;
     const ver = u32();
-    if (ver !== 1) throw new Error(`FrameRecord v${ver} unsupported`);
+    if (ver !== 2) throw new Error(`FrameRecord v${ver} unsupported -- the engine build and the wasm are out of step`);
     const frame = Number(dv.getBigInt64(o, true)); o += 8;
     const td = new TextDecoder();
     const nStates = u32();
@@ -44,8 +44,26 @@ function decodeFrameRecord(buf, tables, session) {
         const id = u32(); const len = u32();
         tables.cb.set(id, u8.slice(o, o + len)); o += len;
     }
-    const vbLen = u32(); const vb = { bytes: u8.subarray(o, o + vbLen) }; o += vbLen;
-    const ibLen = u32(); const ib = { bytes: u8.subarray(o, o + ibLen) }; o += ibLen;
+    // SHARED GEOMETRY (v2). Blobs arrive in whichever record first uses them and are kept for the tape; a buffer
+    // is then a list of segments, each either inline bytes or a blob reference. Their CONCATENATION is exactly the
+    // whole buffer v1 sent every frame, so `firstIndex`/`voff` need no remapping -- createResources writes the
+    // segments straight into the GPU buffer at their running offsets.
+    const nBlob = u32();
+    for (let k = 0; k < nBlob; k++) {
+        const id = u32(); const len = u32();
+        tables.blob.set(id, u8.slice(o, o + len)); o += len;
+    }
+    const segList = () => {
+        const n = u32();
+        const segs = new Array(n);
+        let len = 0;
+        for (let k = 0; k < n; k++) { const blob = i32(); const sl = u32(); segs[k] = { blob, len: sl }; len += sl; }
+        const inlineLen = u32();
+        const inline = u8.subarray(o, o + inlineLen); o += inlineLen;
+        return { segs, inline, len };
+    };
+    const vb = segList();
+    const ib = segList();
     const nDraws = u32();
     const draws = new Array(nDraws);
     const constantBuffers = {};
@@ -73,7 +91,7 @@ function decodeFrameRecord(buf, tables, session) {
     }
     const head = { frame, viewport: session.viewport, sceneRT: session.sceneRT, inputLayouts: session.inputLayouts,
                    vb, ib, textures, constantBuffers, draws };
-    return { head, slice: (r) => r.bytes, bytes: buf.byteLength };
+    return { head, slice: (r) => r.bytes, blobs: tables.blob, bytes: buf.byteLength };
 }
 
 export class TapePlayer extends SequencePlayer {
@@ -82,7 +100,7 @@ export class TapePlayer extends SequencePlayer {
         this.maxPrepared = PREPARED;
         this.decoded = new Map();          // tape row -> pack-shaped frame
         this.pending = new Map();          // tape row -> [resolve, reject]
-        this.tables = { states: new Map(), tex: new Map(), cb: new Map() };
+        this.tables = { states: new Map(), tex: new Map(), cb: new Map(), blob: new Map() };
         this.timings = [];                 // worker ms per FrameRecord
         this.bytesTotal = 0;
     }

@@ -169,7 +169,9 @@ $('load').onclick = async () => {
                       const h = await crypto.subtle.digest('SHA-256', px);
                       return { sha: [...new Uint8Array(h)].map((b) => b.toString(16).padStart(2, '0')).join(''), bytes: px.byteLength };
                     },
-                    stats: () => (player.stats ? player.stats() : null) };
+                    stats: () => (player.stats ? player.stats() : null),
+                    // perf harness: the raw per-frame worker timings (a mean hides the spikes that drop frames)
+                    timings: () => (player.timings ? player.timings.slice() : []) };
     log('every frame is RE-RENDERED from Steam\'s own draw calls — this is not a video.');
   } catch (e) {
     log(String(e.message || e), 'err');

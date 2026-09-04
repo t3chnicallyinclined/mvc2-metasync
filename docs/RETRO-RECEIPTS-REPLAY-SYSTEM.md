@@ -118,13 +118,18 @@ Read from the native x86-64 recompile in Ghidra and gated in a p-code emulator (
   drew it) + world path (NaomiLib polygon groups, render-state law from PCW/ISP/TSP, translucent sort key = w of the mesh
   centre through W·V·P, frame background from `blk+0x6CB4`, deck = arc model 0 at identity) + closed-form world camera.
   Gates: W1 12,621/12,621 sprite draws exact vs Python; W2 90,673/90,673 full draws exact.
-- **FrameRecord v1** (`feed.rs`): first-use-only tables (pipeline states, textures, constant buffers), VB, IB, 60-B draw
-  structs; ≈700 KB/frame today (the static deck VB is re-sent each frame — next lever). Records must be consumed in
-  feed order; the worker fills gaps on a seek (seek gate 3/3 hash-equal).
+- **FrameRecord v2** (`feed.rs`, 2026-09-04): first-use-only tables (pipeline states, textures, constant buffers,
+  SHARED GEOMETRY BLOBS), VB/IB as segment lists, 60-B draw structs; **164–320 KB/frame** (was ~700: the static arc
+  deck was re-sent every frame and is now one blob per deck colour for the whole match; the concatenation of a
+  frame's segments is byte-for-byte the old whole buffer, so no `firstIndex`/`voff` moved). Records must be consumed
+  in feed order; the worker fills gaps on a seek (seek gate 3/3 hash-equal). `RR-RENDER-CRATE.md` §3.
 - **Player**: WebGPU, scene RT 2048×1024 with the game viewport 1280×960 (Steam's own 2× internal resolution — the
   Collection draws 640(k+1)×480(k+1) centred in a window-height-keyed RT, `STEAM-GRAPHICS-OPTIONS-GHIDRA.md`).
   `res=2|3|4` multiplies RT + viewports (vertices are NDC); `filter=box` averages every texel into a 640×480 canvas
-  (Steam point-samples; box is our supersampling extra). Speed: native emitter 14.1 ms/frame; in-app 60 fps.
+  (Steam point-samples; box is our supersampling extra). Speed (2026-09-04, after FrameRecord v2 + interning the
+  per-draw pipeline-state map): native emitter **1.5–1.9 ms/frame** (was 9–10), browser worker **2.5 ms median,
+  5.3 ms p99** against a 16.7 ms budget (was 11.0 / 19.4, with 108 of 120 frames over 8 ms). Only the cold frame 0
+  (~32 ms, it builds the deck cache) exceeds the budget, and the 16-frame decode-ahead prime absorbs it.
 - **In the PWA** (`ReplayEmbed.svelte`): compact 640-px card inline, fullscreen with plates in the pillar bands, transport,
   keyboard, orientation lock, states loading/pending/expired/unsupported; metadata (names, ranks, date, stage) resolved
   server-side at replay time; cloud skins per `/rr/loadout` (chrome-top now; inside the picture once the emitter takes a

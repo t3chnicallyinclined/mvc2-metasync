@@ -50,6 +50,39 @@ export function uploadTextures(device, pack, textures) {
     return uploaded;
 }
 
+/**
+ * One frame's vertex or index buffer.
+ *
+ * A `.seq` frame carries the whole buffer ({off,len} into the pack). A FrameRecord v2 carries a LIST OF SEGMENTS
+ * (rr-render/src/feed.rs): inline bytes this record brought, or a reference to a blob an earlier record sent —
+ * the static stage deck is one blob for a whole match instead of ~464 KB re-sent 60 times a second. The
+ * concatenation of the segments is byte-for-byte the buffer the old format sent whole, which is why nothing above
+ * this function knows the difference: every `firstIndex` and `voff` still indexes the assembled buffer.
+ *
+ * Segments are written straight into the GPU buffer at their running offset, so sharing costs no CPU copy at all —
+ * assembling a ~700 KB Uint8Array per frame on the main thread would have handed back most of what the worker saved.
+ */
+function geometryBuffer(device, rec, slice, usage, blobs) {
+    if (!rec.segs) {                                  // .seq path: one whole buffer
+        const bytes = slice(rec);
+        const buf = device.createBuffer({ size: bytes.byteLength, usage: usage | GPUBufferUsage.COPY_DST });
+        device.queue.writeBuffer(buf, 0, bytes);
+        return buf;
+    }
+    const buf = device.createBuffer({ size: rec.len, usage: usage | GPUBufferUsage.COPY_DST });
+    let at = 0, inlineAt = 0;
+    for (const s of rec.segs) {
+        if (s.blob < 0) { device.queue.writeBuffer(buf, at, rec.inline, inlineAt, s.len); inlineAt += s.len; }
+        else {
+            const b = blobs?.get(s.blob);
+            if (!b) throw new Error(`FrameRecord references geometry blob ${s.blob} before it was sent`);
+            device.queue.writeBuffer(buf, at, b);
+        }
+        at += s.len;
+    }
+    return buf;
+}
+
 export function createResources(device, pack, shared = null) {
     const { head, slice } = pack;
     // A SEQUENCE hands the same `shared` object to every frame. Frames of one burst overwhelmingly
@@ -63,17 +96,8 @@ export function createResources(device, pack, shared = null) {
     // ── geometry ─────────────────────────────────────────────────────────────────────────────────
     // The captured VB is 2 MiB of which only ~91 KB is referenced, but uploading it whole keeps every
     // draw's firstIndex a direct index into the original buffer — no remapping, nothing to get wrong.
-    const vbBytes = slice(head.vb);
-    const vertexBuffer = device.createBuffer({
-        size: vbBytes.byteLength, usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
-    });
-    device.queue.writeBuffer(vertexBuffer, 0, vbBytes);
-
-    const ibBytes = slice(head.ib);
-    const indexBuffer = device.createBuffer({
-        size: ibBytes.byteLength, usage: GPUBufferUsage.INDEX | GPUBufferUsage.COPY_DST,
-    });
-    device.queue.writeBuffer(indexBuffer, 0, ibBytes);
+    const vertexBuffer = geometryBuffer(device, head.vb, slice, GPUBufferUsage.VERTEX, pack.blobs);
+    const indexBuffer = geometryBuffer(device, head.ib, slice, GPUBufferUsage.INDEX, pack.blobs);
 
     // ── textures ─────────────────────────────────────────────────────────────────────────────────
     // ⚠ mipLevelCount is 1 and upload is raw writeTexture, deliberately. Auto-generating mips on an
