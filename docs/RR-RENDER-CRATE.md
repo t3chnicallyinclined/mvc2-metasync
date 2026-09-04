@@ -205,3 +205,48 @@ ignored by the repo, the frozen JSONs hold state words/hashes/small CBs only.
    (review-render 2.5) is the product path.
 4. L2 `v3gate.py --emitter rust`; the `complete_prop` clip (stage 16, `...59613970...`); stages without host pages (R11).
 5. Closed-form camera: settle signed zeros + the `list7` residual against the captured CB, then switch and re-gate.
+
+## 7. Invariants (deliberate properties that are easy to lose in a refactor)
+
+Each of these is a decision, not an accident. If you are about to change one, the note says what it buys and
+which gate catches you.
+
+**7.1 The torn-guard verdict is a pure function of the TAPE, never of render order.**
+`sprites.rs emit_row` decides "is this row a torn capture?" from `Emitter::node_counts` — a snapshot of the
+pristine per-clock node counts taken in `new()`. It must NOT read `self.nodes`, because *the guard itself
+mutates `self.nodes`* (it substitutes the held list at that clock). Reading the mutated map would make a row's
+verdict depend on which rows were rendered before it, so a seek and a sequential play could disagree about
+whether a frame is torn at all. Keeping the counts pristine is what makes seeking safe here.
+*Gate:* `tools/gate_seek.mjs` over a window containing a held row —
+`packs/59613662 start=2190 count=60`, targets `26 27 28 40` (clip frame 27 = row 2217, a held row).
+4/4 byte-equal to the sequential render, 2026-09-04.
+⚠ Note the limit of the claim: the *verdict* is order-independent; the *substituted content* still comes from
+`last_nodes`, which is emission-ordered. That is measured equal on the held frame above, not proven in general.
+
+**7.2 The torn test is a strict SUPERSET of the old absolute one — keep both disjuncts.**
+`torn = (n < 2 && prev >= 3) || n * TORN_FACTOR < min(prev, next)`. The old absolute disjunct is not dead
+weight: in a run of *consecutive* torn rows the relative test's neighbours are themselves torn, so `min(prev,
+next)` collapses and only the absolute test still fires. Dropping it regressed 8–13 rows per tape on the four
+gate tapes when first tried. The superset shape is also what makes the change one-directional: no row that was
+held before can stop being held, which is what kept the re-baseline reviewable.
+`TORN_FACTOR = 2` is a stated margin (the row must hold less than half the size its neighbours agree on), not a
+fit; `TORN_SCAN = 8` is the engine's own GGPO rollback horizon. Mirrored verbatim in `tape_to_seq.py`.
+
+**7.3 `resolve_palrow_slots` lives in rr-render ONLY — do not port it to the oracle.**
+The staged palette blocks are not always in fighter-slot order (prod tape `..._59618234`: every P1 fighter's
+block sat at the odd index and vice versa, so each fighter wore the other side's character's palette). The
+resolver re-derives the mapping by byte-equality against `PLxx_lut.json` ROM banks. `tape_to_seq.py` has no
+equivalent **by decision**: a second copy of new, non-trivial logic would have to be kept in step forever, to
+remove one confusing failure message. No gate tape triggers it (checked against all 21 palrows tapes in
+`replay-kit/tapes-kept`, 2026-09-04). `gate_l1.sh` prints the emitter's own `palrow_note` if it ever does, with
+instructions to re-run the rs side with `--no-palrow-resolve` before touching anything.
+
+**7.4 The L3 artefacts are a MATCHED VINTAGE — regenerate the gold `.seq`, the pack and the rips together.**
+On 2026-09-04 `gold_13_1500.seq` and `packs/59613662/` were found to both predate commit `a42d9de` (the HUD
+portrait/name plate now come from each fighter's own character DAT). The pack had no `portraits/` directory, so
+the tape path reproduced the *old* pages and matched the *old* gold: **L3 passed 60/60 while validating a
+pre-fix asset vintage against itself.** A freshly generated seq failed 0/60 at the same window; the diff was
+1200 draws, all `tex[0]`, all 4096 B = 32×32 portrait pages. Both were re-baselined (old gold archived as
+`gold_13_1500.seq.pre20260904`). This is the RE-METHOD **M4** failure mode — a gate that cannot fail is worse
+than one that does, because it is reported as success. Before trusting an L3 pass, check that the pack and the
+gold were built after the newest change to the assets they carry.

@@ -104,6 +104,9 @@ docs/BTCPAY-ECONOMY-STUDY.md
 
 # d3dcap sequences: a burst of captured frames, ROM-derived like the .pack files.
 /d3dcap/replay/*.seq
+# ...and any SUFFIXED archive of one. A re-baselined gate artefact saved as
+# `gold_13_1500.seq.pre20260904` slips straight past `*.seq` and is still ROM-derived.
+/d3dcap/replay/*.seq.*
 
 # BYOR: live game-state dumps and derived volatility maps are ROM-derived
 replay-kit/blk_snapshot.bin
@@ -125,7 +128,8 @@ d3dcap/replay/fullmatch/*.txt
 d3dcap/replay/capgate/
 d3dcap/replay/ordergate/
 
-# receipt runner build products (the source is kept; the exe/obj are not) and its outputs live in %TEMP%rcap_runner
+# receipt runner build products (the source is kept; the exe/obj are not) and its outputs live in %TEMP%
+rcap_runner
 /d3dcap/receipt/runner/*.exe
 /d3dcap/receipt/runner/*.obj
 /d3dcap/receipt/runner/*.pdb

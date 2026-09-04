@@ -54,6 +54,7 @@
 #include <algorithm>
 
 #pragma comment(lib, "psapi.lib")
+#pragma comment(lib, "user32.lib")
 
 // ---- constants (see header comment for the evidence of each) ----------------------------------------------------------
 static const uint64_t EXE_BASE_EXPECT   = 0x140000000ull;
@@ -79,7 +80,9 @@ static const uint64_t ARENA_SIZE        = 0x10000000ull;    // 256 MiB: ctx +0x8
 static const uint64_t BLK_SIZE_EXPECT   = 0x33B18ull;
 static const uint32_t CLOCK_OFF = 0x3CC8, MODE_OFF = 0x3CB8, SLOTPTRS_OFF = 0x32500, FIGHTER0 = 0x3DB8, FSTRIDE = 0x738;
 static const uint64_t DEBUGRING_BYTES   = 0x40000ull;       // ring at +0x346AC..+0x34AB0, count word +0x34AAC
-static const uint64_t HEAP_BYTES        = 64ull << 20;
+static uint64_t HEAP_BYTES              = 64ull << 20;   // --heap-mb. A WRAP re-zeroes the heap inside one tick,
+                                                         // which becomes a single huge outlier in the N1b max
+                                                         // column, so deep-ring timing runs must avoid wrapping.
 
 // ---- state ------------------------------------------------------------------------------------------------------------
 struct Meta { uint64_t exe_base = 0, exe_size = 0, blk = 0, blk_size = 0, blk2 = 0, blk2_size = 0, ctx = 0, ctx_size = 0,
@@ -146,8 +149,16 @@ static void dumpRange(const std::string& p, uint64_t addr, uint64_t n) {
 }
 
 // ---- replacement externals (contract C6; harness semantics = emu_frame.CRT_SLOTS + EmuGate `extstub on`) -----------------
+static uint64_t g_heapWraps = 0;
 static PVOID WINAPI rr_RtlAllocateHeap(PVOID, ULONG, SIZE_T n) {
     ++g_cnt[0]; g_allocBytes += n;
+    if (g_heapCur + n + 16 > g_heapEnd) {
+        // GATE N1: a resim re-runs the same ticks, so the bump heap is consumed N+1 times faster. Wrap and re-zero the
+        // USED part -- the CRT asks HEAP_ZERO_MEMORY and Gate 1 proved 300 ticks byte-exact with a monotonically
+        // advancing pointer, so handing back a re-zeroed chunk is equivalent. Logged: a wrap pollutes one tick sample.
+        memset((void*)(uintptr_t)g_heapBase, 0, (size_t)(g_heapCur - g_heapBase));
+        g_heapCur = g_heapBase; ++g_heapWraps;
+    }
     uint64_t p = g_heapCur; g_heapCur = (g_heapCur + n + 15) & ~15ull;
     if (g_heapCur > g_heapEnd) die(5, "runner heap exhausted (%llu B requested at tick %ld)", (uint64_t)n, g_tick);
     return (PVOID)(uintptr_t)p;   // zeroed: fresh VirtualAlloc'd pages, never reused (the CRT asks HEAP_ZERO_MEMORY=8)
@@ -314,6 +325,7 @@ static void selfChecks() {
 
 // ---- the tick loop (own thread: 16 MiB stack; single thread, contract C9) -------------------------------------------------
 struct Job { int ticks; std::vector<uint32_t> w0, w1; std::string out; int dumpEvery; bool dumpEnd; std::vector<double> ms;
+             bool play = false; int playFrames = 1200; bool playHarvest = false;
              bool harvest = false; std::vector<uint8_t> dcShadow; uint64_t dcDeltaPages = 0, dcDeltaBytes = 0; std::string dcDeltaSummary; };
 static Job J;
 // ---- GATE 2 harvest dump (docs/RECEIPT-RUNNER-GATE2.md): everything the agent's harvest reads, per tick -----------------
@@ -349,15 +361,483 @@ static void harvestDump(int k) {
     if (k <= 3 || pages > 64) logf_("  harvest tick %3d: %llu DC-RAM pages changed (DC%s)", k, pages, ranges.c_str());
     if (J.dcDeltaSummary.size() < 4000) J.dcDeltaSummary += (J.dcDeltaSummary.empty() ? "" : ";") + std::to_string(k) + ":" + std::to_string(pages);
 }
+// ---- GATE N1: rollback / resimulation -- sufficiency proof + interleaved timing --------------------------------------
+// docs/RECEIPT-RUNNER-GATE-N1.md.  The shipped netcode's GGPO save/load callbacks persist only `blk`.  Our runner
+// additionally touches host state the shipped game never has to think about: the lazily-committed device-object page
+// *(0x140acd3a8) whose PALETTE_RAM the tick WRITES (GATE1 s3.4) and the ctx page-table records (GATE1 s3.5, proven
+// run-dependent in GATE3 s5).  `--rollback N` answers both questions in ONE interleaved loop, which is the point --
+// a save measurement and a tick measurement composed after the fact are not a rollback measurement:
+//   (a) SUFFICIENCY: save only the chosen set every tick; after tick k, restore the slot saved at tick k-N, re-tick
+//       the same N inputs, and compare EVERY candidate region against the straight-line state at the same clock.
+//       If the set is `blk` and everything still matches, blk-only rollback is sufficient for this runner.
+//   (b) TIMING: save / restore / resim measured inside that loop, per event, with the straight-line tick alongside.
+// N = 0 is the floor: save + restore, zero resim ticks (must be trivially exact).
+struct Region { uint64_t addr, size; const char* name; };
+static int         g_rbN = -1;              // -1 = mode off
+static std::string g_rbSet = "blk";
+static std::vector<std::pair<uint64_t, uint64_t> > g_rbCtxExtra;   // --rb-ctx-extra LO-HI[,LO-HI...] (ctx offsets)         // blk | blk2 | sim | full
+static int         g_rbVerify = 2;          // 0 = blk only, 1 = small regions, 2 = + ctx/dcram/lazy pages
+static bool        g_rbReset = true;        // on a mismatch, restore the reference so later events stay independent
+static int         g_rbMaxEvents = 0;       // 0 = an event after every tick k >= N
+static std::vector<double> g_rbSaveMs, g_rbRestoreMs, g_rbResimMs;
+// N1b (netcode lane, 2026-09-04): the amortised ms/frame column is ELIGIBILITY-WEIGHTED -- a depth-N rollback can
+// only fire after tick k >= N, so dividing by ALL ticks understates the cost by (ticks-N)/ticks and is undefined for
+// a run of <= N ticks. A frame budget is a DEADLINE, not an average. These two vectors carry the per-EVENT cost:
+//   g_rbEventMs = save + restore + resim   -- the rollback overhead on the frame that rolled back
+//   g_rbFrameMs = that + the straight-line tick of the same frame -- the TOTAL work that frame must fit in 16.667 ms
+static std::vector<double> g_rbEventMs, g_rbFrameMs;
+static const double FRAME_BUDGET_MS = 16.667;
+static int g_rbEvents = 0, g_rbFailEvents = 0;
+static std::string g_rbJson;
+static std::map<std::string, uint64_t> g_rbCtxBuckets;
+static std::string g_rbCtxJson;
+static uint64_t g_rbNondetEvents = 0, g_rbNondetBytes = 0;
+static std::string g_rbFirstFail;
+// the ctx page-table residual of GATE1 s3.5 / GATE3 s5: isolated 4-byte fields at stride 0x130 inside the decoded
+// texture-page area.  It is run-dependent host state that the tick never reads, so it is counted but NOT a failure.
+static const uint64_t CTX_PT_LO = 0x100000ull, CTX_PT_HI = 0x120000ull;
+// The ctx READ set of one frame (FRAME-READSET s3.4): the texture-slot table (which the tick both reads and writes,
+// so it is a candidate rollback region) and the NaomiLib matrix-stack state (GATE3 s6, 288 B, individually gated).
+static const uint64_t CTX_SLOTTAB_LO = 0x1E0030ull, CTX_SLOTTAB_HI = 0x1E31CCull;
+static const uint64_t CTX_MATRIX_LO  = 0x1F80A0ull, CTX_MATRIX_HI  = 0x1F81C0ull;
+// GATE N1, bisected 2026-09-04: with blk + blk2 + gs page + exe page + the ctx slot table + the ctx matrix state all
+// restored, a resim STILL diverged in blk (object-pool node 144 field +0x124, a sprite-walker placement field --
+// blkmap: blk+0x1D6FC = DC 0x8C27B034) on 3 of 193 events at depth 8. Restoring these EIGHT bytes as well makes it
+// exact, and every 4-byte half of them fails on its own, so both dwords are load-bearing. They sit inside the
+// NaomiLib projection/viewport block that FUN_140846a40 initialises wholesale (MOVUPS [ctx+0x1F8230],XMM1 at
+// 0x140846BF7); no literal 0x1F8230/0x1F8234 displacement exists anywhere in the 10,803-function disassembly cache,
+// so the per-frame access is indexed -- the reader is INFERRED, the requirement is CONFIRMED by bisection.
+// Neighbours for orientation: +0x1F8200/+0x1F8214 = +/-812.357 (focal length), +0x1F8220 = -320.0, +0x1F8224 = -338.4.
+static const uint64_t CTX_PROJ_LO = 0x1F8230ull, CTX_PROJ_HI = 0x1F8238ull;
+// Buckets used to CLASSIFY a ctx difference instead of guessing at it (FRAME-READSET s3.4 write list).
+struct CtxBucket { uint64_t lo, hi; const char* name; };
+static const CtxBucket CTX_BUCKETS[] = {
+    { 0x000030ull, 0x0007ECull, "TA-records-1" },
+    { 0x030030ull, 0x03130Cull, "TA-records-2" },
+    { 0x100030ull, 0x108FC0ull, "decoded-texture-pages" },
+    { 0x108FC0ull, 0x1E0030ull, "page-table-records(GATE1 s3.5 stale stack)" },
+    { 0x1E0030ull, 0x1E31CCull, "TEXTURE-SLOT-TABLE(read+write)" },
+    { 0x1F8000ull, 0x1F9000ull, "matrix-stack" },
+};
+// Two ctx buckets are PROVEN nondeterministic, not missing rollback state: at depth 1 with --rb-set full (blk +
+// blk2 + gs page + exe page + the whole 4 MB ctx + the whole 32 MB DC-RAM + the GGPO counter all restored), a single
+// re-executed tick with the SAME input word still rewrites them. Nothing is left that could carry the difference, and
+// neither range is on the frame's ctx READ set (FRAME-READSET s3.4: reads are ctx+0x8, +0x1E0030..0x1E31CA and
+// +0x1F80A4..0x1F8564). This is the GATE1 s3.5 uninitialised-stack family, reproduced inside one process. Counted and
+// reported, never a failure. Any OTHER ctx bucket differing IS a failure -- especially the texture-slot table, which
+// the tick reads as well as writes and which would therefore be genuine rollback state.
+static bool ctxBucketNondet(const char* n) {
+    return strcmp(n, "decoded-texture-pages") == 0 || strcmp(n, "page-table-records(GATE1 s3.5 stale stack)") == 0;
+}
+static const char* ctxBucket(uint64_t off) {
+    for (auto& b : CTX_BUCKETS) if (off >= b.lo && off < b.hi) return b.name;
+    return "other";
+}
+
+static std::vector<Region> rbSaveSet() {
+    std::vector<Region> v;
+    v.push_back({ M.blk, M.blk_size, "blk" });
+    if (g_rbSet != "blk" && g_rbSet != "rr" && g_rbSet != "blkctx") v.push_back({ M.blk2, M.blk2_size, "blk2" });
+    // (blk is always first; the bisect tiers simctx / simdc / simtile exist to attribute a failure to ctx vs DC-RAM
+    //  vs just the 0x0CE60000 tile buffer without re-running the whole matrix.)
+    if (g_rbSet == "sim" || g_rbSet == "simctx" || g_rbSet == "simdc" || g_rbSet == "simtile" || g_rbSet == "full") {
+        v.push_back({ GS_ADDR, 0x1000, "gs_page" });
+        v.push_back({ EXE_PAGE_ADDR, EXE_PAGE_LEN, "exe_page" });
+    }
+    // `rr` is the RECOMMENDED set: the shipped game's blk, plus the 8 bytes GATE N1 proved are also required.
+    if (g_rbSet == "rr") v.push_back({ M.ctx + CTX_PROJ_LO, CTX_PROJ_HI - CTX_PROJ_LO, "ctx_proj" });
+    if (g_rbSet == "blkctx" || g_rbSet == "sim" || g_rbSet == "simctx" || g_rbSet == "simdc" || g_rbSet == "simtile" || g_rbSet == "full") {
+        // the ctx READ set only: 0x319C slot table + 0x120 matrix state = 12,956 B, not the whole 4 MB context
+        v.push_back({ M.ctx + CTX_SLOTTAB_LO, CTX_SLOTTAB_HI - CTX_SLOTTAB_LO, "ctx_slottab" });
+        v.push_back({ M.ctx + CTX_MATRIX_LO, CTX_MATRIX_HI - CTX_MATRIX_LO, "ctx_matrix" });
+        v.push_back({ M.ctx + CTX_PROJ_LO, CTX_PROJ_HI - CTX_PROJ_LO, "ctx_proj" });
+    }
+    for (size_t i = 0; i < g_rbCtxExtra.size(); ++i)
+        v.push_back({ M.ctx + g_rbCtxExtra[i].first, g_rbCtxExtra[i].second - g_rbCtxExtra[i].first, "ctx_extra" });
+    if (g_rbSet == "simctx" || g_rbSet == "full") v.push_back({ M.ctx, M.ctx_size, "ctx" });
+    if (g_rbSet == "simdc" || g_rbSet == "full") v.push_back({ M.dcram, M.dcram_size, "dcram" });
+    if (g_rbSet == "simtile") v.push_back({ M.dcram + 0x0E60000ull, 0x5000ull, "dcram_tilebuf" });
+    // The GGPO counter at 0x142d10b90 is the WRAPPER's, not game state (contract C2, GATE1 s3.6): FUN_140118950
+    // bumps it once per call, so a resim would advance it by N and every comparison would fail on bookkeeping.
+    // It is restored in EVERY tier, and that is stated in the log so the choice is never silent.
+    v.push_back({ GGPO_STATE, 0x10, "ggpo" });
+    return v;
+}
+static std::vector<Region> rbVerifySet() {
+    std::vector<Region> v;
+    v.push_back({ M.blk, M.blk_size, "blk" });
+    if (g_rbVerify >= 1) {
+        v.push_back({ M.blk2, M.blk2_size, "blk2" });
+        v.push_back({ GS_ADDR, 0x1000, "gs_page" });
+        v.push_back({ EXE_PAGE_ADDR, EXE_PAGE_LEN, "exe_page" });
+    }
+    if (g_rbVerify >= 2) {
+        v.push_back({ M.ctx, M.ctx_size, "ctx" });
+        v.push_back({ M.dcram, M.dcram_size, "dcram" });
+    }
+    return v;
+}
+static uint64_t rbBlobSize(const std::vector<Region>& v) { uint64_t n = 0; for (auto& r : v) n += r.size; return n; }
+static void rbSaveTo(uint8_t* dst, const std::vector<Region>& v) {
+    for (auto& r : v) { memcpy(dst, (const void*)(uintptr_t)r.addr, (size_t)r.size); dst += r.size; }
+}
+static void rbRestoreFrom(const uint8_t* src, const std::vector<Region>& v) {
+    for (auto& r : v) { memcpy((void*)(uintptr_t)r.addr, src, (size_t)r.size); src += r.size; }
+}
+// first differing offset + byte count + run count for one region
+struct Diff { uint64_t bytes = 0, runs = 0, first = ~0ull; std::map<std::string, uint64_t> buckets; };
+static Diff rbDiff(const uint8_t* ref, uint64_t addr, uint64_t size, bool ctxClassify) {
+    Diff d; const uint8_t* live = (const uint8_t*)(uintptr_t)addr;
+    for (uint64_t i = 0; i < size; ) {
+        if (live[i] == ref[i]) { ++i; continue; }
+        uint64_t j = i; while (j < size && live[j] != ref[j]) ++j;
+        d.bytes += j - i; ++d.runs; if (d.first == ~0ull) d.first = i;
+        if (ctxClassify) d.buckets[ctxBucket(i)] += j - i;
+        i = j;
+    }
+    return d;
+}
+
+// ---- PLAY MODE: put a human at one end ---------------------------------------------------------------------------
+// Pad word layout, CONFIRMED and verified in docs/CONFIRMED-TAPE-AND-FLYR-REPLAY.md s5 ("Rosetta, solved + verified"):
+//   0x10 UP  0x20 RIGHT  0x40 DOWN  0x80 LEFT | 0x200 A1  0x800 A2  0x1000 HP  0x2000 HK  0x4000 LK  0x8000 LP
+// Cross-checked against real recorded tapes: 0x000080 = walk left, 0x000020 = walk right, 0x0020C0 = down-left + HK.
+// The wrapper FUN_140118950 takes these two seat words as its whole input (DETERMINISM-CONTRACT s1), so a human
+// pressing a button IS the same object the receipt replays -- there is no second input path to get wrong.
+static const uint32_t PAD_UP = 0x10, PAD_RIGHT = 0x20, PAD_DOWN = 0x40, PAD_LEFT = 0x80,
+                      PAD_A1 = 0x200, PAD_A2 = 0x800, PAD_HP = 0x1000, PAD_HK = 0x2000,
+                      PAD_LK = 0x4000, PAD_LP = 0x8000;
+typedef DWORD (WINAPI *XInputGetState_t)(DWORD, void*);
+static XInputGetState_t g_xiGet = nullptr;
+static bool g_padIsXInput = false;
+
+static const uint32_t PAD_DIRS = PAD_UP | PAD_DOWN | PAD_LEFT | PAD_RIGHT;   // 0xF0
+static const char* padName(uint32_t w);
+
+// Raw sources, kept so a session can be audited instead of guessed at. Tris 600-frame session had a low byte of
+// 00 on EVERY frame, i.e. no direction ever reached the sim, and the log could not say whether he never pressed
+// one or whether we dropped it -- because nothing raw was recorded. That is the defect this struct closes.
+struct PadRaw {
+    uint32_t xiMask = 0;        // which XInput user indices are connected
+    uint16_t xiButtons = 0;
+    int16_t  xiLX = 0, xiLY = 0;
+    uint16_t kbBits = 0;        // bit k = keys[k] down
+    uint32_t word = 0;          // the synthesised seat word
+};
+static PadRaw g_padRaw;
+
+struct PadKey { int vk; uint32_t bit; const char* name; };
+static const PadKey PAD_KEYS[] = {
+    {VK_UP,PAD_UP,"Up"},{VK_DOWN,PAD_DOWN,"Down"},{VK_LEFT,PAD_LEFT,"Left"},{VK_RIGHT,PAD_RIGHT,"Right"},
+    {'Z',PAD_LP,"Z=LP"},{'X',PAD_HP,"X=HP"},{'C',PAD_A1,"C=A1"},
+    {'A',PAD_LK,"A=LK"},{'S',PAD_HK,"S=HK"},{'D',PAD_A2,"D=A2"} };
+
+static void padInit() {
+    const char* dlls[] = { "xinput1_4.dll", "xinput1_3.dll", "xinput9_1_0.dll" };
+    for (const char* d : dlls) {
+        HMODULE h = LoadLibraryA(d);
+        if (!h) continue;
+        g_xiGet = (XInputGetState_t)GetProcAddress(h, "XInputGetState");
+        if (g_xiGet) { g_padIsXInput = true; logf_("  pad: loaded %s XInputGetState", d); break; }
+    }
+    if (!g_padIsXInput) logf_("  pad: no XInput DLL available");
+    uint32_t mask = 0;
+    if (g_xiGet) {
+        uint8_t st[16];
+        for (DWORD i = 0; i < 4; ++i) { memset(st, 0, sizeof(st)); if (g_xiGet(i, st) == 0) mask |= (1u << i); }
+    }
+    logf_("  pad: XInput controllers connected on user index mask 0x%X ; the KEYBOARD is ALWAYS polled too", mask);
+    logf_("  pad: directions = d-pad / left stick / arrow keys ; buttons = X,Y,A,B,LB,RB or Z,X,C,A,S,D");
+    if (mask == 0) logf_("  pad: NO CONTROLLER DETECTED -- keyboard only. Directions are the ARROW KEYS.");
+}
+
+// XINPUT_STATE: dwPacketNumber@0, wButtons@4, LT@6, RT@7, sThumbLX@8, sThumbLY@10 (16 B total).
+// THREE FIXES over the first version, all of which could silently drop direction input:
+//   1. it returned early from the XInput branch, so with any controller connected the KEYBOARD WAS NEVER READ;
+//   2. it polled user index 0 only, so a pad enumerated on 1..3 contributed nothing;
+//   3. the stick deadzone was 12000 (37% of full scale) versus XInput's own 7849.
+// Both sources are now OR-ed, every index is polled, and the raw values are recorded in g_padRaw.
+static uint32_t padRead() {
+    uint32_t w = 0;
+    PadRaw r;
+    if (g_xiGet) {
+        uint8_t st[16];
+        for (DWORD i = 0; i < 4; ++i) {
+            memset(st, 0, sizeof(st));
+            if (g_xiGet(i, st) != 0) continue;
+            r.xiMask |= (1u << i);
+            uint16_t b = *(uint16_t*)(st + 4);
+            int16_t lx = *(int16_t*)(st + 8), ly = *(int16_t*)(st + 10);
+            r.xiButtons |= b; if (lx) r.xiLX = lx; if (ly) r.xiLY = ly;
+            const int DZ = 7849;                      // XINPUT_GAMEPAD_LEFT_THUMB_DEADZONE
+            if ((b & 0x0001) || ly > DZ)  w |= PAD_UP;
+            if ((b & 0x0002) || ly < -DZ) w |= PAD_DOWN;
+            if ((b & 0x0004) || lx < -DZ) w |= PAD_LEFT;
+            if ((b & 0x0008) || lx > DZ)  w |= PAD_RIGHT;
+            if (b & 0x4000) w |= PAD_LP;    // X
+            if (b & 0x8000) w |= PAD_HP;    // Y
+            if (b & 0x1000) w |= PAD_LK;    // A
+            if (b & 0x2000) w |= PAD_HK;    // B
+            if (b & 0x0100) w |= PAD_A1;    // LB
+            if (b & 0x0200) w |= PAD_A2;    // RB
+        }
+    }
+    for (int k = 0; k < (int)(sizeof(PAD_KEYS) / sizeof(PAD_KEYS[0])); ++k)
+        if (GetAsyncKeyState(PAD_KEYS[k].vk) & 0x8000) { w |= PAD_KEYS[k].bit; r.kbBits |= (uint16_t)(1u << k); }
+    r.word = w;
+    g_padRaw = r;
+    return w;
+}
+
+// A 5-second check of the INPUT PATH ALONE: no image, no anchor, no tick. If a direction never shows up here,
+// the fault is ours; if it does, the sim is the next place to look. This exists because the first play session
+// could not distinguish "he pressed no direction" from "we dropped it".
+static int padProbe(int seconds) {
+    padInit();
+    printf("\nPAD PROBE -- press things. Directions are the ARROW KEYS or a d-pad/left stick.\n");
+    printf("Watching for %d s. A direction sets a LOW-BYTE bit: UP 10 RIGHT 20 DOWN 40 LEFT 80.\n\n", seconds);
+    LARGE_INTEGER f, t0, now; QueryPerformanceFrequency(&f); QueryPerformanceCounter(&t0);
+    uint32_t last = 0xFFFFFFFF, dirsSeen = 0, btnsSeen = 0;
+    int samples = 0;
+    for (;;) {
+        QueryPerformanceCounter(&now);
+        double el = (double)(now.QuadPart - t0.QuadPart) / (double)f.QuadPart;
+        if (el > seconds) break;
+        uint32_t w = padRead(); ++samples;
+        dirsSeen |= (w & PAD_DIRS); btnsSeen |= (w & ~PAD_DIRS);
+        if (w != last) {
+            printf("  t=%5.1fs  pad %06x [%-14s]   xi mask %x buttons %04x LX %6d LY %6d   kb %03x\n",
+                   el, w, padName(w), g_padRaw.xiMask, g_padRaw.xiButtons, g_padRaw.xiLX, g_padRaw.xiLY, g_padRaw.kbBits);
+            last = w;
+        }
+        Sleep(8);
+    }
+    printf("\nPAD PROBE RESULT after %d samples:\n", samples);
+    printf("  directions seen : %s  (mask %02x)\n", dirsSeen ? padName(dirsSeen) : "NONE", dirsSeen);
+    printf("  buttons seen    : %s\n", btnsSeen ? padName(btnsSeen) : "NONE");
+    if (!dirsSeen) {
+        printf("\n  >> NO DIRECTION REGISTERED. If you pressed one, the input path is at fault -- send this output.\n");
+        return 2;
+    }
+    printf("\n  >> Directions reach the pad word. The input path is good.\n");
+    return 0;
+}
+
+static const char* padName(uint32_t w) {
+    static char b[96]; b[0] = 0;
+    if (w & PAD_UP) strcat_s(b, "U"); if (w & PAD_DOWN) strcat_s(b, "D");
+    if (w & PAD_LEFT) strcat_s(b, "L"); if (w & PAD_RIGHT) strcat_s(b, "R");
+    if (w & PAD_LP) strcat_s(b, " LP"); if (w & PAD_HP) strcat_s(b, " HP");
+    if (w & PAD_LK) strcat_s(b, " LK"); if (w & PAD_HK) strcat_s(b, " HK");
+    if (w & PAD_A1) strcat_s(b, " A1"); if (w & PAD_A2) strcat_s(b, " A2");
+    return b[0] ? b : "-";
+}
+
 typedef void (*TickFn)(void*, uint32_t*, uint32_t);
+
+// ---- GATE N1 state: the ring, the reference snapshot, and one rollback event ------------------------------------------
+static std::vector<std::vector<uint8_t>> g_ring;          // g_rbN+1 slots of the SAVE set
+static std::vector<uint8_t> g_ref;                        // reference copy of the VERIFY set (untimed)
+static std::map<uint64_t, std::vector<uint8_t>> g_refLazy;// reference copy of every committed lazy host page
+static double qms(LARGE_INTEGER a, LARGE_INTEGER b, LARGE_INTEGER f) { return 1000.0 * (double)(b.QuadPart - a.QuadPart) / (double)f.QuadPart; }
+
+// After straight-line tick `kk` (1-based) has run, resimulate the last g_rbN frames from the ring and compare.
+static void rollbackEvent(int kk, TickFn tick, LARGE_INTEGER f) {
+    std::vector<Region> sv = rbSaveSet(), vf = rbVerifySet();
+    LARGE_INTEGER t0, t1;
+    // (0) reference = the straight-line state at clock(kk). UNTIMED: it exists only to prove sufficiency.
+    rbSaveTo(g_ref.data(), vf);
+    g_refLazy.clear();
+    if (g_rbVerify >= 2) for (auto& L : g_lazy) {
+        std::vector<uint8_t>& b = g_refLazy[L.page]; b.resize(0x10000);
+        memcpy(b.data(), (const void*)(uintptr_t)L.page, 0x10000);
+    }
+    uint32_t refClock = RD32(M.blk + CLOCK_OFF);
+    size_t lazyBefore = g_lazy.size();
+    // (1) restore the slot saved after tick kk-N  (TIMED)
+    QueryPerformanceCounter(&t0);
+    rbRestoreFrom(g_ring[(size_t)((kk - g_rbN) % (g_rbN + 1))].data(), sv);
+    QueryPerformanceCounter(&t1);
+    g_rbRestoreMs.push_back(qms(t0, t1, f));
+    // (2) re-tick the same N inputs  (TIMED)
+    alignas(16) uint32_t in[4];
+    QueryPerformanceCounter(&t0);
+    for (int j = kk - g_rbN; j < kk; ++j) {                 // straight-line tick index j+1 consumed J.w0[j]
+        in[0] = J.w0[j] & 0xFFFFFF; in[1] = J.w1[j] & 0xFFFFFF; in[2] = 0; in[3] = 0;
+        tick((void*)(uintptr_t)GGPO_STATE, in, 0);
+    }
+    QueryPerformanceCounter(&t1);
+    g_rbResimMs.push_back(qms(t0, t1, f));
+    double saveMs = g_rbSaveMs.empty() ? 0.0 : g_rbSaveMs.back();
+    double ev = saveMs + g_rbRestoreMs.back() + g_rbResimMs.back();
+    g_rbEventMs.push_back(ev);
+    g_rbFrameMs.push_back(ev + (J.ms.empty() ? 0.0 : J.ms.back()));
+    ++g_rbEvents;
+    // (3) compare every candidate region against the reference
+    uint32_t clk = RD32(M.blk + CLOCK_OFF);
+    bool fail = (clk != refClock);
+    std::string detail;
+    if (clk != refClock) detail += " clock " + std::to_string(clk) + " != " + std::to_string(refClock);
+    const uint8_t* rp = g_ref.data();
+    for (auto& r : vf) {
+        Diff d = rbDiff(rp, r.addr, r.size, strcmp(r.name, "ctx") == 0);
+        if (d.bytes) {
+            bool isCtx = strcmp(r.name, "ctx") == 0;
+            uint64_t fatalB = 0, nondetB = 0;
+            for (auto& b : d.buckets) {
+                g_rbCtxBuckets[b.first] += b.second;
+                (ctxBucketNondet(b.first.c_str()) ? nondetB : fatalB) += b.second;
+            }
+            if (!isCtx) fatalB = d.bytes;
+            if (fatalB) {
+                fail = true;
+                detail += std::string(" ") + r.name + "=" + std::to_string(fatalB) + "B/" + std::to_string(d.runs) +
+                          "runs@+0x" + hx(d.first);
+                for (auto& b : d.buckets) if (!ctxBucketNondet(b.first.c_str())) detail += " {" + b.first + ":" + std::to_string(b.second) + "B}";
+            }
+            if (nondetB) { g_rbNondetEvents += (fatalB ? 0 : 1); g_rbNondetBytes += nondetB; }
+        }
+        rp += r.size;
+    }
+    for (auto& kv : g_refLazy) {
+        const uint8_t* live = (const uint8_t*)(uintptr_t)kv.first;
+        if (memcmp(live, kv.second.data(), 0x10000) != 0) {
+            uint64_t nb = 0, fo = ~0ull;
+            for (uint64_t i = 0; i < 0x10000; ++i) if (live[i] != kv.second[i]) { ++nb; if (fo == ~0ull) fo = i; }
+            fail = true;
+            detail += " lazypage0x" + hx(kv.first) + "=" + std::to_string(nb) + "B@+0x" + hx(fo);
+        }
+    }
+    if (g_lazy.size() != lazyBefore) detail += " [" + std::to_string(g_lazy.size() - lazyBefore) + " NEW lazy page(s) committed during the resim]";
+    if (fail) {
+        ++g_rbFailEvents;
+        if (g_rbFirstFail.empty()) g_rbFirstFail = "tick " + std::to_string(kk) + ":" + detail;
+        logf_("  ROLLBACK tick %3d depth %d set %s: MISMATCH%s", kk, g_rbN, g_rbSet.c_str(), detail.c_str());
+        if (g_rbReset) { rbRestoreFrom(g_ref.data(), vf); for (auto& kv : g_refLazy) memcpy((void*)(uintptr_t)kv.first, kv.second.data(), 0x10000); }
+    } else if (g_rbEvents <= 2 || (g_rbEvents % 100) == 0) {
+        logf_("  ROLLBACK tick %3d depth %d set %s: EXACT (restore %.4f ms, resim %d ticks %.4f ms)%s",
+              kk, g_rbN, g_rbSet.c_str(), g_rbRestoreMs.back(), g_rbN, g_rbResimMs.back(), detail.c_str());
+    }
+}
+// The interactive loop. No netcode, no rollback, no opponent: one human, seat 0, paced at 60 Hz.
+// Everything it touches is already gated -- the tick (GATE 1), the DC-RAM image built from the arc (GATE 3/4),
+// and the per-tick harvest dump (GATE 2). The only new thing is the person.
+static void playLoop(TickFn tick, LARGE_INTEGER f) {
+    padInit();
+    uint32_t clock0 = RD32(M.blk + CLOCK_OFF);
+    FILE* fi = nullptr; fopen_s(&fi, (J.out + "/inputs_play.txt").c_str(), "wb");
+    float px0 = *(float*)(uintptr_t)(M.blk + FIGHTER0 + 0x50);
+    float py0 = *(float*)(uintptr_t)(M.blk + FIGHTER0 + 0x54);
+    logf_("PLAY: seat 0 is yours. %d frames at 60 Hz. start px %.3f py %.3f (clock %u)", J.playFrames, px0, py0, clock0);
+    // py oscillates on its own (the idle animation bobs), so py is NOT evidence of a human. px is stable at rest,
+    // so the honest claim is: the first frame with a non-zero pad, and the first px change AFTER one.
+    int firstInput = -1, firstMove = -1; uint32_t firstMovePad = 0; float pxAtInput = px0;
+    // STEERING is the claim that matters, and it needs a DIRECTION bit, not just any input. The first session
+    // reported a "human-caused move" on pad 000800 = A2 alone: an assist call, whose subsequent px slide is
+    // animation displacement, not locomotion. These two track the honest claim.
+    int firstDir = -1, firstDirMove = -1; float pxAtDir = px0; uint32_t dirsEverSeen = 0;
+    LARGE_INTEGER t0, t1, w0q, w1q; double budget = 1000.0 / 60.0;
+    std::vector<double> loopMs;
+    QueryPerformanceCounter(&w0q);
+    char pth[MAX_PATH];
+    if (J.harvest && J.playHarvest) {
+        sprintf_s(pth, "%s/blk_t000.bin", J.out.c_str()); dumpRange(pth, M.blk, M.blk_size);
+        harvestDump(0);
+    }
+    logf_("PLAY: per-tick harvest is %s (it is a RECORDING concern; with it inline the frame tail blew out to 97 ms"
+          " on a real session while the tick stayed under 0.75 ms)", (J.harvest && J.playHarvest) ? "ON" : "OFF");
+    for (int k = 0; k < J.playFrames; ++k) {
+        g_tick = k + 1;
+        LARGE_INTEGER fs; QueryPerformanceCounter(&fs);
+        uint32_t pad = padRead();
+        alignas(16) uint32_t in[4]; in[0] = pad & 0xFFFFFF; in[1] = 0; in[2] = 0; in[3] = 0;
+        QueryPerformanceCounter(&t0);
+        tick((void*)(uintptr_t)GGPO_STATE, in, 0);
+        QueryPerformanceCounter(&t1);
+        double tickMs = 1000.0 * (double)(t1.QuadPart - t0.QuadPart) / (double)f.QuadPart;
+        J.ms.push_back(tickMs);
+        if (J.harvest && J.playHarvest) {
+            sprintf_s(pth, "%s/blk_t%03d.bin", J.out.c_str(), k + 1); dumpRange(pth, M.blk, M.blk_size);
+            harvestDump(k + 1);
+        }
+        if (fi) fprintf(fi, "%06x %06x", in[0], in[1]), fputc(10, fi);
+        float px = *(float*)(uintptr_t)(M.blk + FIGHTER0 + 0x50);
+        float py = *(float*)(uintptr_t)(M.blk + FIGHTER0 + 0x54);
+        if (firstInput < 0 && pad) {
+            firstInput = k + 1; pxAtInput = px;
+            logf_("PLAY: *** FIRST INPUT *** frame %d (clock %u): pad %06x [%s], px %.3f",
+                  k + 1, RD32(M.blk + CLOCK_OFF), pad, padName(pad), px);
+        }
+        dirsEverSeen |= (pad & PAD_DIRS);
+        if (firstDir < 0 && (pad & PAD_DIRS)) {
+            firstDir = k + 1; pxAtDir = px;
+            logf_("PLAY: *** FIRST DIRECTION *** frame %d (clock %u): pad %06x [%s], px %.3f",
+                  k + 1, RD32(M.blk + CLOCK_OFF), pad, padName(pad), px);
+        }
+        if (firstDir > 0 && firstDirMove < 0 && px != pxAtDir) {
+            firstDirMove = k + 1;
+            logf_("PLAY: *** STEERING PROVEN *** frame %d, %d frames after the first direction: px %.3f -> %.3f",
+                  k + 1, k + 1 - firstDir, pxAtDir, px);
+        }
+        if (firstInput > 0 && firstMove < 0 && px != pxAtInput) {
+            firstMove = k + 1; firstMovePad = pad;
+            logf_("PLAY: *** FIRST HUMAN-CAUSED MOVE *** frame %d (clock %u), %d frames after the first input:"
+                  " pad %06x [%s] moved px %.3f -> %.3f", k + 1, RD32(M.blk + CLOCK_OFF), k + 1 - firstInput,
+                  pad, padName(pad), pxAtInput, px);
+        }
+        if ((k % 15) == 0 || pad)
+            logf_("  f%-5d clock %-6u pad %06x [%-12s] px %8.2f py %8.2f  tick %.3f ms", k + 1,
+                  RD32(M.blk + CLOCK_OFF), pad, padName(pad), px, py, tickMs);
+        LARGE_INTEGER fe; QueryPerformanceCounter(&fe);
+        double usedMs = 1000.0 * (double)(fe.QuadPart - fs.QuadPart) / (double)f.QuadPart;
+        loopMs.push_back(usedMs);
+        int sleepMs = (int)(budget - usedMs);
+        if (sleepMs > 0) Sleep(sleepMs);
+    }
+    QueryPerformanceCounter(&w1q);
+    if (fi) fclose(fi);
+    double wall = 1000.0 * (double)(w1q.QuadPart - w0q.QuadPart) / (double)f.QuadPart;
+    std::vector<double> q = loopMs; std::sort(q.begin(), q.end());
+    double sum = 0; for (double x : loopMs) sum += x;
+    auto pc = [&](double t) { return q.empty() ? 0.0 : q[std::min(q.size() - 1, (size_t)(t * q.size()))]; };
+    logf_("PLAY DONE: %d frames in %.0f ms wall (%.1f fps). per-frame WORK (pad+tick+harvest, excl. the 60 Hz sleep):"
+          " p50 %.3f p99 %.3f max %.3f ms", J.playFrames, wall, 1000.0 * J.playFrames / wall, pc(0.5), pc(0.99), q.empty() ? 0 : q.back());
+    logf_("PLAY: first input frame %d ; first human-caused px change frame %d (pad %06x) ; inputs -> %s/inputs_play.txt",
+          firstInput, firstMove, firstMovePad, J.out.c_str());
+    if (firstInput < 0) logf_("PLAY: NO INPUT WAS EVER PRESSED -- nothing was proven about a human in the loop.");
+    else if (!dirsEverSeen)
+        logf_("PLAY: *** NO DIRECTION WAS EVER PRESSED *** (every pad word had a low byte of 00). Inputs reached the"
+              " sim, but STEERING IS UNPROVEN -- a px slide under an attack/assist pad is animation displacement,"
+              " not locomotion. Run --pad-probe 5 and hold LEFT to check the input path.");
+    else
+        logf_("PLAY: STEERING -- first direction frame %d, first px change after it frame %d (directions seen: %s)",
+              firstDir, firstDirMove, padName(dirsEverSeen));
+}
+
 static DWORD WINAPI tickThread(LPVOID) {
     unsigned csr = _mm_getcsr();
     logf_("MXCSR at entry = 0x%x (%s; contract C3 wants 0x1f80)", csr, csr == 0x1f80 ? "OK" : "DIFFERS");
     LARGE_INTEGER f, t0, t1; QueryPerformanceFrequency(&f);
     TickFn tick = (TickFn)(uintptr_t)FRAME_TICK;
+    if (J.play) { playLoop(tick, f); return 0; }
     alignas(16) uint32_t inputs[4];
     uint32_t clock0 = RD32(M.blk + CLOCK_OFF);
     if (J.harvest) { char p[MAX_PATH]; sprintf_s(p, "%s\\blk_t000.bin", J.out.c_str()); dumpRange(p, M.blk, M.blk_size); harvestDump(0); }
+    // GATE N1: allocate the ring + the reference buffer, and seed slot 0 with the pre-first-tick state
+    if (g_rbN >= 0) {
+        std::vector<Region> sv = rbSaveSet(), vf = rbVerifySet();
+        uint64_t sb = rbBlobSize(sv), vb = rbBlobSize(vf);
+        g_ring.assign((size_t)g_rbN + 1, std::vector<uint8_t>((size_t)sb));
+        g_ref.assign((size_t)vb, 0);
+        std::string names; for (auto& r : sv) names += std::string(names.empty() ? "" : "+") + r.name;
+        std::string vnames; for (auto& r : vf) vnames += std::string(vnames.empty() ? "" : "+") + r.name;
+        logf_("ROLLBACK MODE: depth %d, save set '%s' = %s (%llu B x %d slots = %llu B ring), verify = %s%s, on-mismatch %s",
+              g_rbN, g_rbSet.c_str(), names.c_str(), sb, g_rbN + 1, sb * (uint64_t)(g_rbN + 1), vnames.c_str(),
+              g_rbVerify >= 2 ? "+lazy host pages" : "", g_rbReset ? "reset-to-reference" : "continue");
+        logf_("  NOTE: the GGPO counter at 0x%llx (0x10 B) is restored in EVERY tier -- it is wrapper bookkeeping that", GGPO_STATE);
+        logf_("        FUN_140118950 increments once per call (contract C2, GATE1 s3.6), not game state; without it every resim differs by N.");
+        rbSaveTo(g_ring[0].data(), sv);
+    }
     for (int k = 0; k < J.ticks; ++k) {
         g_tick = k + 1;
         inputs[0] = J.w0[k] & 0xFFFFFF; inputs[1] = J.w1[k] & 0xFFFFFF; inputs[2] = 0; inputs[3] = 0;
@@ -371,6 +851,12 @@ static DWORD WINAPI tickThread(LPVOID) {
             char p[MAX_PATH]; sprintf_s(p, "%s\\blk_t%03d.bin", J.out.c_str(), k + 1); dumpRange(p, M.blk, M.blk_size);
         }
         if (J.harvest) harvestDump(k + 1);
+        if (g_rbN >= 0) {
+            LARGE_INTEGER s0, s1; QueryPerformanceCounter(&s0);
+            rbSaveTo(g_ring[(size_t)((k + 1) % (g_rbN + 1))].data(), rbSaveSet());
+            QueryPerformanceCounter(&s1); g_rbSaveMs.push_back(qms(s0, s1, f));
+            if (k + 1 >= g_rbN && (g_rbMaxEvents == 0 || g_rbEvents < g_rbMaxEvents)) rollbackEvent(k + 1, tick, f);
+        }
         if (k < 3 || (k + 1) % 50 == 0 || k + 1 == J.ticks)
             logf_("  tick %3d: clock %u  in {%06x,%06x}  %.3f ms  rng %02x%02x  ext[alloc %llu free %llu flsget %llu flsset %llu gle %llu sle %llu]",
                   k + 1, clk, inputs[0], inputs[1], ms, *(uint8_t*)(uintptr_t)(M.blk + 0x32BD4), *(uint8_t*)(uintptr_t)(M.blk + 0x32BD5),
@@ -395,20 +881,60 @@ static void usage() {
          "  --crt real : a real per-index FLS value + last-error variable (the CRT reuses its ptd)\n"
          "  --fma 0    : DAT_142eefbd8 = 0 (SSE2 CRT path, what the harness runs)                                  [default]\n"
          "  --lazy on  : zero-commit host-heap pages on first touch (the harness's sparse-memory model), logged   [default]\n"
-         "  --lazy off : any such touch is fatal and reported (RIP, address, region)\n");
+         "  --lazy off : any such touch is fatal and reported (RIP, address, region)\n"
+         "  --rollback N        GATE N1: ring depth N; after every tick k >= N, restore the slot saved at k-N, re-tick\n"
+         "                      the same N inputs, and compare EVERY region against the straight-line state at that clock\n"
+         "                      (N = 0 = save + restore with no resim: the floor measurement)\n"
+         "  --rb-set S          what the ring saves/restores: blk (the shipped GGPO set) | rr (blk + the 8 bytes at\n"
+         "                      ctx+0x1F8230 that GATE N1 proved are also required -- the RECOMMENDED set)\n"
+         "                      | blkctx (+ the ctx READ set:\n"
+         "                      slot table + matrix state, 12,956 B) | blk2 | sim (+gs+exe page)\n"
+         "                      | full (+ctx+dcram). The GGPO counter is restored in every tier (wrapper-only, C2)  [blk]\n"
+         "  --rb-verify V       off = blk only | small = +blk2/gs/exe | all = +ctx/dcram/lazy host pages            [all]\n"
+         "  --rb-events M       stop firing events after M of them (0 = every eligible tick)                          [0]\n"
+         "  --rb-ctx-extra R    extra ctx ranges to save/restore, hex offsets 'LO-HI[,LO-HI...]' (bisecting the ctx set)\n"
+         "  --heap-mb N         runner bump-heap size. A resim consumes it depth+1 times faster; a WRAP re-zeroes\n"
+         "                      it inside one tick and becomes a huge outlier in the max column, so deep-ring\n"
+         "                      TIMING runs must size this so heap_wraps stays 0                            [64]\n"
+         "  --rb-on-mismatch X  reset (restore the reference so later events stay independent) | continue          [reset]\n");
     exit(1);
 }
 
 int main(int argc, char** argv) {
-    std::string pre, out, inputs; int ticks = 20, dumpEvery = 1; bool gsFile = false, rwx = false, force = false, dumpEnd = true; int fma = 0;
+    std::string pre, out, inputs; int ticks = 20, dumpEvery = 1, padProbeSecs = 0; bool gsFile = false, rwx = false, force = false, dumpEnd = true; int fma = 0;
     for (int i = 1; i < argc; ++i) {
         std::string a = argv[i]; auto next = [&]() -> std::string { if (i + 1 >= argc) usage(); return argv[++i]; };
         if (a == "--pre") pre = next(); else if (a == "--out") out = next(); else if (a == "--ticks") ticks = atoi(next().c_str());
         else if (a == "--inputs") inputs = next(); else if (a == "--gs") gsFile = next() == "file"; else if (a == "--crt") g_crtReal = next() == "real";
         else if (a == "--fma") fma = atoi(next().c_str()); else if (a == "--prot") rwx = next() == "rwx"; else if (a == "--dump-every") dumpEvery = atoi(next().c_str());
+        else if (a == "--rollback") g_rbN = atoi(next().c_str());
+        else if (a == "--rb-set") g_rbSet = next();
+        else if (a == "--rb-verify") { std::string v = next(); g_rbVerify = (v == "off") ? 0 : (v == "small") ? 1 : 2; }
+        else if (a == "--rb-events") g_rbMaxEvents = atoi(next().c_str());
+        else if (a == "--heap-mb") HEAP_BYTES = (uint64_t)atoi(next().c_str()) << 20;
+        else if (a == "--play") J.play = true;
+        else if (a == "--play-frames") J.playFrames = atoi(next().c_str());
+        else if (a == "--pad-probe") padProbeSecs = atoi(next().c_str());
+        else if (a == "--play-harvest") J.playHarvest = next() != "off";
+        else if (a == "--rb-ctx-extra") {
+            std::string t = next(), cur;
+            t += ',';
+            for (char c : t) {
+                if (c == ',') {
+                    size_t d = cur.find('-');
+                    if (d != std::string::npos) g_rbCtxExtra.push_back({ strtoull(cur.substr(0, d).c_str(), nullptr, 16), strtoull(cur.substr(d + 1).c_str(), nullptr, 16) });
+                    cur.clear();
+                } else cur += c;
+            }
+        }
+        else if (a == "--rb-on-mismatch") g_rbReset = next() != "continue";
         else if (a == "--no-dump-end") dumpEnd = false; else if (a == "--force") force = true; else if (a == "--lazy") g_lazyOn = next() != "off"; else if (a == "--harvest-dump") J.harvest = true; else usage();
     }
+    if (padProbeSecs > 0) return padProbe(padProbeSecs);   // input path only: no image, no anchor, no tick
     if (pre.empty() || out.empty()) usage();
+    if (g_rbN >= 0 && g_rbSet != "blk" && g_rbSet != "rr" && g_rbSet != "blkctx" && g_rbSet != "blk2" && g_rbSet != "sim" && g_rbSet != "simctx" && g_rbSet != "simdc" && g_rbSet != "simtile" && g_rbSet != "full") {
+        fprintf(stderr, "--rb-set must be blk|rr|blkctx|blk2|sim|simctx|simdc|simtile|full\n"); usage();
+    }
     CreateDirectoryA(out.c_str(), nullptr);
     fopen_s(&g_log, (out + "\\runner.log").c_str(), "wb");
     AddVectoredExceptionHandler(1, veh);
@@ -536,6 +1062,62 @@ int main(int argc, char** argv) {
     double sum = 0; for (double x : s) sum += x;
     auto pct = [&](double q) { return s.empty() ? 0.0 : s[std::min(s.size() - 1, (size_t)(q * s.size()))]; };
     logf_("TIMING per tick (ms): n=%zu min %.3f p50 %.3f mean %.3f p90 %.3f p99 %.3f max %.3f  (real-time budget 16.667)", s.size(), s.empty() ? 0 : s[0], pct(0.5), s.empty() ? 0 : sum / s.size(), pct(0.9), pct(0.99), s.empty() ? 0 : s.back());
+    if (g_rbN >= 0) {
+        auto stat = [&](std::vector<double> v, const char* nm) {
+            if (v.empty()) { logf_("  %-8s n=0", nm); return std::string("null"); }
+            std::vector<double> q = v; std::sort(q.begin(), q.end());
+            double sm = 0; for (double x : q) sm += x;
+            auto pc = [&](double t) { return q[std::min(q.size() - 1, (size_t)(t * q.size()))]; };
+            logf_("  %-8s n=%zu  min %.4f  p50 %.4f  mean %.4f  p90 %.4f  p99 %.4f  max %.4f ms",
+                  nm, q.size(), q[0], pc(0.5), sm / q.size(), pc(0.9), pc(0.99), q.back());
+            char b[320]; sprintf_s(b, "{\"n\":%zu,\"min\":%.5f,\"p50\":%.5f,\"mean\":%.5f,\"p90\":%.5f,\"p99\":%.5f,\"max\":%.5f}",
+                                   q.size(), q[0], pc(0.5), sm / q.size(), pc(0.9), pc(0.99), q.back());
+            return std::string(b);
+        };
+        logf_("ROLLBACK (GATE N1) depth %d set %s verify %d: %d events, %d mismatch -> %s",
+              g_rbN, g_rbSet.c_str(), g_rbVerify, g_rbEvents, g_rbFailEvents,
+              g_rbFailEvents == 0 ? "PASS (every resim byte-identical to the straight-line run on every verified region)" : "FAIL");
+        if (!g_rbFirstFail.empty()) logf_("  first mismatch: %s", g_rbFirstFail.c_str());
+        logf_("  ctx render-scratch nondeterminism (NOT a failure, see ctxBucketNondet): %llu events, %llu B total",
+              g_rbNondetEvents, g_rbNondetBytes);
+        std::string bj;
+        for (auto& b : g_rbCtxBuckets) {
+            logf_("  ctx differing bytes by region: %-45s %llu B (summed over all mismatching events)", b.first.c_str(), b.second);
+            bj += (bj.empty() ? "" : ",") + std::string("\"") + b.first + "\":" + std::to_string(b.second);
+        }
+        g_rbCtxJson = "{" + bj + "}";
+        std::string js = stat(g_rbSaveMs, "save"), jr = stat(g_rbRestoreMs, "restore"), jx = stat(g_rbResimMs, "resim");
+        std::string je = stat(g_rbEventMs, "event"), jf = stat(g_rbFrameMs, "frame");
+        size_t over = 0;
+        for (double x : g_rbFrameMs) if (x > FRAME_BUDGET_MS) ++over;
+        double worst = 0.0;
+        for (double x : g_rbFrameMs) if (x > worst) worst = x;
+        logf_("  N1b: ticks=%d events=%d  per-EVENT frame cost (save+restore+resim+tick) max %.4f ms;"
+              " events over the %.3f ms budget: %zu of %zu",
+              J.ticks, g_rbEvents, worst, FRAME_BUDGET_MS, over, g_rbFrameMs.size());
+        double sS = 0, sR = 0, sX = 0;
+        for (double x : g_rbSaveMs) sS += x;
+        for (double x : g_rbRestoreMs) sR += x;
+        for (double x : g_rbResimMs) sX += x;
+        double perFrame = J.ms.empty() ? 0.0 : (sS + sR + sX) / (double)J.ms.size();
+        logf_("  interleaved worst case (a rollback EVERY frame): save+restore+resim = %.4f ms per straight-line frame;"
+              " straight-line tick p50 %.4f ms; ring %llu B; heap wraps %llu",
+              perFrame, pct(0.5), (uint64_t)(g_ring.empty() ? 0 : g_ring.size() * g_ring[0].size()), g_heapWraps);
+        char pf[64]; sprintf_s(pf, "%.5f", perFrame);
+        g_rbJson = "{\"depth\":" + std::to_string(g_rbN) + ",\"set\":\"" + g_rbSet + "\",\"verify\":" + std::to_string(g_rbVerify)
+                 + ",\"events\":" + std::to_string(g_rbEvents) + ",\"mismatch_events\":" + std::to_string(g_rbFailEvents)
+                 + ",\"pass\":" + (g_rbFailEvents == 0 ? "true" : "false")
+                 + ",\"ring_bytes\":" + std::to_string((uint64_t)(g_ring.empty() ? 0 : g_ring.size() * g_ring[0].size()))
+                 + ",\"heap_wraps\":" + std::to_string(g_heapWraps)
+                 + ",\"ticks\":" + std::to_string(J.ticks)
+                 + ",\"save_ms\":" + js + ",\"restore_ms\":" + jr + ",\"resim_ms\":" + jx
+                 + ",\"event_ms\":" + je + ",\"frame_ms\":" + jf
+                 + ",\"frame_budget_ms\":16.667,\"events_over_budget\":" + std::to_string(over)
+                 + ",\"ctx_nondet_events\":" + std::to_string(g_rbNondetEvents)
+                 + ",\"ctx_nondet_bytes\":" + std::to_string(g_rbNondetBytes)
+                 + ",\"amortised_ms_per_frame\":" + pf + ",\"ctx_buckets\":" + (g_rbCtxJson.empty() ? "{}" : g_rbCtxJson)
+                 + ",\"first_mismatch\":\"" + g_rbFirstFail + "\"}";
+    }
     logf_("EXTERNALS: RtlAllocateHeap %llu (%llu B) RtlReAllocateHeap %llu HeapFree %llu GetLastError %llu SetLastError %llu FlsGetValue %llu FlsSetValue %llu; traps hit 0",
           g_cnt[0], g_allocBytes, g_cnt[1], g_cnt[2], g_cnt[3], g_cnt[4], g_cnt[5], g_cnt[6]);
     // host-heap pages of the DUMPING process that the tick touched through baked pointers: name the .data global that
@@ -560,12 +1142,12 @@ int main(int argc, char** argv) {
     if (fs) {
         fprintf(fs, "{\"harvest_dump\":%s,\"dcram_delta_pages\":%llu,\"dcram_delta_bytes\":%llu,\"dcram_delta_per_tick\":\"%s\",\"dc_base\":\"0x%llx\",\"gs_addr\":\"0x%llx\",\"exe_page_addr\":\"0x%llx\",",
                 J.harvest ? "true" : "false", J.dcDeltaPages, J.dcDeltaBytes, J.dcDeltaSummary.c_str(), M.dc_base, GS_ADDR, EXE_PAGE_ADDR);
-        fprintf(fs, "\"ticks\":%d,\"clock_start\":%llu,\"clock_end\":%u,\"gs\":\"%s\",\"crt\":\"%s\",\"fma\":%d,\"prot\":\"%s\",\"ext\":{\"RtlAllocateHeap\":%llu,\"alloc_bytes\":%llu,\"RtlReAllocateHeap\":%llu,\"HeapFree\":%llu,\"GetLastError\":%llu,\"SetLastError\":%llu,\"FlsGetValue\":%llu,\"FlsSetValue\":%llu},\"lazy_pages\":[%s],\"ms\":[",
-                ticks, M.clock_value, RD32(M.blk + CLOCK_OFF), gsFile ? "file" : "exe", g_crtReal ? "real" : "stub", fma, rwx ? "rwx" : "sections", g_cnt[0], g_allocBytes, g_cnt[1], g_cnt[2], g_cnt[3], g_cnt[4], g_cnt[5], g_cnt[6], lazyJson.c_str());
+        fprintf(fs, "\"ticks\":%d,\"clock_start\":%llu,\"clock_end\":%u,\"gs\":\"%s\",\"crt\":\"%s\",\"fma\":%d,\"prot\":\"%s\",\"ext\":{\"RtlAllocateHeap\":%llu,\"alloc_bytes\":%llu,\"RtlReAllocateHeap\":%llu,\"HeapFree\":%llu,\"GetLastError\":%llu,\"SetLastError\":%llu,\"FlsGetValue\":%llu,\"FlsSetValue\":%llu},\"lazy_pages\":[%s],\"rollback\":%s,\"ms\":[",
+                ticks, M.clock_value, RD32(M.blk + CLOCK_OFF), gsFile ? "file" : "exe", g_crtReal ? "real" : "stub", fma, rwx ? "rwx" : "sections", g_cnt[0], g_allocBytes, g_cnt[1], g_cnt[2], g_cnt[3], g_cnt[4], g_cnt[5], g_cnt[6], lazyJson.c_str(), g_rbJson.empty() ? "null" : g_rbJson.c_str());
         for (size_t i = 0; i < J.ms.size(); ++i) fprintf(fs, "%s%.4f", i ? "," : "", J.ms[i]);
         fprintf(fs, "]}\n"); fclose(fs);
     }
     if (J.harvest) logf_("HARVEST DUMP: %llu DC-RAM pages (%llu B) changed over %d ticks (per-tick in summary.json)", J.dcDeltaPages, J.dcDeltaBytes, ticks);
-    logf_("DONE: %d ticks, clock %llu -> %u, dumps in %s", ticks, M.clock_value, RD32(M.blk + CLOCK_OFF), out.c_str());
+    logf_("DONE: %d ticks, clock %llu -> %u, dumps in %s", J.play ? J.playFrames : ticks, M.clock_value, RD32(M.blk + CLOCK_OFF), out.c_str());
     return 0;
 }

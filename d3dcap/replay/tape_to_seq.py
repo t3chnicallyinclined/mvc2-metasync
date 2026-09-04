@@ -653,6 +653,8 @@ def main():
                          "Steam's two phases (Z-write categories in submission order, then category 3 sorted "
                          'by the FUN_140843320 key; docs/TRANSLUCENT-SORT-GHIDRA.md)')
     ap.add_argument('--world-template', default=WORLD_TEMPLATE)
+    ap.add_argument('--legacy-torn-guard', action='store_true',
+                    help='restore the ABSOLUTE torn draw-list test (n < 2); see the guard below')
     ap.add_argument('--no-preamble', action='store_true',
                     help='skip the three frame-preamble quads (host clear, FUN_140843eb0 background quad, '
                          'depth-only clear) and rely on the ClearRenderTargetView -- diagnostic only; the '
@@ -842,7 +844,15 @@ def main():
     world_state_total = Counter() # world draws by how WorldTemplate.select served their D3D state (tsp_state)
     bg_stats = Counter()          # frame preamble: where the background colour came from (bg_rule.from_row)
 
+    # torn draw-list guard (see the block below): counts of the PRISTINE node lists, taken before the guard is
+    # ever allowed to substitute into v3nodes, and the clock of every tape row (not just this slice, so the
+    # forward scan can see past the end of the requested window exactly as rr-render does).
+    TORN_FACTOR, TORN_SCAN = 2, 8
+    node_counts = {k: len(v) for k, v in v3nodes.items()}
+    all_clocks = [int(x[C['frame']]) for x in tape['frames']]
+    row_i = a.start - 1
     for r in rows:
+        row_i += 1
         verts, idxs, draws = bytearray(), [], []
 
         # ── FRAME PREAMBLE: the frame is cleared by DRAWS, not by a clear (review-re M2). Three full-screen
@@ -890,10 +900,40 @@ def main():
         # WebGPU refuses the bind group ("Binding size (160) is larger than the size (0)"). Playback
         # now HOLDS the previous frame's draw list for those rows and reports how many; the tape
         # data itself is untouched. The fix at the source is the agent's read timing (v4c).
+        # The torn test is RELATIVE and ADDITIVE (2026-09-04, mirrored in rr-render sprites.rs emit_row).
+        # The old test was ABSOLUTE -- len(cur) < 2 -- so it caught only a total collapse; on prod tape
+        # ..._59618234 row 851 the list goes 24 -> 2 -> 24 and was DRAWN, popping every effect and one
+        # fighter out for a single frame. A row is now also torn when it holds less than 1/TORN_FACTOR of
+        # what BOTH neighbours agree on. RECOVERY is the discriminator: nothing in the engine removes draws
+        # and restores them within one 1/60 s frame, while a legitimate shrink (a super ending, a KO)
+        # persists into the next row and is therefore never held. The forward scan steps over a run of
+        # consecutive torn rows to find that recovery. TORN_FACTOR = 2 is a stated margin, not a fit;
+        # TORN_SCAN = 8 is the engine's own GGPO rollback horizon. Every row the old test held is still
+        # held -- the change only ADDS rows. --legacy-torn-guard restores the old test exactly.
         if v3nodes:
             cur = v3nodes.get(fr_clock)
-            if cur is None or (len(cur) < 2 and last_nodes is not None and len(last_nodes) >= 3):
-                held['no nodes' if cur is None else 'torn (%d node)' % len(cur)] += 1
+            torn = False
+            if cur is not None and last_nodes is not None:
+                torn = len(cur) < 2 and len(last_nodes) >= 3
+                if not torn and not a.legacy_torn_guard:
+                    prev, nxt = len(last_nodes), None
+                    for k in range(1, TORN_SCAN + 1):
+                        if row_i + k >= len(all_clocks):
+                            break
+                        m = node_counts.get(all_clocks[row_i + k])
+                        if m is not None and m * TORN_FACTOR >= prev:
+                            nxt = m
+                            break
+                    if nxt is not None:
+                        torn = len(cur) * TORN_FACTOR < min(prev, nxt)
+            if cur is None or torn:
+                if cur is None:
+                    key = 'no nodes'
+                elif len(cur) < 2 and len(last_nodes) >= 3:
+                    key = 'torn (%d node)' % len(cur)
+                else:
+                    key = 'torn (%d of %d nodes)' % (len(cur), len(last_nodes))
+                held[key] += 1
                 if last_nodes is not None:
                     v3nodes[fr_clock] = last_nodes
             else:

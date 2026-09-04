@@ -43,6 +43,41 @@ maps onto DC work RAM through the piecewise block map (`d3dcap/replay/re_map/blk
 - Do not re-run `tools/re_kb/07_dedup_edges.surql` (it strips confidence/evidence from edges).
 - BYOR: never commit ROM-derived bytes (rips, pages, tapes, blk dumps).
 
+### Tooling-honesty rules (added 2026-09-04, each earned by a real near-miss)
+
+- **M1 — check the instrument's own health before quoting its number.** A timing run reported one event
+  over the 16.667 ms budget at 18.31 ms; it was the harness's own bump heap wrapping and `memset`ting up to
+  64 MiB inside a tick, not the game. `heap_wraps` was already in `summary.json`, unread. Re-run with a
+  larger heap: 9.46 ms, zero over budget. A false budget violation would have shrunk a design parameter on
+  the strength of our own bug. **A tool that reports a number without reporting its own health invites a
+  confident wrong conclusion.**
+- **M2 — a non-zero failure count on a seed REPLAY is usually an artefact.** Re-applying a seed reports
+  `N failed`; every one classified so far is `Database record <id> already exists` from explicit-id
+  `RELATE` edges. `UPSERT` nodes and `UPDATE` fields converge. Do not read it as a seed that did not land —
+  and note the converse hazard: a seed carrying its own `UPDATE … SET note=…` can SILENTLY overwrite a
+  later seed's refinement on replay. Make both seeds carry identical text, then verify BY REPLAYING.
+- **M3 — a finding derived from another lane's measurement is NOT an independent confirmation.** Cite the
+  original finding, state what yours adds, and mark itself not-independent. Two lanes independently
+  recorded the same two conclusions from one measurement; two nodes citing one measurement read as two
+  corroborations. M1 and M2 corrupt a number; **M3 corrupts evidence weight — and the graph is precisely
+  the artefact people consult to judge how well-supported something is.**
+- **M4 — check whether the gate CAN fail before trusting that it passed.** Gate N2's obvious form would
+  have measured misprediction against tapes whose remote seat is identically zero, which repeat-last
+  predicts perfectly by construction: zero divergence at every depth, written up as "prediction is free".
+  Equally, a zero-hit result over a trap slice that does not cover the imports in question says nothing
+  about them. **A vacuous assertion is worse than a failing one**, because it is reported as success.
+- **M5 — a test whose FILL VALUE decides whether a bug is visible is not testing what it thinks.**
+  The arc-coverage fault crashed on `0xCDCDCDCD` but would have passed silently on `0x5A5A5A5A`: read as a
+  NaomiLib record header, `0x5A5A5A5A` is a positive PCW and terminates the walk cleanly, while
+  `0xCDCDCDCD` sign-extends to −842,150,451 and jumps ~800 MB backwards. Same missing data, opposite
+  outcome. Choose poison values that make the failure LOUD, and state which value a negative result was
+  obtained with — "we poisoned the region and nothing broke" is meaningless without it.
+- **M6 — a signal the system generates on its own is not evidence the system responded to you.**
+  The playable loop's first move-detector reported "FIRST MOVE, frame 1, pad 000000": `py` oscillates from
+  the idle-animation bob (±12.9) with no input at all, while `px` is stable at rest. Same family as reading
+  `node+0xE8` as a DC-RAM pointer when raft children carry another node's matrix there. Before treating a
+  change as a response, establish what the quantity does when you do nothing.
+
 ## What the method has already settled (do not re-derive)
 
 | Topic | Where |
