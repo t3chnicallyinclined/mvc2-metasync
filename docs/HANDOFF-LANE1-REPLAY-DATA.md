@@ -826,3 +826,26 @@ Agent **0.3.50** is released (GitHub `v0.3.50`, `rr-agent.exe` + `.sig`; `/opt/r
 constant `LATEST_AGENT_VER` still says an older version — bump it to `0.3.50` and redeploy (`rr-server-lane.md`:
 "REMEMBER TO BUMP IT each agent release"). Fleet auto-updates on next game-close. The 8 MB body limit (STEP 1) is what
 makes the fleet's tapes actually arrive — until then every 0.3.4x tape parks for 6 h and retries.
+
+## STEP 4b — the overlay ships WITH the tape read (Tris, 2026-09-04)
+
+"The overlay can be shipped from the server at time of replay; it should be small, with its metadata / rendered overlay."
+Add to the `GET /rr/tape?key=` response (STEP 4) an `overlay` object, small (≤ 2 KB), fully resolved server-side at request
+time so a template or metadata change never needs a PWA deploy:
+```jsonc
+"overlay": {
+  "template": "https://nobd.net/rr/update/overlay-template.json",   // versioned static file, same posture as changelog.json
+  "version": 1,
+  "meta": {
+    "mode": "ranked", "ft": 3, "game": 3, "date_ms": 1756937640000, "stage_id": 13, "duration_s": 118,
+    "p1": {"steamid": "…", "name": "Tris", "rank": "VIBRANIUM", "rating": 1147, "avatar": "…", "won": true,
+           "team": [42, 44, 52], "credits": [{"cid": 42, "name": "NIGHTFALL", "author_steamid": "…", "author_name": "Ruby"}]},
+    "p2": {…},
+    "watermark": "RETRO RECEIPTS · nobd.net/app/ranks"
+  }
+}
+```
+`p1/p2` come from STEP 2's seats; `credits` from STEP 3's loadout provenance (each player's CURRENT loadout at request time,
+author name via `disp_name`); names via the one resolver. The PWA renders the template from `overlay.template` (404 →
+its built-in default) bound to `overlay.meta`; when the block is absent it assembles the same data client-side as today.
+The same block is the input to the server-side poster (C7) when that exists.
