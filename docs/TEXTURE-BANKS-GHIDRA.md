@@ -136,8 +136,12 @@ HUD records 9..24 (0xC99..0xCA8) have `loc` offsets >= 0x1E000 in a 0x1E000-byte
   per key and why sha pairs repeat across keys (mirror teams).
 * `FUN_1406162e0(fighter)`: decompress `*(fighter+0x1f8) + [4]` to 0x0CE60000, re-upload slot 0xC99 (base 0).
 * `FUN_140616330(fighter)`: decompress `+[8]`, re-upload slot `(*(fighter+0x230) >> 1) + 0xCA6`.
-INFERRED: all of it is derivable offline from AFS entry `209 + cid` (the character DAT) -- a roster-dependent second rule;
-the test is `cid -> page sha` against the captured 0xC9A..0xCA5 pages. Not implemented here.
+**CONFIRMED + GATED 2026-09-04 (`PORTRAIT-PAGES-GHIDRA.md`, seed 116):** the source is AFS entry **`3 + cid`**
+(`DAT_140a6d190`, a u16 table, 25/26 collapsed onto 27), not 209+cid; `FUN_140611e90` is a 16-bit LZSS whose
+sub-blob 0 yields four 0x800-B pages -- **pages 0/1/3 = the portrait on a green/red/blue field, page 2 = the NAME
+PLATE** (the "second (dim/alt) set" 0xCA0..0xCA5 is the name plate, not a dim portrait). `*(fighter+0x655)` is the
+ASSIST TYPE (alpha/beta/gamma, written at select by `0x14062a460`), which the tape already carries as
+`assist[slot]`. `python d3dcap/replay/rip_portraits.py --gate` = **29/29** captured pages byte-exact.
 
 ## 7. Corrections to earlier records
 
@@ -153,7 +157,9 @@ the test is `cid -> page sha` against the captured 0xC9A..0xCA5 pages. Not imple
    (the gate matched file 800 at its boot placement, so it did not matter for any captured frame).
 2. SH4 side of the slot table (Steam `ctx+0x1e00a0`): not located.
 3. `loc_8c0321dc`'s Steam counterpart: UNKNOWN.
-4. Character-DAT derivation of 0xC99..0xCA8: INFERRED, not gated.
+4. ~~Character-DAT derivation of 0xC99..0xCA8~~ **CLOSED for 0xC9A..0xCA5** (29/29, `PORTRAIT-PAGES-GHIDRA.md`).
+   0xC99 / 0xCA6..0xCA8 are ripped (`rip_portraits.py --big`) but remain UNBOUND: the slot is global and
+   re-uploaded on a character switch, so its owner per frame is stateful.
 5. Origin of the 1x1 page `04000000_ad9513`: UNKNOWN.
 
 ## 9. Address index

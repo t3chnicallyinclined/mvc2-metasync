@@ -109,6 +109,9 @@ docs/BTCPAY-ECONOMY-STUDY.md
 replay-kit/blk_snapshot.bin
 replay-kit/blk_hot.npy
 d3dcap/replay/tcw_pages/
+# per-character HUD portrait / name-plate pages ripped from game_50.arc (rip_portraits.py) -- ROM-derived, BYOR
+d3dcap/replay/portraits/
+d3dcap/replay/packs/
 d3dcap/replay/re_map/cache/
 d3dcap/replay/re_map/*.jsonl
 d3dcap/replay/re_map/__pycache__/

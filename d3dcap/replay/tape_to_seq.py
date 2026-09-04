@@ -288,6 +288,48 @@ def decode_anodes(tape):
     return frames, objs
 
 
+PORTRAIT_DIR = os.path.join(HERE, 'portraits')
+PORTRAIT_SLOT_K = (0, 3, 1, 4, 2, 5)     # DAT_140a6aac8: fighter slot -> HUD texHdr record offset k
+PORTRAIT_ASSIST_PAGE = (1, 0, 3, 0)      # DAT_140a6aac4: fighter+0x655 (assist type) -> DAT page index
+PORTRAIT_NAME_PAGE = 2                   # DC 0x0CE61000 - 0x0CE60000
+PORTRAIT_TCW, PORTRAIT_NAME_TCW = 0xC9A, 0xCA0
+
+
+def hud_portrait_pages(tape, base=None):
+    """{'00000C9A': page, ...} for this tape's roster -- the twelve runtime-patched HUD slots.
+
+    FUN_14060d560 (CONFIRMED, docs/PORTRAIT-PAGES-GHIDRA.md) rewrites HUD texHdr records 10+k (portrait) and
+    16+k (name plate) for every fighter slot s, k = DAT_140a6aac8[s], from that fighter's own character DAT
+    (AFS 3+cid, 16-bit LZSS, 0x800-B 32x32 RGB565 twiddled pages). The portrait page is
+    DAT_140a6aac4[*(fighter+0x655)] and +0x655 is the ASSIST TYPE the tape already carries as `assist[slot]`;
+    the name page is page 2 always. Empty when the rip is absent (the caller then keeps the old library page)."""
+    base = base or PORTRAIT_DIR
+    idxf = os.path.join(base, 'index.json')
+    if not os.path.exists(idxf):
+        return {}
+    chars = (json.load(open(idxf)) or {}).get('chars') or {}
+    p1, p2 = tape.get('p1_team') or [], tape.get('p2_team') or []
+    assist = tape.get('assist') or [0] * 6
+    out = {}
+    for s in range(6):
+        team, i = (p1, s // 2) if s % 2 == 0 else (p2, s // 2)
+        if i >= len(team):
+            continue
+        ent = chars.get(str(int(team[i])))
+        if not ent:
+            continue
+        k = PORTRAIT_SLOT_K[s]
+        a = int(assist[s]) if s < len(assist) else 0
+        for tcw, page in ((PORTRAIT_TCW + k, PORTRAIT_ASSIST_PAGE[a & 3]), (PORTRAIT_NAME_TCW + k, PORTRAIT_NAME_PAGE)):
+            pv = (ent.get('pages') or [None] * 4)[page]
+            fn = os.path.join(base, pv['file']) if pv else None
+            if not fn or not os.path.exists(fn):
+                continue
+            im = Image.open(fn).convert('RGBA')
+            out['%08X' % tcw] = dict(w=im.width, h=im.height, fmt=28, data=np.array(im).tobytes())
+    return out
+
+
 def scene_block(cam, variant):
     """The 432-byte scene constant block for camera (cx, cy, cz) and list variant 'list6'|'list7'."""
     m = scene_block.model[variant]
@@ -742,6 +784,17 @@ def main():
                 tape_pages.setdefault(_k, _v)
             for k, v in (tape.get('pages') or {}).items():
                 tape_pages[k] = dict(w=v['w'], h=v['h'], fmt=v['fmt'], data=gzip.decompress(base64.b64decode(v['data'])))
+            # RUNTIME-PATCHED HUD PORTRAIT / NAME PAGES (TCW 0xC9A..0xCA5).  The engine rewrites those twelve
+            # texture slots at every match load from the SIX FIGHTERS' OWN character DATs (FUN_14060d560,
+            # docs/PORTRAIT-PAGES-GHIDRA.md), so they are roster-dependent and the capture-derived TCW library's
+            # copies belong to whatever roster was captured -- the bug that put Sentinel's portrait and name on a
+            # Mag/Storm/Colossus tape.  Resolve them per tape from the character DATs instead:
+            #     slot s -> k = DAT_140a6aac8[s] = {0,3,1,4,2,5}[s]      (exe, CONFIRMED)
+            #     portrait TCW 0xC9A + k  <- DAT page DAT_140a6aac4[assist[s]] = {1,0,3,0}[assist[s]]
+            #     name     TCW 0xCA0 + k  <- DAT page 2
+            #     slot s is P1 team s/2 when s is even, P2 team s/2 when odd (select code + web.rs)
+            for _k, _v in hud_portrait_pages(tape).items():
+                tape_pages[_k] = _v
             print('  TAPE v5: %d frames of world-space nodes, %d objects, %d pages in tape, %d in library'
                   % (len(v5nodes), len(v5objs), len(tape_pages), len(wt.pages)))
     for need in ('drawn[6]', 'sid[6]', 'sx[6]', 'sy[6]', 'facing[6]'):

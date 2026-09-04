@@ -33,7 +33,15 @@ Agent 0.3.40 (`rr-agent-v7.exe`, running): tape v5, nodes stride 54 (+angle/hots
    delta = 44-B `pnodes`). Sparks are System-B objects (cat 3, sids 1002..1006 in the OWNER's sprite set); they drew
    with the wrong character's rip because the bank key `& 0xFFFF` collapsed all fighters (fixed 56617e6). Verify on
    the re-rendered stage-13 clip.
-4. **Portraits** — TCW 0xC99..0xCA8 patched at runtime from character DATs (INFERRED); capture-derived for now.
+4. ~~Portraits~~ **CLOSED 2026-09-04** (`PORTRAIT-PAGES-GHIDRA.md`, seed 116): TCW **0xC9A..0xCA5** are twelve
+   PER-CHARACTER slots the engine rewrites at every match load (`FUN_14060d560`) from each fighter's own DAT
+   (AFS `3+cid`, 16-bit LZSS `FUN_140611e90`): portrait = 0xC9A + `{0,3,1,4,2,5}[slot]` from DAT page
+   `{1,0,3,0}[assist[slot]]`, name plate = 0xCA0 + same k from page 2. Gate `rip_portraits.py --gate` **29/29**
+   captured library pages reproduced byte-exact. Resolving them from the capture-derived TCW library instead was
+   drawing the CAPTURE's roster (Sentinel/Storm/Magneto) on every tape — the "wrong character's portrait, health
+   bars don't follow tags" bug. Live in `rr-render/src/world.rs hud_portrait_pages` + `tape_to_seq.py`; pages ship
+   in the asset pack as `portraits/`. **Still open:** TCW 0xC99 / 0xCA6..0xCA8 (same file, sub-blobs 1 and 2) are
+   ripped but unbound — the slot is global and re-uploaded on a character switch.
 5. Whole-frame read set from the p-code emulator on the mid-match images (`d3dcap/ttd/runs/20260903-000941/pre`).
 6. Scripted camera (blk+0x6908 == 1) rendering from look/fov/yoff/roll — fields carried, renderer not yet.
 
